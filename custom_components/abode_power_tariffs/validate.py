@@ -136,15 +136,12 @@ def _season_probe_dates(plan: Plan) -> list[date]:
 
 def validate_export(plan: Plan) -> list[Problem]:
     """Check the export side when it is not a single all-day price."""
-    if plan.export_same_all_day:
-        return []
-
     problems: list[Problem] = []
     names = set(plan.export_rate_names)
-    if not plan.export_rates:
-        problems.append(Problem("export", "no export rates have been entered"))
 
     for pattern in plan.day_patterns:
+        if pattern.export_same_all_day:
+            continue
         periods = pattern.sorted_export_periods()
         if not periods:
             problems.append(Problem(f"{pattern.name} export", "has no time periods"))

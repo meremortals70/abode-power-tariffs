@@ -74,75 +74,134 @@ tidying up. Nothing outside the integration is changed on removal.
 
 ---
 
-## Building your plan
+## How a plan is put together
 
-Settings → Devices & services → Abode Power Tariffs → **Configure**.
+Four things, and the order matters:
 
-The 24-hour strip is shown before you choose anything, and again on every screen
-that touches time periods, so a gap or an overlap is visible the moment you make it:
+| | |
+|---|---|
+| **The plan** | One meter or one circuit. Its name, and the charges that apply no matter what you use — daily supply charge, monthly fee, tax, demand charge |
+| **A timetable** | A set of days that share the same prices. "Every day", or "Weekday" and "Weekend" and "Public holidays" |
+| **A rate** | A named price, belonging to a timetable. The timetable's name is put in front of it automatically, so **Weekday Peak** and **Weekend Peak** are two rates at two prices |
+| **A time period** | A span of the day, priced at one of that timetable's rates. Together they must cover the day exactly once |
+
+Feed-in works the same way, per timetable: either one price all day, or its own
+rates and its own time periods.
+
+**A plan can have as many timetables as it needs.** Weekends priced differently
+is not a second plan — it is a second timetable inside the same one.
+
+---
+
+## Setting it up
+
+Settings → Devices & services → Add integration → Abode Power Tariffs.
+
+**1. Plan name** and an optional description.
+
+**2. Fixed charges** — daily supply charge, monthly fee, whether prices include
+tax and at what rate, and the demand charge if you have one.
+
+Then the timetable loop. Every timetable runs the same screens in the same
+order:
+
+**3. Timetable** — its name, and which days it covers. Leave "Every day is the
+same" on unless weekends or public holidays are priced differently.
+
+**4. Rates** — the prices on this timetable. Type `Peak` on a timetable called
+`Weekday` and it is stored as `Weekday Peak`. Enter one and the screen returns
+for the next; choose **Continue to the time periods** when they are all in.
+
+**5. Time periods** — start, end, and which rate. The start is included and the
+end is not, so one period can end at 16:00 and the next begin at 16:00. A period
+running to midnight ends at 00:00. Choose **Continue to feed-in** when the day
+is covered.
+
+**6. Feed-in** — one price all day, or not. Leave the switch on and enter the
+price, and this timetable is done. Turn it off and you get:
+
+- **6a. Feed-in rates** — same as step 4, same prefixing
+- **6b. Feed-in time periods** — same as step 5, independent of the import ones
+
+**7. Timetable complete** — two buttons. **Add a timetable for other days**
+takes you back to step 3 for the next one. **Finish and create the plan** ends
+setup.
+
+### A worked example
+
+A plan where weekends are cheaper and the weekend feed-in is better:
+
+| Screen | Weekday pass | Weekend pass |
+|---|---|---|
+| Timetable | `Weekday`, Mon–Fri | `Weekend`, Sat, Sun, public holidays |
+| Rates | Off Peak, Shoulder, Peak → `Weekday Off Peak`, `Weekday Shoulder`, `Weekday Peak` | Off Peak, Peak → `Weekend Off Peak`, `Weekend Peak` |
+| Time periods | 00:00–06:00 Off Peak, 06:00–16:00 Shoulder, 16:00–21:00 Peak, 21:00–00:00 Shoulder | 00:00–16:00 Off Peak, 16:00–00:00 Peak |
+| Feed-in | One price all day, 2.7 c | Switch off → `Weekend Daytime` 2.7 c, `Weekend Evening` 12 c → 00:00–16:00 Daytime, 16:00–00:00 Evening |
+| Timetable complete | Add a timetable for other days | Finish |
+
+Five rates, two timetables, one plan.
+
+---
+
+## Changing it afterwards
+
+Settings → Devices & services → Abode Power Tariffs → **Configure**. Everything
+entered at setup can be changed there; nothing requires deleting the plan.
+
+The 24-hour strip is shown before you choose anything and again on every screen
+that touches time periods, so a gap or an overlap is visible the moment you make
+one. It is coloured by price, cheapest green through dearest red, with a legend
+naming each colour:
 
 ```
-Every day
-        00    03    06    09    12    15    18    21    24
-        ████████████░░░░░░░░░░▒▒▒▒▒▒░░░░████████████░░░░░░
-        cheap       standard  free  std peak        standard
+Weekday
+0           3           6           9           12          15          18          21  24
+🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟨🟨🟨🟨🟨🟨
 
-  Coverage: complete. 6 time periods, no gaps, no overlaps.
+  Coverage: complete. 4 periods, no gaps, no overlaps.
+
+Export: 2.70 c/kWh all day
+
+🟩 Weekday Off Peak — 19.80 c/kWh
+🟨 Weekday Shoulder — 32.10 c/kWh
+🟥 Weekday Peak — 56.88 c/kWh
 ```
 
-### Rates first
+The Configure menu:
 
-**A rate is defined once and pointed at by any number of time periods.** Change the
-peak price and it changes everywhere.
+| | |
+|---|---|
+| **Rates** | Add, edit, remove. Renaming follows through into every time period that uses it |
+| **Day patterns** | The timetables. Add, edit, duplicate or remove one, including its feed-in mode and its season dates |
+| **Time periods** | Per timetable |
+| **Feed-in** | Feed-in rates, and their time periods per timetable |
+| **Supply charge, tax, plan dates, sensors** | The plan-wide settings |
+| **Track usage by rate** | Utility meters — see below |
+| **Rate plan card** | The plan laid out for transcribing into an inverter |
+
+### The rate fields in full
+
+Beyond the name and the price, a rate carries:
 
 | Field | Notes |
 |---|---|
-| Name | Free text. Becomes an option on the rate sensor. Match your `utility_meter` tariff names if you use them |
-| Import price | Cents per kWh, as bills quote it. Published in dollars per kWh, as the Energy dashboard wants it |
-| Export price | Same |
-| Constraints | Comma separated. Each becomes a binary sensor. See below |
-| Coasting permitted | For consumers that ask whether this is a good moment to stop drawing power |
-| Demand charge time period | A flag only. The $/kW/month arithmetic is out of scope |
-| Daily energy allowance | Leave empty for none. Some plans give a time period free only up to a cap |
+| Constraints | Comma separated, your own words. Each becomes a binary sensor. See below |
+| Coasting permitted | Tells other systems a room may drift during this rate |
+| Demand charge period | Marks the period the demand charge is measured in. The monthly amount is not calculated |
+| Daily energy allowance | Some plans give a period free only up to a cap. Zero for none |
 | Rate beyond the allowance | Required when there is an allowance |
-
-### Then time periods
-
-Three fields: start, end, rate. Start is included, end is not. A time period running
-to midnight ends at 00:00.
-
-The time periods in a day pattern must cover 00:00 to 24:00 exactly once. The plan will
-not save otherwise, and the strip tells you which hours are missing.
-
-### Day patterns
-
-**"Same every day" is on by default.** Leave it on unless weekends, weekdays or
-public holidays are priced differently — then turn it off and pick the days.
-
-For the common Australian shape — weekdays one way, weekends and public holidays
-another — build the weekday pattern, then use **Duplicate day pattern** and change the
-rates on the time periods that differ.
-
-Public holidays need a holiday sensor nominated under the general settings. Home
-Assistant's built-in **Workday** integration provides one; it is off on a public
-holiday, and the day option only appears once you have nominated a sensor.
 
 ### Seasons
 
-A day pattern can carry a date range, entered as `MM-DD`. A range may wrap the new
-year — `11-01` to `03-31` is summer in the southern hemisphere. A seasonal day
-set wins over a year-round one on the dates it covers.
+A timetable can carry a date range, entered as `MM-DD`. It may cross the new
+year — `11-01` to `03-31` is summer in the southern hemisphere. A seasonal
+timetable wins over a year-round one on the dates it covers.
 
-### General settings
+### Validity dates
 
-Daily supply charge, whether prices include tax and at what rate, the plan's
-validity dates, the holiday sensor and the import energy sensor.
-
-**Validity dates matter more than they look.** When your retailer reprices, set
-`valid to` on the old plan and make a new channel for the new one. Historical
-cost figures then stay correct against the price that was actually in force.
-
-Currency comes from your Home Assistant configuration. It is never asked for.
+When your retailer reprices, set **Plan valid to** on the old plan and add a new
+plan for the new prices. Historical cost figures then stay correct against the
+price that was actually in force.
 
 ---
 
@@ -156,7 +215,6 @@ This is what battery, hot water and EV automations should trigger on, instead of
 a clock comparison. When the plan moves, they move with it and you edit nothing.
 
 Note what they are: **rules you declared**, not decisions the integration made.
-It reports that your rule now applies.
 
 ---
 
@@ -391,10 +449,10 @@ Anything expressible as named rates over non-overlapping time periods:
 
 - Flat rate
 - Time of use, any number of rates
-- Weekday, weekend and public holiday variation
+- Weekday, weekend and public holiday variation, as separate timetables in one plan
 - Seasonal variation, including ranges wrapping the new year
 - Free or discounted time periods, with or without a daily energy cap
-- Separate import and export prices per rate
+- Separate import and feed-in prices, each with their own timetable and periods
 - Controlled load and second circuits, as additional channels
 - Plans with a validity period, so past costs stay right after a reprice
 

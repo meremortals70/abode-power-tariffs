@@ -59,8 +59,8 @@ def _export_symbols(plan: Plan) -> dict[str, str]:
 
 def render_export_row(plan: Plan, day_pattern: DayPattern) -> str:
     """Return the export strip, or a one-line note when it is flat."""
-    if plan.export_same_all_day:
-        return f"Export: {plan.export_flat_price * 100:.2f} c/kWh all day"
+    if day_pattern.export_same_all_day:
+        return f"Export: {day_pattern.export_flat_price * 100:.2f} c/kWh all day"
     symbols = _export_symbols(plan)
     slots = [GAP] * SLOTS
     for period in day_pattern.sorted_export_periods():
@@ -149,6 +149,8 @@ def render_rate_plan_card(plan: Plan) -> str:
     else:
         lines.append("Prices exclude tax.")
     lines.append(f"Daily supply charge: {plan.daily_supply_charge * 100:.2f} c/day")
+    if plan.monthly_charge:
+        lines.append(f"Monthly charge: {plan.monthly_charge:.2f} per month")
     lines.append("")
 
     for day_pattern in plan.day_patterns:
