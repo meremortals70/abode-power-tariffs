@@ -8,6 +8,8 @@ DOMAIN: Final = "abode_power_tariffs"
 
 # Config entry data
 CONF_PLAN_NAME: Final = "plan_name"
+CONF_PLAN_DESCRIPTION: Final = "plan_description"
+CONF_ADD_ANOTHER: Final = "add_another"
 
 # Config entry options — top level
 CONF_RATES: Final = "rates"

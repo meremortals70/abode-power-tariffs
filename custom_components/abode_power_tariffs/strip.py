@@ -86,7 +86,7 @@ def render_day_pattern(plan: Plan, day_pattern: DayPattern) -> str:
 def render_plan(plan: Plan) -> str:
     """Render every day set in the plan."""
     if not plan.day_patterns:
-        return "No day sets configured yet."
+        return "No day patterns configured yet."
     return "\n\n".join(render_day_pattern(plan, day_pattern) for day_pattern in plan.day_patterns)
 
 
@@ -97,6 +97,8 @@ def render_rate_plan_card(plan: Plan) -> str:
     plan for transcription; nothing is written to any vendor.
     """
     lines: list[str] = [f"Rate plan: {plan.name}", ""]
+    if plan.description:
+        lines.extend([plan.description, ""])
 
     if plan.prices_include_gst:
         lines.append(f"Prices include GST at {plan.gst_percent:g}%.")

@@ -206,34 +206,6 @@ tariffs:
 
 ---
 
-## Batteries and inverters
-
-Posture control stays outside this integration: a backup reserve percentage
-depends on state of charge and intent, which the plan knows nothing about, and
-the primitives differ by vendor.
-
-A blueprint is provided instead. Import it by pasting this URL into
-**Settings → Automations & scenes → Blueprints → Import blueprint**:
-
-```
-https://github.com/meremortals70/abode-power-tariffs/blob/main/blueprints/automation/abode_power_tariffs/inverter_posture.yaml
-```
-
-One instance per posture. It triggers on a constraint sensor and sets backup
-reserve, operation mode, grid charging and the export rule — each optional, each
-targeted at your own entities.
-
-> **Do not run a blueprint instance and the automation it replaces at the same
-> time.** Two writers on a backup reserve produces no error, only odd
-> behaviour. Import, configure, disable the original, watch a full day, then
-> delete it.
-
-**Read the options off the entity before typing them.** An operation mode option
-that does not exist raises an error and stops the sequence where it stands, with
-the earlier steps applied and the later ones not.
-
----
-
 ## Rate plan card
 
 Under Configure there is a **Rate plan card**: the plan laid out with buy and
@@ -448,7 +420,6 @@ be imported without Home Assistant.
 
 Quality scale progress is tracked in
 `custom_components/abode_power_tariffs/quality_scale.yaml` against all 54 rules.
-The rules themselves are summarised in `docs/HA-DEVELOPER-RULES.md`.
 
 ---
 

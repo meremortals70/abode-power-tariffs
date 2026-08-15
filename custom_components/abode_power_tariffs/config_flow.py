@@ -31,6 +31,7 @@ from homeassistant.util import slugify
 
 from .const import (
     ALL_DAY_TOKENS,
+    CONF_ADD_ANOTHER,
     CONF_COASTING_PERMITTED,
     CONF_CONSTRAINTS,
     CONF_DAILY_ALLOWANCE_KWH,
@@ -47,6 +48,7 @@ from .const import (
     CONF_IMPORT_ENERGY_SENSOR,
     CONF_NAME,
     CONF_PERIODS,
+    CONF_PLAN_DESCRIPTION,
     CONF_PLAN_NAME,
     CONF_PRICES_INCLUDE_GST,
     CONF_RATE,
@@ -197,7 +199,7 @@ def _rate_schema(
 
 
 class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Collect the plan, then create the entry."""
+    """Name the plan, then enter its rates."""
 
     VERSION = 2
     MINOR_VERSION = 1
@@ -205,11 +207,13 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Start with nothing."""
         self._name: str = ""
+        self._description: str = ""
+        self._rates: list[dict[str, Any]] = []
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Ask for the channel name."""
+        """Name the plan."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -220,68 +224,85 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(slugify(name))
                 self._abort_if_unique_id_configured()
                 self._name = name
-                return await self.async_step_first_rate()
+                self._description = str(user_input.get(CONF_PLAN_DESCRIPTION) or "").strip()
+                return await self.async_step_rates()
 
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
-                {vol.Required(CONF_PLAN_NAME, default="Electricity"): selector.TextSelector()}
+                {
+                    vol.Required(
+                        CONF_PLAN_NAME, default="Electricity"
+                    ): selector.TextSelector(),
+                    vol.Optional(
+                        CONF_PLAN_DESCRIPTION, default=""
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(multiline=True)
+                    ),
+                }
             ),
             errors=errors,
         )
 
-    async def async_step_first_rate(
+    async def async_step_rates(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Ask for the first rate, and build the plan from it.
+        """Enter every rate in the plan, one after another.
 
-        Nothing is invented. The whole day is priced at this rate until time
-        periods are added, so the first price published is one the user typed.
+        Every rate the plan has, whatever time of day, weekday, weekend, public
+        holiday or season it applies to. When the rates apply is set up
+        afterwards, under Configure.
         """
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            rate = _rate_record(user_input)
-            if not rate[CONF_NAME]:
+            record = _rate_record(user_input)
+            name = record[CONF_NAME]
+            if not name:
                 errors[CONF_NAME] = "name_required"
+            elif any(rate[CONF_NAME] == name for rate in self._rates):
+                errors[CONF_NAME] = "rate_exists"
             else:
-                options = {
-                    CONF_RATES: [rate],
-                    CONF_DAY_PATTERNS: [
-                        {
-                            CONF_NAME: EVERY_DAY,
-                            CONF_DAYS: list(ALL_DAY_TOKENS),
-                            CONF_PERIODS: [
-                                {
-                                    CONF_START: "00:00",
-                                    CONF_END: "24:00",
-                                    CONF_RATE: rate[CONF_NAME],
-                                }
-                            ],
-                        }
-                    ],
-                    CONF_SUPPLY_CHARGE_CENTS: user_input[CONF_SUPPLY_CHARGE_CENTS],
-                    CONF_PRICES_INCLUDE_GST: True,
-                    CONF_GST_PERCENT: DEFAULT_GST_PERCENT,
-                }
-                return self.async_create_entry(
-                    title=self._name,
-                    data={CONF_PLAN_NAME: self._name},
-                    options=options,
-                )
+                self._rates.append(record)
+                if user_input[CONF_ADD_ANOTHER]:
+                    return await self.async_step_rates()
+                return self._create()
 
         schema = dict(_rate_schema({}, [], minimal=True).schema)
-        schema[vol.Required(CONF_SUPPLY_CHARGE_CENTS, default=0.0)] = selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
-            )
-        )
+        schema[vol.Required(CONF_ADD_ANOTHER, default=True)] = selector.BooleanSelector()
 
         return self.async_show_form(
-            step_id="first_rate",
+            step_id="rates",
             data_schema=vol.Schema(schema),
             errors=errors,
-            description_placeholders={"name": self._name},
+            description_placeholders={
+                "plan": self._name,
+                "so_far": ", ".join(rate[CONF_NAME] for rate in self._rates) or "none yet",
+            },
+        )
+
+    def _create(self) -> ConfigFlowResult:
+        """Create the entry. The first rate covers the day until periods are set."""
+        first = self._rates[0][CONF_NAME]
+        return self.async_create_entry(
+            title=self._name,
+            data={CONF_PLAN_NAME: self._name},
+            options={
+                CONF_PLAN_DESCRIPTION: self._description,
+                CONF_RATES: self._rates,
+                CONF_DAY_PATTERNS: [
+                    {
+                        CONF_NAME: EVERY_DAY,
+                        CONF_DAYS: list(ALL_DAY_TOKENS),
+                        CONF_PERIODS: [
+                            {CONF_START: "00:00", CONF_END: "24:00", CONF_RATE: first}
+                        ],
+                    }
+                ],
+                CONF_SUPPLY_CHARGE_CENTS: 0.0,
+                CONF_PRICES_INCLUDE_GST: True,
+                CONF_GST_PERCENT: DEFAULT_GST_PERCENT,
+            },
         )
 
     @staticmethod

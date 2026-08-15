@@ -2,34 +2,37 @@
   "config": {
     "step": {
       "user": {
-        "title": "Abode Power Tariffs",
-        "description": "One entry per metering channel — general consumption, controlled load, a second circuit. Each is a separate plan with separate prices.",
+        "title": "New tariff plan",
+        "description": "A plan is the set of prices for one meter or one circuit. If you have a controlled load or an off-peak hot water circuit on a separate price, add it later as its own plan.",
         "data": {
-          "plan_name": "Channel name"
+          "plan_name": "Plan name",
+          "plan_description": "Description"
         },
         "data_description": {
-          "plan_name": "Shown on the device and used as the prefix on every entity."
+          "plan_name": "Your retailer's plan name is a good choice. Shown on the device and used as the prefix on every entity.",
+          "plan_description": "Optional, your own words. Anything you want to remember about this plan."
         }
       },
-      "first_rate": {
-        "title": "Your first rate",
-        "description": "A rate is a price with a name — peak, off peak, free. You define it once here and point time periods at it later.\n\nUntil you add time periods, the whole day is priced at this rate. Nothing is invented: every figure published is one you entered.",
+      "rates": {
+        "title": "Rates",
+        "description": "Enter every rate in {plan} — all of them, whatever time of day, weekday, weekend, public holiday or season they apply to. When each one applies is set up afterwards, under Configure.\n\nEntered so far: {so_far}",
         "data": {
           "name": "Rate name",
           "import_cents": "You pay (c/kWh)",
           "export_cents": "You are paid (c/kWh)",
-          "daily_supply_charge_cents": "Daily supply charge (c/day)"
+          "add_another": "Add another rate"
         },
         "data_description": {
-          "name": "As it appears on your bill — for example peak, off peak, shoulder.",
+          "name": "As it appears on your bill — peak, off peak, shoulder, free.",
           "import_cents": "Cents per kilowatt hour, as the bill quotes it.",
-          "export_cents": "Your feed-in rate. Leave at zero if you do not export.",
-          "daily_supply_charge_cents": "The fixed charge per day. Zero if you do not have one."
+          "export_cents": "Your feed-in rate for this rate. Zero if you do not export.",
+          "add_another": "Leave on to enter the next rate. Turn off to finish."
         }
       }
     },
     "error": {
-      "name_required": "A name is needed."
+      "name_required": "A name is needed.",
+      "rate_exists": "A rate with that name has already been entered."
     },
     "abort": {
       "already_configured": "A channel with that name already exists."
@@ -66,7 +69,9 @@
       },
       "rate_pick": {
         "title": "Which rate?",
-        "data": { "name": "Rate" }
+        "data": {
+          "name": "Rate"
+        }
       },
       "rate_add": {
         "title": "Rate",
@@ -92,7 +97,9 @@
       },
       "rate_remove": {
         "title": "Remove a rate",
-        "data": { "name": "Rate" }
+        "data": {
+          "name": "Rate"
+        }
       },
       "day_patterns_menu": {
         "title": "Day patterns",
@@ -107,7 +114,9 @@
       },
       "day_pattern_pick": {
         "title": "Which day pattern?",
-        "data": { "name": "Day pattern" }
+        "data": {
+          "name": "Day pattern"
+        }
       },
       "day_pattern_add": {
         "title": "Day pattern",
@@ -136,12 +145,16 @@
       },
       "day_pattern_remove": {
         "title": "Remove a day pattern",
-        "data": { "name": "Day pattern" }
+        "data": {
+          "name": "Day pattern"
+        }
       },
       "periods_pick_day_pattern": {
         "title": "Which day pattern's time periods?",
         "description": "```\n{plan}\n```",
-        "data": { "name": "Day pattern" }
+        "data": {
+          "name": "Day pattern"
+        }
       },
       "periods_menu": {
         "title": "Time periods",
@@ -156,7 +169,9 @@
       "period_pick": {
         "title": "Which time period?",
         "description": "```\n{plan}\n```",
-        "data": { "period": "Time period" }
+        "data": {
+          "period": "Time period"
+        }
       },
       "period_add": {
         "title": "Time period",
@@ -170,7 +185,9 @@
       "period_remove": {
         "title": "Remove a time period",
         "description": "```\n{plan}\n```",
-        "data": { "period": "Time period" }
+        "data": {
+          "period": "Time period"
+        }
       },
       "general": {
         "title": "General",
@@ -254,14 +271,30 @@
   },
   "entity": {
     "sensor": {
-      "import_price": { "name": "Import price" },
-      "export_price": { "name": "Export price" },
-      "rate": { "name": "Rate" },
-      "next_rate_change": { "name": "Next rate change" },
-      "daily_supply_charge": { "name": "Daily supply charge" },
-      "allowance_remaining": { "name": "Allowance remaining" },
-      "supply_charge_today": { "name": "Supply charge today" },
-      "supply_charge_energy": { "name": "Supply charge energy" }
+      "import_price": {
+        "name": "Import price"
+      },
+      "export_price": {
+        "name": "Export price"
+      },
+      "rate": {
+        "name": "Rate"
+      },
+      "next_rate_change": {
+        "name": "Next rate change"
+      },
+      "daily_supply_charge": {
+        "name": "Daily supply charge"
+      },
+      "allowance_remaining": {
+        "name": "Allowance remaining"
+      },
+      "supply_charge_today": {
+        "name": "Supply charge today"
+      },
+      "supply_charge_energy": {
+        "name": "Supply charge energy"
+      }
     }
   },
   "services": {

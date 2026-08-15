@@ -29,6 +29,7 @@ from .const import (
     CONF_IMPORT_CENTS,
     CONF_NAME,
     CONF_PERIODS,
+    CONF_PLAN_DESCRIPTION,
     CONF_PRICES_INCLUDE_GST,
     CONF_RATE,
     CONF_RATES,
@@ -296,6 +297,7 @@ class Plan:
     gst_percent: float = 0.0
     valid_from: date | None = None
     valid_to: date | None = None
+    description: str = ""
 
     def rate_by_name(self, name: str) -> Rate | None:
         """Return a rate by name, or None."""
@@ -372,6 +374,7 @@ class Plan:
         """Return the plan as a plain dictionary, ready for storage."""
         return {
             CONF_NAME: self.name,
+            CONF_PLAN_DESCRIPTION: self.description,
             CONF_RATES: [rate.as_dict() for rate in self.rates],
             CONF_DAY_PATTERNS: [day_pattern.as_dict() for day_pattern in self.day_patterns],
             CONF_SUPPLY_CHARGE_CENTS: round(self.daily_supply_charge * 100, 4),
@@ -386,6 +389,7 @@ class Plan:
         """Build a plan from stored configuration."""
         return cls(
             name=str(raw.get(CONF_NAME, "Tariff")),
+            description=str(raw.get(CONF_PLAN_DESCRIPTION) or ""),
             rates=tuple(Rate.from_dict(item) for item in raw.get(CONF_RATES) or ()),
             day_patterns=tuple(
                 DayPattern.from_dict(item)
