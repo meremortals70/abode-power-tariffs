@@ -1,15 +1,15 @@
 """The 24-hour text strip. Pure module.
 
 One line per day set, one character per 30 minutes. Shown on the Configure menu
-and on every screen that touches windows, so a gap or an overlap is visible at
+and on every screen that touches periods, so a gap or an overlap is visible at
 the moment it is made rather than at save.
 """
 
 from __future__ import annotations
 
 from .const import MINUTES_PER_DAY
-from .plan import DaySet, Plan, format_time
-from .validate import validate_windows
+from .plan import DayPattern, Plan, format_time
+from .validate import validate_periods
 
 SLOT_MINUTES = 30
 SLOTS = MINUTES_PER_DAY // SLOT_MINUTES
@@ -30,19 +30,19 @@ def _rate_symbols(plan: Plan) -> dict[str, str]:
     }
 
 
-def render_day_set(plan: Plan, day_set: DaySet) -> str:
+def render_day_pattern(plan: Plan, day_pattern: DayPattern) -> str:
     """Render one day set as a strip, a legend line and a coverage line."""
     symbols = _rate_symbols(plan)
     slots = [GAP] * SLOTS
     labels: list[tuple[int, str]] = []
 
-    for window in day_set.sorted_windows():
-        symbol = symbols.get(window.rate, "?")
-        first = window.start // SLOT_MINUTES
-        last = min(SLOTS, -(-window.end // SLOT_MINUTES))
+    for period in day_pattern.sorted_periods():
+        symbol = symbols.get(period.rate, "?")
+        first = period.start // SLOT_MINUTES
+        last = min(SLOTS, -(-period.end // SLOT_MINUTES))
         for index in range(first, last):
             slots[index] = CLASH if slots[index] != GAP else symbol
-        labels.append((first, window.rate))
+        labels.append((first, period.rate))
 
     strip = "".join(slots)
 
@@ -53,27 +53,27 @@ def render_day_set(plan: Plan, day_set: DaySet) -> str:
                 legend_chars[position + offset] = character
     legend = "".join(legend_chars).rstrip()
 
-    problems = validate_windows(day_set)
+    problems = validate_periods(day_pattern)
     if problems:
         coverage = "  " + "\n  ".join(problem.message for problem in problems)
     else:
         coverage = (
-            f"  Coverage: complete. {len(day_set.windows)} windows, no gaps, "
+            f"  Coverage: complete. {len(day_pattern.periods)} periods, no gaps, "
             "no overlaps."
         )
 
     season = ""
-    if day_set.is_seasonal:
-        assert day_set.season_from is not None
-        assert day_set.season_to is not None
+    if day_pattern.is_seasonal:
+        assert day_pattern.season_from is not None
+        assert day_pattern.season_to is not None
         season = (
-            f"  ({day_set.season_from[1]:02d}/{day_set.season_from[0]:02d}"
-            f" - {day_set.season_to[1]:02d}/{day_set.season_to[0]:02d})"
+            f"  ({day_pattern.season_from[1]:02d}/{day_pattern.season_from[0]:02d}"
+            f" - {day_pattern.season_to[1]:02d}/{day_pattern.season_to[0]:02d})"
         )
 
     return "\n".join(
         [
-            f"{day_set.name}{season}",
+            f"{day_pattern.name}{season}",
             RULER,
             f"        {strip}",
             f"        {legend}",
@@ -85,9 +85,9 @@ def render_day_set(plan: Plan, day_set: DaySet) -> str:
 
 def render_plan(plan: Plan) -> str:
     """Render every day set in the plan."""
-    if not plan.day_sets:
+    if not plan.day_patterns:
         return "No day sets configured yet."
-    return "\n\n".join(render_day_set(plan, day_set) for day_set in plan.day_sets)
+    return "\n\n".join(render_day_pattern(plan, day_pattern) for day_pattern in plan.day_patterns)
 
 
 def render_rate_plan_card(plan: Plan) -> str:
@@ -105,25 +105,25 @@ def render_rate_plan_card(plan: Plan) -> str:
     lines.append(f"Daily supply charge: {plan.daily_supply_charge * 100:.2f} c/day")
     lines.append("")
 
-    for day_set in plan.day_sets:
-        lines.append(f"{day_set.name} — {', '.join(sorted(day_set.days))}")
-        if day_set.is_seasonal:
-            assert day_set.season_from is not None
-            assert day_set.season_to is not None
+    for day_pattern in plan.day_patterns:
+        lines.append(f"{day_pattern.name} — {', '.join(sorted(day_pattern.days))}")
+        if day_pattern.is_seasonal:
+            assert day_pattern.season_from is not None
+            assert day_pattern.season_to is not None
             lines.append(
-                f"  Season {day_set.season_from[1]:02d}/{day_set.season_from[0]:02d}"
-                f" to {day_set.season_to[1]:02d}/{day_set.season_to[0]:02d}"
+                f"  Season {day_pattern.season_from[1]:02d}/{day_pattern.season_from[0]:02d}"
+                f" to {day_pattern.season_to[1]:02d}/{day_pattern.season_to[0]:02d}"
             )
-        for window in day_set.sorted_windows():
-            rate = plan.rate_by_name(window.rate)
+        for period in day_pattern.sorted_periods():
+            rate = plan.rate_by_name(period.rate)
             if rate is None:
                 lines.append(
-                    f"  {format_time(window.start)}-{format_time(window.end)}"
-                    f"  {window.rate}  (rate missing)"
+                    f"  {format_time(period.start)}-{format_time(period.end)}"
+                    f"  {period.rate}  (rate missing)"
                 )
                 continue
             lines.append(
-                f"  {format_time(window.start)}-{format_time(window.end)}"
+                f"  {format_time(period.start)}-{format_time(period.end)}"
                 f"  {rate.name:<12}"
                 f"  buy {rate.import_price:.4f}/kWh"
                 f"  sell {rate.export_price:.4f}/kWh"

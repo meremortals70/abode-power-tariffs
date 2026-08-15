@@ -77,21 +77,21 @@ class _PriceSensor(TariffEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the window, the rules in force, and the forward series."""
+        """Return the period, the rules in force, and the forward series."""
         state = self.coordinator.state
         resolution = state.resolution
         rate = state.effective_rate
 
         attributes: dict[str, Any] = {
             "rate": rate.name if rate else None,
-            "day_set": resolution.day_set.name if resolution else None,
+            "day_pattern": resolution.day_pattern.name if resolution else None,
             "season": (
-                resolution.day_set.name
-                if resolution and resolution.day_set.is_seasonal
+                resolution.day_pattern.name
+                if resolution and resolution.day_pattern.is_seasonal
                 else None
             ),
-            "window_start": format_time(resolution.window.start) if resolution else None,
-            "window_end": format_time(resolution.window.end) if resolution else None,
+            "period_start": format_time(resolution.period.start) if resolution else None,
+            "period_end": format_time(resolution.period.end) if resolution else None,
             "constraints": sorted(rate.constraints) if rate else [],
             "coasting_permitted": rate.coasting_permitted if rate else None,
             "allowance_exhausted": state.allowance_exhausted,
@@ -194,7 +194,7 @@ class SupplyChargeSensor(TariffEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
-        """The supply charge does not depend on a window resolving."""
+        """The supply charge does not depend on a period resolving."""
         return True
 
 
@@ -267,7 +267,7 @@ class SupplyChargeCostSensor(TariffEntity, RestoreSensor):
 
     @property
     def available(self) -> bool:
-        """Does not depend on a window resolving."""
+        """Does not depend on a period resolving."""
         return True
 
 
@@ -300,5 +300,5 @@ class SupplyChargeEnergySensor(TariffEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
-        """Does not depend on a window resolving."""
+        """Does not depend on a period resolving."""
         return True

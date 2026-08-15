@@ -1,6 +1,6 @@
 """Daily energy allowance accounting. Pure module.
 
-Some plans give a window free or discounted only up to a daily cap — three free
+Some plans give a period free or discounted only up to a daily cap — three free
 hours capped at 24 kWh, for instance. Past the cap, consumption is priced at a
 nominated fallback rate.
 """

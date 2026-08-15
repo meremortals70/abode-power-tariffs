@@ -1,6 +1,6 @@
 """Rendering the plan as text, for diagnostics. Pure module.
 
-Output only. There is no text import: with rates defined once, a window is
+Output only. There is no text import: with rates defined once, a period is
 three fields, and a paste format would be a second way to enter the same thing
 with every rate name an unvalidated string.
 """
@@ -13,7 +13,7 @@ import io
 from .const import ALL_DAY_TOKENS
 from .plan import Plan, format_time
 
-WINDOW_HEADER = ("day_set", "days", "season_from", "season_to", "start", "end", "rate")
+PERIOD_HEADER = ("day_pattern", "days", "season_from", "season_to", "start", "end", "rate")
 RATE_HEADER = (
     "rate",
     "import_c_per_kwh",
@@ -25,33 +25,33 @@ RATE_HEADER = (
 )
 
 
-def windows_to_csv(plan: Plan) -> str:
-    """Render every window in the plan as CSV."""
+def periods_to_csv(plan: Plan) -> str:
+    """Render every period in the plan as CSV."""
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(WINDOW_HEADER)
-    for day_set in plan.day_sets:
-        days = " ".join(token for token in ALL_DAY_TOKENS if token in day_set.days)
+    writer.writerow(PERIOD_HEADER)
+    for day_pattern in plan.day_patterns:
+        days = " ".join(token for token in ALL_DAY_TOKENS if token in day_pattern.days)
         season_from = (
-            f"{day_set.season_from[0]:02d}-{day_set.season_from[1]:02d}"
-            if day_set.season_from
+            f"{day_pattern.season_from[0]:02d}-{day_pattern.season_from[1]:02d}"
+            if day_pattern.season_from
             else ""
         )
         season_to = (
-            f"{day_set.season_to[0]:02d}-{day_set.season_to[1]:02d}"
-            if day_set.season_to
+            f"{day_pattern.season_to[0]:02d}-{day_pattern.season_to[1]:02d}"
+            if day_pattern.season_to
             else ""
         )
-        for window in day_set.sorted_windows():
+        for period in day_pattern.sorted_periods():
             writer.writerow(
                 [
-                    day_set.name,
+                    day_pattern.name,
                     days,
                     season_from,
                     season_to,
-                    format_time(window.start),
-                    format_time(window.end),
-                    window.rate,
+                    format_time(period.start),
+                    format_time(period.end),
+                    period.rate,
                 ]
             )
     return buffer.getvalue()

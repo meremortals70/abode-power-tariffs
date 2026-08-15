@@ -52,15 +52,15 @@ class ConstraintBinarySensor(TariffEntity, BinarySensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the window this constraint is currently attached to."""
+        """Return the period this constraint is currently attached to."""
         resolution = self.coordinator.state.resolution
         if resolution is None or not self.is_on:
             return {"constraint": self._constraint}
         return {
             "constraint": self._constraint,
             "rate": resolution.rate.name,
-            "window_start": format_time(resolution.window.start),
-            "window_end": format_time(resolution.window.end),
+            "period_start": format_time(resolution.period.start),
+            "period_end": format_time(resolution.period.end),
         }
 
 

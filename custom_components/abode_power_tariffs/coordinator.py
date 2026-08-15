@@ -1,6 +1,6 @@
 """Runtime state for one tariff channel.
 
-There is no polling. The next window boundary is computed and scheduled; on
+There is no polling. The next period boundary is computed and scheduled; on
 firing, entities update and the following boundary is scheduled. A separate
 midnight trigger resets the daily allowance and the supply-charge accumulator.
 """
@@ -162,9 +162,9 @@ class TariffCoordinator:
 
         if resolution is None:
             self.state.effective_rate = None
-            trace.append("no window resolves at this moment")
+            trace.append("no period resolves at this moment")
         else:
-            trace.append(f"day set {resolution.day_set.name}")
+            trace.append(f"day set {resolution.day_pattern.name}")
             allowance_state = allowance_module.apply(
                 self.plan, resolution.rate, self.state.allowance_used_kwh
             )

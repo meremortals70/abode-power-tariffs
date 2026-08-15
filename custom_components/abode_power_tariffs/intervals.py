@@ -1,6 +1,6 @@
 """Forward interval generation and boundary calculation. Pure module.
 
-Windows are wall-clock times: a peak window is 16:00 local on both sides of a
+Periods are wall-clock times: a peak period is 16:00 local on both sides of a
 daylight-saving transition. Intervals are real instants, so a 23-hour day is
 short by an hour and a 25-hour day repeats one. Both are emitted without gaps,
 overlaps or duplicates because the walk is done in UTC and each instant is
@@ -32,7 +32,7 @@ class Interval:
     constraints: tuple[str, ...]
     coasting_permitted: bool
     allowance_kwh: float | None
-    day_set: str
+    day_pattern: str
 
     @property
     def duration_minutes(self) -> int:
@@ -51,7 +51,7 @@ class Interval:
             "constraints": list(self.constraints),
             "coasting_permitted": self.coasting_permitted,
             "allowance_kwh": self.allowance_kwh,
-            "day_set": self.day_set,
+            "day_pattern": self.day_pattern,
             "forecast": False,
         }
 
@@ -89,7 +89,7 @@ def next_boundary(
     *,
     max_days: int = 3,
 ) -> datetime | None:
-    """Return the next instant at which the resolved window changes.
+    """Return the next instant at which the resolved period changes.
 
     Walks forward over the wall-clock boundaries of today and the following
     days, converting each to an instant. A boundary that does not exist on a
@@ -165,7 +165,7 @@ def generate(  # noqa: PLR0913 - every argument is required to resolve a plan
                     constraints=tuple(sorted(resolution.rate.constraints)),
                     coasting_permitted=resolution.rate.coasting_permitted,
                     allowance_kwh=resolution.rate.daily_allowance_kwh,
-                    day_set=resolution.day_set.name,
+                    day_pattern=resolution.day_pattern.name,
                 )
             )
         cursor = nxt

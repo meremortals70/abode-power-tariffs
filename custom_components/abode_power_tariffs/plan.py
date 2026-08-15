@@ -1,4 +1,4 @@
-"""The tariff plan: rates, day sets, windows, and resolution.
+"""The tariff plan: rates, day sets, periods, and resolution.
 
 Pure module. Imports nothing from Home Assistant.
 
@@ -18,9 +18,9 @@ from .const import (
     CONF_COMPONENTS,
     CONF_CONSTRAINTS,
     CONF_DAILY_ALLOWANCE_KWH,
-    CONF_DAY_SETS,
+    CONF_DAY_PATTERNS,
     CONF_DAYS,
-    CONF_DEMAND_WINDOW,
+    CONF_DEMAND_PERIOD,
     CONF_END,
     CONF_EXPORT_ALLOWANCE_KWH,
     CONF_EXPORT_CENTS,
@@ -28,6 +28,7 @@ from .const import (
     CONF_GST_PERCENT,
     CONF_IMPORT_CENTS,
     CONF_NAME,
+    CONF_PERIODS,
     CONF_PRICES_INCLUDE_GST,
     CONF_RATE,
     CONF_RATES,
@@ -37,7 +38,6 @@ from .const import (
     CONF_SUPPLY_CHARGE_CENTS,
     CONF_VALID_FROM,
     CONF_VALID_TO,
-    CONF_WINDOWS,
     DAY_HOLIDAY,
     MINUTES_PER_DAY,
     WEEKDAY_TOKENS,
@@ -107,7 +107,7 @@ class Rate:
     daily_allowance_kwh: float | None = None
     export_allowance_kwh: float | None = None
     fallback_rate: str | None = None
-    demand_window: bool = False
+    demand_period: bool = False
     components: tuple[tuple[str, float], ...] = ()
 
     @property
@@ -126,7 +126,7 @@ class Rate:
             CONF_DAILY_ALLOWANCE_KWH: self.daily_allowance_kwh,
             CONF_EXPORT_ALLOWANCE_KWH: self.export_allowance_kwh,
             CONF_FALLBACK_RATE: self.fallback_rate,
-            CONF_DEMAND_WINDOW: self.demand_window,
+            CONF_DEMAND_PERIOD: self.demand_period,
             CONF_COMPONENTS: dict(self.components),
         }
 
@@ -148,7 +148,7 @@ class Rate:
             daily_allowance_kwh=_optional_float(raw.get(CONF_DAILY_ALLOWANCE_KWH)),
             export_allowance_kwh=_optional_float(raw.get(CONF_EXPORT_ALLOWANCE_KWH)),
             fallback_rate=(str(raw[CONF_FALLBACK_RATE]) if raw.get(CONF_FALLBACK_RATE) else None),
-            demand_window=bool(raw.get(CONF_DEMAND_WINDOW, False)),
+            demand_period=bool(raw.get(CONF_DEMAND_PERIOD, False)),
             components=tuple(
                 (str(key), float(value)) for key, value in sorted(components.items())
             ),
@@ -168,19 +168,19 @@ def _optional_float(value: Any) -> float | None:
 
 
 @dataclass(frozen=True, slots=True)
-class Window:
-    """One time window within a day set, naming a rate."""
+class Period:
+    """One time period within a day set, naming a rate."""
 
     start: int
     end: int
     rate: str
 
     def contains(self, minutes: int) -> bool:
-        """Return whether a minute of the day falls inside this window."""
+        """Return whether a minute of the day falls inside this period."""
         return self.start <= minutes < self.end
 
     def as_dict(self) -> dict[str, Any]:
-        """Return the window as a plain dictionary."""
+        """Return the period as a plain dictionary."""
         return {
             CONF_START: format_time(self.start),
             CONF_END: format_time(self.end),
@@ -188,11 +188,11 @@ class Window:
         }
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> Window:
-        """Build a window from stored configuration."""
+    def from_dict(cls, raw: dict[str, Any]) -> Period:
+        """Build a period from stored configuration."""
         rate = str(raw.get(CONF_RATE, "")).strip()
         if not rate:
-            raise PlanError("A window must name a rate")
+            raise PlanError("A period must name a rate")
         return cls(
             start=parse_time(str(raw.get(CONF_START, ""))),
             end=parse_time(str(raw.get(CONF_END, ""))),
@@ -201,12 +201,12 @@ class Window:
 
 
 @dataclass(frozen=True, slots=True)
-class DaySet:
-    """A set of day types, optionally limited to a season, and its windows."""
+class DayPattern:
+    """A set of day types, optionally limited to a season, and its periods."""
 
     name: str
     days: frozenset[str]
-    windows: tuple[Window, ...] = ()
+    periods: tuple[Period, ...] = ()
     season_from: tuple[int, int] | None = None
     season_to: tuple[int, int] | None = None
 
@@ -233,16 +233,16 @@ class DaySet:
         """Return whether this day set applies to a day type on a date."""
         return token in self.days and self.covers_date(day)
 
-    def window_at(self, minutes: int) -> Window | None:
-        """Return the window containing a minute of the day, if any."""
-        for window in self.windows:
-            if window.contains(minutes):
-                return window
+    def period_at(self, minutes: int) -> Period | None:
+        """Return the period containing a minute of the day, if any."""
+        for period in self.periods:
+            if period.contains(minutes):
+                return period
         return None
 
-    def sorted_windows(self) -> tuple[Window, ...]:
-        """Return the windows in start order."""
-        return tuple(sorted(self.windows, key=lambda window: window.start))
+    def sorted_periods(self) -> tuple[Period, ...]:
+        """Return the periods in start order."""
+        return tuple(sorted(self.periods, key=lambda period: period.start))
 
     def as_dict(self) -> dict[str, Any]:
         """Return the day set as a plain dictionary."""
@@ -251,11 +251,11 @@ class DaySet:
             CONF_DAYS: [token for token in ALL_DAY_TOKENS if token in self.days],
             CONF_SEASON_FROM: (format_month_day(self.season_from) if self.season_from else None),
             CONF_SEASON_TO: (format_month_day(self.season_to) if self.season_to else None),
-            CONF_WINDOWS: [window.as_dict() for window in self.sorted_windows()],
+            CONF_PERIODS: [period.as_dict() for period in self.sorted_periods()],
         }
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> DaySet:
+    def from_dict(cls, raw: dict[str, Any]) -> DayPattern:
         """Build a day set from stored configuration."""
         name = str(raw.get(CONF_NAME, "")).strip()
         if not name:
@@ -269,7 +269,7 @@ class DaySet:
         return cls(
             name=name,
             days=days,
-            windows=tuple(Window.from_dict(item) for item in raw.get(CONF_WINDOWS) or ()),
+            periods=tuple(Period.from_dict(item) for item in raw.get(CONF_PERIODS) or ()),
             season_from=parse_month_day(str(season_from)) if season_from else None,
             season_to=parse_month_day(str(season_to)) if season_to else None,
         )
@@ -279,8 +279,8 @@ class DaySet:
 class Resolution:
     """The plan resolved at one instant."""
 
-    day_set: DaySet
-    window: Window
+    day_pattern: DayPattern
+    period: Period
     rate: Rate
 
 
@@ -290,7 +290,7 @@ class Plan:
 
     name: str
     rates: tuple[Rate, ...] = ()
-    day_sets: tuple[DaySet, ...] = ()
+    day_patterns: tuple[DayPattern, ...] = ()
     daily_supply_charge: float = 0.0
     prices_include_gst: bool = True
     gst_percent: float = 0.0
@@ -318,23 +318,23 @@ class Plan:
         return tuple(sorted(found))
 
     @property
-    def day_set_names(self) -> tuple[str, ...]:
+    def day_pattern_names(self) -> tuple[str, ...]:
         """Return every day set name, in configured order."""
-        return tuple(day_set.name for day_set in self.day_sets)
+        return tuple(day_pattern.name for day_pattern in self.day_patterns)
 
-    def day_set_for(self, day: date, is_holiday: bool) -> DaySet | None:
+    def day_pattern_for(self, day: date, is_holiday: bool) -> DayPattern | None:
         """Return the day set that applies on a date, or None."""
         token = day_token(day, is_holiday)
-        seasonal: DaySet | None = None
-        general: DaySet | None = None
-        for day_set in self.day_sets:
-            if not day_set.matches(token, day):
+        seasonal: DayPattern | None = None
+        general: DayPattern | None = None
+        for day_pattern in self.day_patterns:
+            if not day_pattern.matches(token, day):
                 continue
-            if day_set.is_seasonal:
+            if day_pattern.is_seasonal:
                 if seasonal is None:
-                    seasonal = day_set
+                    seasonal = day_pattern
             elif general is None:
-                general = day_set
+                general = day_pattern
         # A seasonal day set is more specific than a year-round one.
         return seasonal or general
 
@@ -346,26 +346,26 @@ class Plan:
 
     def resolve(self, day: date, minutes: int, is_holiday: bool) -> Resolution | None:
         """Resolve the plan at a local date and minute of the day."""
-        day_set = self.day_set_for(day, is_holiday)
-        if day_set is None:
+        day_pattern = self.day_pattern_for(day, is_holiday)
+        if day_pattern is None:
             return None
-        window = day_set.window_at(minutes)
-        if window is None:
+        period = day_pattern.period_at(minutes)
+        if period is None:
             return None
-        rate = self.rate_by_name(window.rate)
+        rate = self.rate_by_name(period.rate)
         if rate is None:
             return None
-        return Resolution(day_set=day_set, window=window, rate=rate)
+        return Resolution(day_pattern=day_pattern, period=period, rate=rate)
 
     def boundaries_for(self, day: date, is_holiday: bool) -> tuple[int, ...]:
-        """Return the window boundaries in force on a date, in minutes."""
-        day_set = self.day_set_for(day, is_holiday)
-        if day_set is None:
+        """Return the period boundaries in force on a date, in minutes."""
+        day_pattern = self.day_pattern_for(day, is_holiday)
+        if day_pattern is None:
             return ()
         edges = {0, MINUTES_PER_DAY}
-        for window in day_set.windows:
-            edges.add(window.start)
-            edges.add(window.end)
+        for period in day_pattern.periods:
+            edges.add(period.start)
+            edges.add(period.end)
         return tuple(sorted(edges))
 
     def as_dict(self) -> dict[str, Any]:
@@ -373,7 +373,7 @@ class Plan:
         return {
             CONF_NAME: self.name,
             CONF_RATES: [rate.as_dict() for rate in self.rates],
-            CONF_DAY_SETS: [day_set.as_dict() for day_set in self.day_sets],
+            CONF_DAY_PATTERNS: [day_pattern.as_dict() for day_pattern in self.day_patterns],
             CONF_SUPPLY_CHARGE_CENTS: round(self.daily_supply_charge * 100, 4),
             CONF_PRICES_INCLUDE_GST: self.prices_include_gst,
             CONF_GST_PERCENT: self.gst_percent,
@@ -387,7 +387,10 @@ class Plan:
         return cls(
             name=str(raw.get(CONF_NAME, "Tariff")),
             rates=tuple(Rate.from_dict(item) for item in raw.get(CONF_RATES) or ()),
-            day_sets=tuple(DaySet.from_dict(item) for item in raw.get(CONF_DAY_SETS) or ()),
+            day_patterns=tuple(
+                DayPattern.from_dict(item)
+                for item in raw.get(CONF_DAY_PATTERNS) or ()
+            ),
             daily_supply_charge=_cents_to_dollars(raw.get(CONF_SUPPLY_CHARGE_CENTS)),
             prices_include_gst=bool(raw.get(CONF_PRICES_INCLUDE_GST, True)),
             gst_percent=float(raw.get(CONF_GST_PERCENT) or 0.0),

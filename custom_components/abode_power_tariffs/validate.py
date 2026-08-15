@@ -2,7 +2,7 @@
 
 A plan that fails any of these cannot be saved. Every problem names the day set
 and the hours involved, because "invalid configuration" is not a useful message
-when six windows are on screen.
+when six periods are on screen.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from .const import ALL_DAY_TOKENS, MINUTES_PER_DAY
-from .plan import DaySet, Plan, format_time
+from .plan import DayPattern, Plan, format_time
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,46 +26,46 @@ class Problem:
         return f"{self.scope}: {self.message}" if self.scope else self.message
 
 
-def validate_windows(day_set: DaySet) -> list[Problem]:
-    """Check that a day set's windows tile the day exactly once."""
+def validate_periods(day_pattern: DayPattern) -> list[Problem]:
+    """Check that a day set's periods tile the day exactly once."""
     problems: list[Problem] = []
-    windows = day_set.sorted_windows()
+    periods = day_pattern.sorted_periods()
 
-    if not windows:
-        return [Problem(day_set.name, "has no windows")]
+    if not periods:
+        return [Problem(day_pattern.name, "has no periods")]
 
-    for window in windows:
-        if window.end <= window.start:
+    for period in periods:
+        if period.end <= period.start:
             problems.append(
                 Problem(
-                    day_set.name,
-                    f"{format_time(window.start)}-{format_time(window.end)} ends "
+                    day_pattern.name,
+                    f"{format_time(period.start)}-{format_time(period.end)} ends "
                     "before it starts",
                 )
             )
 
     cursor = 0
-    for window in windows:
-        if window.start > cursor:
+    for period in periods:
+        if period.start > cursor:
             problems.append(
                 Problem(
-                    day_set.name,
-                    f"nothing covers {format_time(cursor)}-{format_time(window.start)}",
+                    day_pattern.name,
+                    f"nothing covers {format_time(cursor)}-{format_time(period.start)}",
                 )
             )
-        elif window.start < cursor:
+        elif period.start < cursor:
             problems.append(
                 Problem(
-                    day_set.name,
-                    f"{format_time(window.start)}-{format_time(window.end)} overlaps "
-                    f"the window ending {format_time(cursor)}",
+                    day_pattern.name,
+                    f"{format_time(period.start)}-{format_time(period.end)} overlaps "
+                    f"the period ending {format_time(cursor)}",
                 )
             )
-        cursor = max(cursor, window.end)
+        cursor = max(cursor, period.end)
 
     if cursor < MINUTES_PER_DAY:
         problems.append(
-            Problem(day_set.name, f"nothing covers {format_time(cursor)}-24:00")
+            Problem(day_pattern.name, f"nothing covers {format_time(cursor)}-24:00")
         )
 
     return problems
@@ -81,9 +81,9 @@ def validate_day_coverage(plan: Plan) -> list[Problem]:
     for token in ALL_DAY_TOKENS:
         for probe in probes:
             matches = [
-                day_set.name
-                for day_set in plan.day_sets
-                if day_set.matches(token, probe)
+                day_pattern.name
+                for day_pattern in plan.day_patterns
+                if day_pattern.matches(token, probe)
             ]
             seasonal = [
                 name
@@ -115,10 +115,10 @@ def validate_day_coverage(plan: Plan) -> list[Problem]:
     return problems
 
 
-def _named(plan: Plan, name: str) -> DaySet | None:
-    for day_set in plan.day_sets:
-        if day_set.name == name:
-            return day_set
+def _named(plan: Plan, name: str) -> DayPattern | None:
+    for day_pattern in plan.day_patterns:
+        if day_pattern.name == name:
+            return day_pattern
     return None
 
 
@@ -126,8 +126,8 @@ def _season_probe_dates(plan: Plan) -> list[date]:
     """Return one date inside each declared season plus the four quarters."""
     year = 2001  # A non-leap year, so 02-29 never appears as a probe.
     probes = {date(year, month, 15) for month in (1, 4, 7, 10)}
-    for day_set in plan.day_sets:
-        for edge in (day_set.season_from, day_set.season_to):
+    for day_pattern in plan.day_patterns:
+        for edge in (day_pattern.season_from, day_pattern.season_to):
             if edge is not None:
                 month, day = edge
                 probes.add(date(year, month, min(day, 28)))
@@ -170,14 +170,14 @@ def validate_rates(plan: Plan) -> list[Problem]:
                         )
                     )
 
-    for day_set in plan.day_sets:
-        for window in day_set.windows:
-            if window.rate not in names:
+    for day_pattern in plan.day_patterns:
+        for period in day_pattern.periods:
+            if period.rate not in names:
                 problems.append(
                     Problem(
-                        day_set.name,
-                        f"{format_time(window.start)}-{format_time(window.end)} names "
-                        f"a rate '{window.rate}' that does not exist",
+                        day_pattern.name,
+                        f"{format_time(period.start)}-{format_time(period.end)} names "
+                        f"a rate '{period.rate}' that does not exist",
                     )
                 )
 
@@ -188,12 +188,12 @@ def validate_plan(plan: Plan) -> list[Problem]:
     """Run every check and return all problems found."""
     problems: list[Problem] = []
 
-    if not plan.day_sets:
+    if not plan.day_patterns:
         problems.append(Problem("", "the plan has no day sets"))
 
     problems.extend(validate_rates(plan))
-    for day_set in plan.day_sets:
-        problems.extend(validate_windows(day_set))
+    for day_pattern in plan.day_patterns:
+        problems.extend(validate_periods(day_pattern))
     problems.extend(validate_day_coverage(plan))
 
     if (
