@@ -1,0 +1,6 @@
+{
+  "name": "Abode Power Tariffs",
+  "country": ["AU", "NZ", "GB", "IE", "US", "CA", "NL", "DE", "SE", "NO", "DK", "FI", "ES", "FR", "IT", "BE", "AT", "CH", "PL", "PT"],
+  "homeassistant": "2025.2.0",
+  "render_readme": true
+}

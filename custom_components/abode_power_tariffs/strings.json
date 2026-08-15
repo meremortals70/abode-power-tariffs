@@ -1,0 +1,258 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Abode Power Tariffs",
+        "description": "One entry per metering channel — general consumption, controlled load, and so on. A working plan is created for you: one rate at 30 c/kWh covering the whole day. Change it under Configure.",
+        "data": {
+          "plan_name": "Channel name"
+        },
+        "data_description": {
+          "plan_name": "Shown on the device and used as the entity prefix."
+        }
+      }
+    },
+    "error": {
+      "name_required": "A name is needed."
+    },
+    "abort": {
+      "already_configured": "A channel with that name already exists."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tariff plan",
+        "description": "```\n{plan}\n```",
+        "menu_options": {
+          "rates_menu": "Rates",
+          "day_sets_menu": "Day sets",
+          "windows_pick_day_set": "Windows",
+          "general": "Supply charge, tax, validity and sensors",
+          "meters": "Utility meters",
+          "rate_plan_card": "Rate plan card",
+          "save": "Save and finish"
+        }
+      },
+      "rates_menu": {
+        "title": "Rates",
+        "description": "A rate is defined once and pointed at by any number of windows.\n\n```\n{rates}\n```",
+        "menu_options": {
+          "rate_add": "Add a rate",
+          "rate_pick": "Edit a rate",
+          "rate_remove": "Remove a rate",
+          "init": "Back"
+        }
+      },
+      "rate_pick": {
+        "title": "Edit a rate",
+        "data": { "name": "Rate" }
+      },
+      "rate_add": {
+        "title": "Rate",
+        "description": "Prices are entered in cents per kWh, as bills quote them, and published in dollars per kWh, as the Energy dashboard wants them.",
+        "data": {
+          "name": "Name",
+          "import_cents": "Import price (c/kWh)",
+          "export_cents": "Export price (c/kWh)",
+          "constraints": "Constraints",
+          "coasting_permitted": "Coasting permitted",
+          "demand_window": "Demand charge window",
+          "daily_allowance_kwh": "Daily energy allowance (kWh)",
+          "export_allowance_kwh": "Daily export allowance (kWh)",
+          "fallback_rate": "Rate beyond the allowance"
+        },
+        "data_description": {
+          "constraints": "Comma separated. Each one becomes a binary sensor that automations can trigger on, for example grid_charge_battery or no_grid_import.",
+          "daily_allowance_kwh": "Leave empty for none. Some plans give a window free only up to a daily cap.",
+          "fallback_rate": "Required when there is an allowance: what the energy costs once it is spent."
+        }
+      },
+      "rate_remove": {
+        "title": "Remove a rate",
+        "data": { "name": "Rate" }
+      },
+      "day_sets_menu": {
+        "title": "Day sets",
+        "description": "```\n{plan}\n```",
+        "menu_options": {
+          "day_set_add": "Add a day set",
+          "day_set_pick": "Edit a day set",
+          "day_set_duplicate": "Duplicate a day set",
+          "day_set_remove": "Remove a day set",
+          "init": "Back"
+        }
+      },
+      "day_set_pick": {
+        "title": "Edit a day set",
+        "data": { "name": "Day set" }
+      },
+      "day_set_add": {
+        "title": "Day set",
+        "description": "```\n{plan}\n```",
+        "data": {
+          "name": "Name",
+          "same_every_day": "Same every day",
+          "days": "Days this applies to",
+          "season_from": "Season starts (MM-DD)",
+          "season_to": "Season ends (MM-DD)"
+        },
+        "data_description": {
+          "same_every_day": "Leave this on unless weekends, weekdays or public holidays are priced differently.",
+          "days": "Ignored while 'Same every day' is on. Public holidays need a holiday sensor nominated under the general settings.",
+          "season_from": "Optional. Leave both empty for all year. A range may wrap the new year, for example 11-01 to 03-31."
+        }
+      },
+      "day_set_duplicate": {
+        "title": "Duplicate a day set",
+        "description": "Copies the windows so a weekend or a season can be built from a shape that already works.",
+        "data": {
+          "source": "Copy from",
+          "name": "New name"
+        }
+      },
+      "day_set_remove": {
+        "title": "Remove a day set",
+        "data": { "name": "Day set" }
+      },
+      "windows_pick_day_set": {
+        "title": "Windows",
+        "description": "```\n{plan}\n```",
+        "data": { "name": "Day set" }
+      },
+      "windows_menu": {
+        "title": "Windows — {day_set}",
+        "description": "```\n{plan}\n```",
+        "menu_options": {
+          "window_add": "Add a window",
+          "window_pick": "Edit a window",
+          "window_remove": "Remove a window",
+          "init": "Back"
+        }
+      },
+      "window_pick": {
+        "title": "Edit a window",
+        "description": "```\n{plan}\n```",
+        "data": { "window": "Window" }
+      },
+      "window_add": {
+        "title": "Window — {day_set}",
+        "description": "Start is included, end is not. A window that runs to midnight ends at 00:00.\n\n```\n{plan}\n```",
+        "data": {
+          "start": "Start",
+          "end": "End",
+          "rate": "Rate"
+        }
+      },
+      "window_remove": {
+        "title": "Remove a window",
+        "description": "```\n{plan}\n```",
+        "data": { "window": "Window" }
+      },
+      "general": {
+        "title": "General",
+        "data": {
+          "daily_supply_charge_cents": "Daily supply charge (c/day)",
+          "prices_include_gst": "Prices include tax",
+          "gst_percent": "Tax rate (%)",
+          "valid_from": "Plan valid from",
+          "valid_to": "Plan valid to",
+          "holiday_sensor": "Public holiday sensor",
+          "import_energy_sensor": "Import energy sensor"
+        },
+        "data_description": {
+          "valid_to": "When the retailer reprices, set this and create a new channel for the new plan, so past costs stay correct.",
+          "holiday_sensor": "A workday binary sensor. Off on a public holiday.",
+          "import_energy_sensor": "Only needed to count a daily energy allowance."
+        }
+      },
+      "meters": {
+        "title": "Utility meters",
+        "description": "Nominate utility meter tariff selects and they will be set to the rate in force at each window boundary, replacing the automation that usually does it. Nothing else is ever written.\n\nThe tariff names on the meter must match these rate names: {rates}",
+        "data": {
+          "tariff_selects": "Tariff selects to drive",
+          "supply_charge_entities": "Create the supply charge pair"
+        },
+        "data_description": {
+          "supply_charge_entities": "The Energy dashboard has no field for a fixed daily charge. This creates a cost sensor and a matching token energy sensor to add as a second grid consumption source."
+        }
+      },
+      "rate_plan_card": {
+        "title": "Rate plan card",
+        "description": "For transcribing into an inverter's own tariff screen. Nothing is sent anywhere.\n\n```\n{card}\n```"
+      }
+    },
+    "error": {
+      "name_required": "A name is needed.",
+      "rate_exists": "A rate with that name already exists.",
+      "rate_in_use": "That rate is used by a window. Change the window first.",
+      "days_required": "Choose at least one day.",
+      "end_before_start": "The end must be after the start.",
+      "bad_time": "That is not a valid time.",
+      "validity_backwards": "The plan cannot end before it starts."
+    }
+  },
+  "selector": {
+    "day_tokens": {
+      "options": {
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday",
+        "sun": "Sunday",
+        "holiday": "Public holidays"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "import_price": { "name": "Import price" },
+      "export_price": { "name": "Export price" },
+      "rate": { "name": "Rate" },
+      "next_rate_change": { "name": "Next rate change" },
+      "daily_supply_charge": { "name": "Daily supply charge" },
+      "allowance_remaining": { "name": "Allowance remaining" },
+      "supply_charge_today": { "name": "Supply charge today" },
+      "supply_charge_energy": { "name": "Supply charge energy" }
+    }
+  },
+  "services": {
+    "get_intervals": {
+      "name": "Get intervals",
+      "description": "Returns the forward series of priced intervals with the constraints in force.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Channel",
+          "description": "Which tariff channel to read."
+        },
+        "hours": {
+          "name": "Hours",
+          "description": "How far ahead to project."
+        },
+        "resolution_minutes": {
+          "name": "Resolution",
+          "description": "Length of each interval in minutes."
+        }
+      }
+    }
+  },
+  "issues": {
+    "invalid_plan": {
+      "title": "The tariff plan for {title} is not valid",
+      "description": "The plan was loaded but does not pass validation, so prices may be missing for part of the day. Open Configure and correct the following:\n\n{problems}"
+    }
+  },
+  "exceptions": {
+    "entry_not_found": {
+      "message": "No tariff channel with the id {entry_id}."
+    },
+    "entry_not_loaded": {
+      "message": "The tariff channel {title} is not loaded, so its intervals cannot be read."
+    },
+    "plan_unreadable": {
+      "message": "The stored tariff plan could not be read: {error}"
+    }
+  }
+}
