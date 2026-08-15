@@ -134,6 +134,54 @@ def _season_probe_dates(plan: Plan) -> list[date]:
     return sorted(probes)
 
 
+def validate_export(plan: Plan) -> list[Problem]:
+    """Check the export side when it is not a single all-day price."""
+    if plan.export_same_all_day:
+        return []
+
+    problems: list[Problem] = []
+    names = set(plan.export_rate_names)
+    if not plan.export_rates:
+        problems.append(Problem("export", "no export rates have been entered"))
+
+    for pattern in plan.day_patterns:
+        periods = pattern.sorted_export_periods()
+        if not periods:
+            problems.append(Problem(f"{pattern.name} export", "has no time periods"))
+            continue
+        cursor = 0
+        for period in periods:
+            if period.rate not in names:
+                problems.append(
+                    Problem(
+                        f"{pattern.name} export",
+                        f"{format_time(period.start)}-{format_time(period.end)} names "
+                        f"an export rate '{period.rate}' that does not exist",
+                    )
+                )
+            if period.start > cursor:
+                problems.append(
+                    Problem(
+                        f"{pattern.name} export",
+                        f"nothing covers {format_time(cursor)}-{format_time(period.start)}",
+                    )
+                )
+            elif period.start < cursor:
+                problems.append(
+                    Problem(
+                        f"{pattern.name} export",
+                        f"{format_time(period.start)}-{format_time(period.end)} overlaps "
+                        f"the period ending {format_time(cursor)}",
+                    )
+                )
+            cursor = max(cursor, period.end)
+        if cursor < MINUTES_PER_DAY:
+            problems.append(
+                Problem(f"{pattern.name} export", f"nothing covers {format_time(cursor)}-24:00")
+            )
+    return problems
+
+
 def validate_rates(plan: Plan) -> list[Problem]:
     """Check rate references and allowance fallbacks."""
     problems: list[Problem] = []
@@ -195,6 +243,7 @@ def validate_plan(plan: Plan) -> list[Problem]:
     for day_pattern in plan.day_patterns:
         problems.extend(validate_periods(day_pattern))
     problems.extend(validate_day_coverage(plan))
+    problems.extend(validate_export(plan))
 
     if (
         plan.valid_from is not None

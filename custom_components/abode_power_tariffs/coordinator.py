@@ -292,6 +292,12 @@ class TariffCoordinator:
 
     # ------------------------------------------------------------------ views
 
+    def export_price_now(self) -> float:
+        """Return the feed-in price in force, in dollars per kWh."""
+        now = dt_util.now()
+        return self.plan.export_price_at(now.date(), now.hour * 60 + now.minute,
+                                         self.is_holiday(now.date()))
+
     def forward_intervals(
         self, hours: int, resolution_minutes: int
     ) -> list[intervals_module.Interval]:

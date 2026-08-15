@@ -131,8 +131,12 @@ class ExportPriceSensor(_PriceSensor):
     @property
     def native_value(self) -> float | None:
         """Return dollars per kWh."""
-        rate = self.coordinator.state.effective_rate
-        return None if rate is None else round(rate.export_price, 6)
+        return round(self.coordinator.export_price_now(), 6)
+
+    @property
+    def available(self) -> bool:
+        """A flat export price does not depend on an import period resolving."""
+        return True
 
 
 class RateSensor(TariffEntity, SensorEntity):

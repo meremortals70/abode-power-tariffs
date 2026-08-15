@@ -103,6 +103,29 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Move an older entry forward. A version bump never costs the user a re-entry."""
+    if entry.version > 2:
+        # Downgrade. Nothing sensible to do; refuse rather than corrupt.
+        return False
+
+    if entry.version == 1:
+        options = dict(entry.options)
+        # 0.1.x named these differently.
+        patterns = options.pop("day_sets", [])
+        for pattern in patterns:
+            pattern["periods"] = pattern.pop("windows", [])
+        options["day_patterns"] = patterns
+        for rate in options.get("rates", []):
+            if "demand_window" in rate:
+                rate["demand_period"] = rate.pop("demand_window")
+        options.setdefault("plan_description", "")
+        hass.config_entries.async_update_entry(entry, options=options, version=2)
+        _LOGGER.info("Migrated %s to version 2", entry.title)
+
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: TariffConfigEntry) -> bool:
     """Set up one tariff channel."""
     options = dict(entry.options)

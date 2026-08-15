@@ -161,7 +161,10 @@ def generate(  # noqa: PLR0913 - every argument is required to resolve a plan
                     end=nxt,
                     rate=resolution.rate.name,
                     import_price=resolution.rate.import_price,
-                    export_price=resolution.rate.export_price,
+                    export_price=plan.export_price_at(
+                        *local_minutes(cursor, zone),
+                        is_holiday(local_minutes(cursor, zone)[0]),
+                    ),
                     constraints=tuple(sorted(resolution.rate.constraints)),
                     coasting_permitted=resolution.rate.coasting_permitted,
                     allowance_kwh=resolution.rate.daily_allowance_kwh,

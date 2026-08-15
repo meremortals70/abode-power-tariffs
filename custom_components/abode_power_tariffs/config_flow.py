@@ -38,9 +38,14 @@ from .const import (
     CONF_DAY_PATTERNS,
     CONF_DAYS,
     CONF_DEMAND_PERIOD,
+    CONF_DEMAND_RATE,
     CONF_END,
     CONF_EXPORT_ALLOWANCE_KWH,
     CONF_EXPORT_CENTS,
+    CONF_EXPORT_FLAT_CENTS,
+    CONF_EXPORT_PERIODS,
+    CONF_EXPORT_RATES,
+    CONF_EXPORT_SAME_ALL_DAY,
     CONF_FALLBACK_RATE,
     CONF_GST_PERCENT,
     CONF_HOLIDAY_SENSOR,
@@ -140,13 +145,6 @@ def _rate_schema(
                 min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
             )
         ),
-        vol.Required(
-            CONF_EXPORT_CENTS, default=float(existing.get(CONF_EXPORT_CENTS) or 0.0)
-        ): selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
-            )
-        ),
     }
     if minimal:
         return vol.Schema(schema)
@@ -199,7 +197,10 @@ def _rate_schema(
 
 
 class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Name the plan, then enter its rates."""
+    """Collect the whole plan: name, supply charge, rates, days, time periods.
+
+    Nothing is created that the user did not enter.
+    """
 
     VERSION = 2
     MINOR_VERSION = 1
@@ -208,7 +209,20 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         """Start with nothing."""
         self._name: str = ""
         self._description: str = ""
+        self._supply_charge: float = 0.0
+        self._include_gst: bool = True
+        self._gst_percent: float = DEFAULT_GST_PERCENT
+        self._demand_rate: float = 0.0
+        self._export_same_all_day: bool = True
+        self._export_flat: float = 0.0
+        self._export_rates: list[dict[str, Any]] = []
+        self._export_periods: list[dict[str, Any]] = []
         self._rates: list[dict[str, Any]] = []
+        self._pattern_name: str = EVERY_DAY
+        self._pattern_days: list[str] = list(ALL_DAY_TOKENS)
+        self._periods: list[dict[str, Any]] = []
+
+    # ---------------------------------------------------------------- 1 name
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -225,7 +239,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_configured()
                 self._name = name
                 self._description = str(user_input.get(CONF_PLAN_DESCRIPTION) or "").strip()
-                return await self.async_step_rates()
+                return await self.async_step_charges()
 
         return self.async_show_form(
             step_id="user",
@@ -244,15 +258,69 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    # ------------------------------------------------------------- 2 charges
+
+    async def async_step_charges(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Collect the fixed charge and the tax treatment, before any rate."""
+        if user_input is not None:
+            self._supply_charge = float(user_input[CONF_SUPPLY_CHARGE_CENTS])
+            self._include_gst = bool(user_input[CONF_PRICES_INCLUDE_GST])
+            self._gst_percent = float(user_input[CONF_GST_PERCENT])
+            self._demand_rate = float(user_input[CONF_DEMAND_RATE])
+            self._export_same_all_day = bool(user_input[CONF_EXPORT_SAME_ALL_DAY])
+            self._export_flat = float(user_input[CONF_EXPORT_FLAT_CENTS])
+            return await self.async_step_rates()
+
+        return self.async_show_form(
+            step_id="charges",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SUPPLY_CHARGE_CENTS, default=0.0
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                        )
+                    ),
+                    vol.Required(
+                        CONF_PRICES_INCLUDE_GST, default=True
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_GST_PERCENT, default=DEFAULT_GST_PERCENT
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=100, step=0.1, mode=selector.NumberSelectorMode.BOX
+                        )
+                    ),
+                    vol.Required(CONF_DEMAND_RATE, default=0.0): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=1000, step=0.0001,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_EXPORT_SAME_ALL_DAY, default=True
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_EXPORT_FLAT_CENTS, default=0.0
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                        )
+                    ),
+                }
+            ),
+            description_placeholders={"plan": self._name},
+        )
+
+    # --------------------------------------------------------------- 3 rates
+
     async def async_step_rates(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Enter every rate in the plan, one after another.
-
-        Every rate the plan has, whatever time of day, weekday, weekend, public
-        holiday or season it applies to. When the rates apply is set up
-        afterwards, under Configure.
-        """
+        """Every rate in the plan, whenever it applies."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -266,7 +334,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._rates.append(record)
                 if user_input[CONF_ADD_ANOTHER]:
                     return await self.async_step_rates()
-                return self._create()
+                return await self.async_step_days()
 
         schema = dict(_rate_schema({}, [], minimal=True).schema)
         schema[vol.Required(CONF_ADD_ANOTHER, default=True)] = selector.BooleanSelector()
@@ -281,9 +349,257 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
+    # ---------------------------------------------------------------- 4 days
+
+    async def async_step_days(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Which days this timetable covers."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            name = str(user_input[CONF_NAME]).strip()
+            days = (
+                list(ALL_DAY_TOKENS)
+                if user_input["same_every_day"]
+                else list(user_input.get(CONF_DAYS) or [])
+            )
+            if not name:
+                errors[CONF_NAME] = "name_required"
+            elif not days:
+                errors[CONF_DAYS] = "days_required"
+            else:
+                self._pattern_name = name
+                self._pattern_days = days
+                return await self.async_step_periods()
+
+        return self.async_show_form(
+            step_id="days",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_NAME, default=EVERY_DAY): selector.TextSelector(),
+                    vol.Required("same_every_day", default=True): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_DAYS, default=list(WEEKDAY_TOKENS)
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(ALL_DAY_TOKENS),
+                            multiple=True,
+                            translation_key="day_tokens",
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+        )
+
+    # ------------------------------------------------------------- 5 periods
+
+    async def async_step_periods(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """When each rate applies, until the day is covered."""
+        errors: dict[str, str] = {}
+        names = [rate[CONF_NAME] for rate in self._rates]
+        covered = sum(
+            parse_time(period[CONF_END]) - parse_time(period[CONF_START])
+            for period in self._periods
+        )
+
+        if user_input is not None:
+            try:
+                start = _time_to_minutes(str(user_input[CONF_START]), is_end=False)
+                end = _time_to_minutes(str(user_input[CONF_END]), is_end=True)
+            except PlanError:
+                errors["base"] = "bad_time"
+            else:
+                if end <= start:
+                    errors[CONF_END] = "end_before_start"
+                elif any(
+                    start < parse_time(existing[CONF_END])
+                    and end > parse_time(existing[CONF_START])
+                    for existing in self._periods
+                ):
+                    errors["base"] = "period_overlaps"
+                else:
+                    self._periods.append(
+                        {
+                            CONF_START: format_time(start),
+                            CONF_END: format_time(end),
+                            CONF_RATE: str(user_input[CONF_RATE]),
+                        }
+                    )
+                    if user_input[CONF_ADD_ANOTHER]:
+                        return await self.async_step_periods()
+                    if self._export_same_all_day:
+                        return self._create()
+                    return await self.async_step_export_rates()
+
+        ordered = sorted(self._periods, key=lambda period: parse_time(period[CONF_START]))
+        next_start = 0
+        for period in ordered:
+            if parse_time(period[CONF_START]) > next_start:
+                break
+            next_start = max(next_start, parse_time(period[CONF_END]))
+        complete = covered >= MINUTES_PER_DAY
+
+        return self.async_show_form(
+            step_id="periods",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_START, default=_minutes_to_selector(min(next_start, 1439))
+                    ): selector.TimeSelector(),
+                    vol.Required(
+                        CONF_END, default=_minutes_to_selector(MINUTES_PER_DAY)
+                    ): selector.TimeSelector(),
+                    vol.Required(CONF_RATE, default=names[0]): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=names)
+                    ),
+                    vol.Required(
+                        CONF_ADD_ANOTHER, default=not complete
+                    ): selector.BooleanSelector(),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "pattern": self._pattern_name,
+                "so_far": "\n".join(
+                    f"  {period[CONF_START]} to {period[CONF_END]}  {period[CONF_RATE]}"
+                    for period in ordered
+                )
+                or "  none yet",
+                "remaining": f"{(MINUTES_PER_DAY - covered) // 60}h "
+                f"{(MINUTES_PER_DAY - covered) % 60}m still uncovered"
+                if not complete
+                else "the whole day is covered",
+            },
+        )
+
+    async def async_step_export_rates(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Every feed-in rate, when export is not one price all day."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            name = str(user_input[CONF_NAME]).strip()
+            if not name:
+                errors[CONF_NAME] = "name_required"
+            elif any(rate[CONF_NAME] == name for rate in self._export_rates):
+                errors[CONF_NAME] = "rate_exists"
+            else:
+                self._export_rates.append(
+                    {CONF_NAME: name, CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS]}
+                )
+                if user_input[CONF_ADD_ANOTHER]:
+                    return await self.async_step_export_rates()
+                return await self.async_step_export_periods()
+
+        return self.async_show_form(
+            step_id="export_rates",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_NAME, default=""): selector.TextSelector(),
+                    vol.Required(
+                        CONF_EXPORT_CENTS, default=0.0
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                        )
+                    ),
+                    vol.Required(CONF_ADD_ANOTHER, default=True): selector.BooleanSelector(),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "so_far": ", ".join(rate[CONF_NAME] for rate in self._export_rates)
+                or "none yet"
+            },
+        )
+
+    async def async_step_export_periods(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """When each feed-in rate applies."""
+        errors: dict[str, str] = {}
+        names = [rate[CONF_NAME] for rate in self._export_rates]
+        covered = sum(
+            parse_time(period[CONF_END]) - parse_time(period[CONF_START])
+            for period in self._export_periods
+        )
+
+        if user_input is not None:
+            try:
+                start = _time_to_minutes(str(user_input[CONF_START]), is_end=False)
+                end = _time_to_minutes(str(user_input[CONF_END]), is_end=True)
+            except PlanError:
+                errors["base"] = "bad_time"
+            else:
+                if end <= start:
+                    errors[CONF_END] = "end_before_start"
+                elif any(
+                    start < parse_time(existing[CONF_END])
+                    and end > parse_time(existing[CONF_START])
+                    for existing in self._export_periods
+                ):
+                    errors["base"] = "period_overlaps"
+                else:
+                    self._export_periods.append(
+                        {
+                            CONF_START: format_time(start),
+                            CONF_END: format_time(end),
+                            CONF_RATE: str(user_input[CONF_RATE]),
+                        }
+                    )
+                    if user_input[CONF_ADD_ANOTHER]:
+                        return await self.async_step_export_periods()
+                    return self._create()
+
+        ordered = sorted(
+            self._export_periods, key=lambda period: parse_time(period[CONF_START])
+        )
+        next_start = 0
+        for period in ordered:
+            if parse_time(period[CONF_START]) > next_start:
+                break
+            next_start = max(next_start, parse_time(period[CONF_END]))
+        complete = covered >= MINUTES_PER_DAY
+
+        return self.async_show_form(
+            step_id="export_periods",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_START, default=_minutes_to_selector(min(next_start, 1439))
+                    ): selector.TimeSelector(),
+                    vol.Required(
+                        CONF_END, default=_minutes_to_selector(MINUTES_PER_DAY)
+                    ): selector.TimeSelector(),
+                    vol.Required(CONF_RATE, default=names[0]): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=names)
+                    ),
+                    vol.Required(
+                        CONF_ADD_ANOTHER, default=not complete
+                    ): selector.BooleanSelector(),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "so_far": "\n".join(
+                    f"  {period[CONF_START]} to {period[CONF_END]}  {period[CONF_RATE]}"
+                    for period in ordered
+                )
+                or "  none yet",
+                "remaining": f"{(MINUTES_PER_DAY - covered) // 60}h "
+                f"{(MINUTES_PER_DAY - covered) % 60}m still uncovered"
+                if not complete
+                else "the whole day is covered",
+            },
+        )
+
     def _create(self) -> ConfigFlowResult:
-        """Create the entry. The first rate covers the day until periods are set."""
-        first = self._rates[0][CONF_NAME]
+        """Create the entry from exactly what was entered."""
         return self.async_create_entry(
             title=self._name,
             data={CONF_PLAN_NAME: self._name},
@@ -292,16 +608,19 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_RATES: self._rates,
                 CONF_DAY_PATTERNS: [
                     {
-                        CONF_NAME: EVERY_DAY,
-                        CONF_DAYS: list(ALL_DAY_TOKENS),
-                        CONF_PERIODS: [
-                            {CONF_START: "00:00", CONF_END: "24:00", CONF_RATE: first}
-                        ],
+                        CONF_NAME: self._pattern_name,
+                        CONF_DAYS: self._pattern_days,
+                        CONF_PERIODS: self._periods,
+                        CONF_EXPORT_PERIODS: self._export_periods,
                     }
                 ],
-                CONF_SUPPLY_CHARGE_CENTS: 0.0,
-                CONF_PRICES_INCLUDE_GST: True,
-                CONF_GST_PERCENT: DEFAULT_GST_PERCENT,
+                CONF_EXPORT_RATES: self._export_rates,
+                CONF_EXPORT_SAME_ALL_DAY: self._export_same_all_day,
+                CONF_EXPORT_FLAT_CENTS: self._export_flat,
+                CONF_DEMAND_RATE: self._demand_rate,
+                CONF_SUPPLY_CHARGE_CENTS: self._supply_charge,
+                CONF_PRICES_INCLUDE_GST: self._include_gst,
+                CONF_GST_PERCENT: self._gst_percent,
             },
         )
 

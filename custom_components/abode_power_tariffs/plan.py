@@ -21,9 +21,14 @@ from .const import (
     CONF_DAY_PATTERNS,
     CONF_DAYS,
     CONF_DEMAND_PERIOD,
+    CONF_DEMAND_RATE,
     CONF_END,
     CONF_EXPORT_ALLOWANCE_KWH,
     CONF_EXPORT_CENTS,
+    CONF_EXPORT_FLAT_CENTS,
+    CONF_EXPORT_PERIODS,
+    CONF_EXPORT_RATES,
+    CONF_EXPORT_SAME_ALL_DAY,
     CONF_FALLBACK_RATE,
     CONF_GST_PERCENT,
     CONF_IMPORT_CENTS,
@@ -169,6 +174,26 @@ def _optional_float(value: Any) -> float | None:
 
 
 @dataclass(frozen=True, slots=True)
+class ExportRate:
+    """A named feed-in price, in dollars per kWh."""
+
+    name: str
+    price: float
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the export rate as a plain dictionary."""
+        return {CONF_NAME: self.name, CONF_EXPORT_CENTS: round(self.price * 100, 4)}
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> ExportRate:
+        """Build an export rate from stored configuration."""
+        name = str(raw.get(CONF_NAME, "")).strip()
+        if not name:
+            raise PlanError("An export rate must have a name")
+        return cls(name=name, price=_cents_to_dollars(raw.get(CONF_EXPORT_CENTS)))
+
+
+@dataclass(frozen=True, slots=True)
 class Period:
     """One time period within a day set, naming a rate."""
 
@@ -210,6 +235,7 @@ class DayPattern:
     periods: tuple[Period, ...] = ()
     season_from: tuple[int, int] | None = None
     season_to: tuple[int, int] | None = None
+    export_periods: tuple[Period, ...] = ()
 
     @property
     def is_seasonal(self) -> bool:
@@ -234,6 +260,17 @@ class DayPattern:
         """Return whether this day set applies to a day type on a date."""
         return token in self.days and self.covers_date(day)
 
+    def export_period_at(self, minutes: int) -> Period | None:
+        """Return the export period containing a minute of the day, if any."""
+        for period in self.export_periods:
+            if period.contains(minutes):
+                return period
+        return None
+
+    def sorted_export_periods(self) -> tuple[Period, ...]:
+        """Return the export periods in start order."""
+        return tuple(sorted(self.export_periods, key=lambda period: period.start))
+
     def period_at(self, minutes: int) -> Period | None:
         """Return the period containing a minute of the day, if any."""
         for period in self.periods:
@@ -253,6 +290,9 @@ class DayPattern:
             CONF_SEASON_FROM: (format_month_day(self.season_from) if self.season_from else None),
             CONF_SEASON_TO: (format_month_day(self.season_to) if self.season_to else None),
             CONF_PERIODS: [period.as_dict() for period in self.sorted_periods()],
+            CONF_EXPORT_PERIODS: [
+                period.as_dict() for period in self.sorted_export_periods()
+            ],
         }
 
     @classmethod
@@ -271,6 +311,9 @@ class DayPattern:
             name=name,
             days=days,
             periods=tuple(Period.from_dict(item) for item in raw.get(CONF_PERIODS) or ()),
+            export_periods=tuple(
+                Period.from_dict(item) for item in raw.get(CONF_EXPORT_PERIODS) or ()
+            ),
             season_from=parse_month_day(str(season_from)) if season_from else None,
             season_to=parse_month_day(str(season_to)) if season_to else None,
         )
@@ -298,6 +341,10 @@ class Plan:
     valid_from: date | None = None
     valid_to: date | None = None
     description: str = ""
+    export_rates: tuple[ExportRate, ...] = ()
+    export_same_all_day: bool = True
+    export_flat_price: float = 0.0
+    demand_rate_per_kw_month: float = 0.0
 
     def rate_by_name(self, name: str) -> Rate | None:
         """Return a rate by name, or None."""
@@ -340,6 +387,31 @@ class Plan:
         # A seasonal day set is more specific than a year-round one.
         return seasonal or general
 
+    def export_rate_by_name(self, name: str) -> ExportRate | None:
+        """Return an export rate by name, or None."""
+        for rate in self.export_rates:
+            if rate.name == name:
+                return rate
+        return None
+
+    @property
+    def export_rate_names(self) -> tuple[str, ...]:
+        """Return every export rate name, in configured order."""
+        return tuple(rate.name for rate in self.export_rates)
+
+    def export_price_at(self, day: date, minutes: int, is_holiday: bool) -> float:
+        """Return the feed-in price in force, in dollars per kWh."""
+        if self.export_same_all_day:
+            return self.export_flat_price
+        pattern = self.day_pattern_for(day, is_holiday)
+        if pattern is None:
+            return 0.0
+        period = pattern.export_period_at(minutes)
+        if period is None:
+            return 0.0
+        rate = self.export_rate_by_name(period.rate)
+        return 0.0 if rate is None else rate.price
+
     def is_active_on(self, day: date) -> bool:
         """Return whether the plan's validity range contains this date."""
         if self.valid_from is not None and day < self.valid_from:
@@ -376,6 +448,10 @@ class Plan:
             CONF_NAME: self.name,
             CONF_PLAN_DESCRIPTION: self.description,
             CONF_RATES: [rate.as_dict() for rate in self.rates],
+            CONF_EXPORT_RATES: [rate.as_dict() for rate in self.export_rates],
+            CONF_EXPORT_SAME_ALL_DAY: self.export_same_all_day,
+            CONF_EXPORT_FLAT_CENTS: round(self.export_flat_price * 100, 4),
+            CONF_DEMAND_RATE: self.demand_rate_per_kw_month,
             CONF_DAY_PATTERNS: [day_pattern.as_dict() for day_pattern in self.day_patterns],
             CONF_SUPPLY_CHARGE_CENTS: round(self.daily_supply_charge * 100, 4),
             CONF_PRICES_INCLUDE_GST: self.prices_include_gst,
@@ -398,6 +474,12 @@ class Plan:
             daily_supply_charge=_cents_to_dollars(raw.get(CONF_SUPPLY_CHARGE_CENTS)),
             prices_include_gst=bool(raw.get(CONF_PRICES_INCLUDE_GST, True)),
             gst_percent=float(raw.get(CONF_GST_PERCENT) or 0.0),
+            export_rates=tuple(
+                ExportRate.from_dict(item) for item in raw.get(CONF_EXPORT_RATES) or ()
+            ),
+            export_same_all_day=bool(raw.get(CONF_EXPORT_SAME_ALL_DAY, True)),
+            export_flat_price=_cents_to_dollars(raw.get(CONF_EXPORT_FLAT_CENTS)),
+            demand_rate_per_kw_month=float(raw.get(CONF_DEMAND_RATE) or 0.0),
             valid_from=_optional_date(raw.get(CONF_VALID_FROM)),
             valid_to=_optional_date(raw.get(CONF_VALID_TO)),
         )
