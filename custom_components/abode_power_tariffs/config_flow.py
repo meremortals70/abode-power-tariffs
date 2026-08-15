@@ -47,6 +47,7 @@ from .const import (
     CONF_EXPORT_RATES,
     CONF_EXPORT_SAME_ALL_DAY,
     CONF_FALLBACK_RATE,
+    CONF_GO_BACK,
     CONF_GST_PERCENT,
     CONF_HOLIDAY_SENSOR,
     CONF_IMPORT_CENTS,
@@ -196,6 +197,19 @@ def _rate_schema(
     return vol.Schema(schema)
 
 
+BACK = {vol.Required(CONF_GO_BACK, default=False): selector.BooleanSelector()}
+
+# Where each step goes when the user ticks Go back.
+PREVIOUS_STEP = {
+    "charges": "user",
+    "rates": "charges",
+    "days": "rates",
+    "periods": "days",
+    "export_rates": "periods",
+    "export_periods": "export_rates",
+}
+
+
 def guarded_setup(func: Any) -> Any:
     """Show the failure on screen instead of 'Unknown error occurred'."""
 
@@ -297,6 +311,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Collect the fixed charge and the tax treatment, before any rate."""
         if user_input is not None:
+            if user_input[CONF_GO_BACK]:
+                return await self.async_step_user()
             self._supply_charge = float(user_input[CONF_SUPPLY_CHARGE_CENTS])
             self._include_gst = bool(user_input[CONF_PRICES_INCLUDE_GST])
             self._gst_percent = float(user_input[CONF_GST_PERCENT])
@@ -344,6 +360,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                             min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
                         )
                     ),
+                    **BACK,
                 }
             ),
             description_placeholders={"plan": self._name},
@@ -359,8 +376,16 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            if user_input[CONF_GO_BACK]:
+                if self._rates:
+                    self._rates.pop()
+                    return await self.async_step_rates()
+                return await self.async_step_charges()
             record = _rate_record(user_input)
             name = record[CONF_NAME]
+            if not name and self._rates:
+                # Left blank on purpose: nothing more to add.
+                return await self.async_step_days()
             if not name:
                 errors[CONF_NAME] = "name_required"
             elif any(rate[CONF_NAME] == name for rate in self._rates):
@@ -373,6 +398,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
 
         schema = dict(_rate_schema({}, [], minimal=True).schema)
         schema[vol.Required(CONF_ADD_ANOTHER, default=True)] = selector.BooleanSelector()
+        schema.update(BACK)
 
         return self.async_show_form(
             step_id="rates",
@@ -394,6 +420,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            if user_input[CONF_GO_BACK]:
+                return await self.async_step_rates()
             name = str(user_input[CONF_NAME]).strip()
             days = (
                 list(ALL_DAY_TOKENS)
@@ -424,6 +452,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                             translation_key="day_tokens",
                         )
                     ),
+                    **BACK,
                 }
             ),
             errors=errors,
@@ -444,6 +473,11 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
         if user_input is not None:
+            if user_input[CONF_GO_BACK]:
+                if self._periods:
+                    self._periods.pop()
+                    return await self.async_step_periods()
+                return await self.async_step_days()
             try:
                 start = _time_to_minutes(str(user_input[CONF_START]), is_end=False)
                 end = _time_to_minutes(str(user_input[CONF_END]), is_end=True)
@@ -496,6 +530,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_ADD_ANOTHER, default=not complete
                     ): selector.BooleanSelector(),
+                    **BACK,
                 }
             ),
             errors=errors,
@@ -521,7 +556,14 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            if user_input[CONF_GO_BACK]:
+                if self._export_rates:
+                    self._export_rates.pop()
+                    return await self.async_step_export_rates()
+                return await self.async_step_periods()
             name = str(user_input[CONF_NAME]).strip()
+            if not name and self._export_rates:
+                return await self.async_step_export_periods()
             if not name:
                 errors[CONF_NAME] = "name_required"
             elif any(rate[CONF_NAME] == name for rate in self._export_rates):
@@ -547,6 +589,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                         )
                     ),
                     vol.Required(CONF_ADD_ANOTHER, default=True): selector.BooleanSelector(),
+                    **BACK,
                 }
             ),
             errors=errors,
@@ -569,6 +612,11 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
         if user_input is not None:
+            if user_input[CONF_GO_BACK]:
+                if self._export_periods:
+                    self._export_periods.pop()
+                    return await self.async_step_export_periods()
+                return await self.async_step_export_rates()
             try:
                 start = _time_to_minutes(str(user_input[CONF_START]), is_end=False)
                 end = _time_to_minutes(str(user_input[CONF_END]), is_end=True)
@@ -621,6 +669,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_ADD_ANOTHER, default=not complete
                     ): selector.BooleanSelector(),
+                    **BACK,
                 }
             ),
             errors=errors,
@@ -700,6 +749,7 @@ MENU = [
     "rates_menu",
     "day_patterns_menu",
     "periods_pick_day_pattern",
+    "export_menu",
     "general",
     "usage_tracking",
     "rate_plan_card",
@@ -716,6 +766,8 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         self._day_pattern_index: int | None = None
         self._period_index: int | None = None
         self._rate_index: int | None = None
+        self._export_rate_index: int | None = None
+        self._editing_export: bool = False
         self._failure: str = ""
 
     # ------------------------------------------------------------- utilities
@@ -776,6 +828,7 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Show the plan and the menu."""
+        self._editing_export = False
         return self._menu("init")
 
     @guarded
@@ -1000,6 +1053,8 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         same_every_day = set(current_days) == set(ALL_DAY_TOKENS)
 
         if user_input is not None:
+            if user_input[CONF_GO_BACK]:
+                return await self.async_step_rates()
             name = str(user_input[CONF_NAME]).strip()
             days = (
                 list(ALL_DAY_TOKENS)
@@ -1122,7 +1177,7 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
     async def async_step_periods_pick_day_pattern(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Choose whose time periods to edit."""
+        """Choose whose time periods to edit. Import or feed-in, per the flag."""
         names = self._day_pattern_names()
         if not names:
             self._day_pattern_index = None
@@ -1156,10 +1211,19 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         return patterns[index]
 
     def _periods(self) -> list[dict[str, Any]]:
-        periods: list[dict[str, Any]] = self._current_day_pattern().setdefault(
-            CONF_PERIODS, []
-        )
+        key = CONF_EXPORT_PERIODS if self._editing_export else CONF_PERIODS
+        periods: list[dict[str, Any]] = self._current_day_pattern().setdefault(key, [])
         return periods
+
+    def _period_rate_names(self) -> list[str]:
+        return self._export_rate_names() if self._editing_export else self._rate_names()
+
+    def _export_rates(self) -> list[dict[str, Any]]:
+        rates: list[dict[str, Any]] = self.working.setdefault(CONF_EXPORT_RATES, [])
+        return rates
+
+    def _export_rate_names(self) -> list[str]:
+        return [str(rate.get(CONF_NAME, "")) for rate in self._export_rates()]
 
     def _period_labels(self) -> list[str]:
         return [
@@ -1223,8 +1287,10 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Add a time period, or edit the one chosen. Three fields, nothing else."""
         errors: dict[str, str] = {}
-        names = self._rate_names()
+        names = self._period_rate_names()
         if not names:
+            if self._editing_export:
+                return await self.async_step_export_rate_add()
             self._rate_index = None
             return await self.async_step_rate_add()
 
@@ -1321,6 +1387,9 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             self.working[CONF_IMPORT_ENERGY_SENSOR] = (
                 user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
             )
+            self.working[CONF_DEMAND_RATE] = user_input[CONF_DEMAND_RATE]
+            self.working[CONF_EXPORT_SAME_ALL_DAY] = user_input[CONF_EXPORT_SAME_ALL_DAY]
+            self.working[CONF_EXPORT_FLAT_CENTS] = user_input[CONF_EXPORT_FLAT_CENTS]
             plan = self._plan()
             if plan is not None and any(
                 "validity" in str(problem) for problem in validate_plan(plan)
@@ -1376,10 +1445,181 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor", device_class="energy")
                     ),
+                    vol.Required(
+                        CONF_DEMAND_RATE, default=float(options.get(CONF_DEMAND_RATE) or 0.0)
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=1000, step="any", mode=selector.NumberSelectorMode.BOX
+                        )
+                    ),
+                    vol.Required(
+                        CONF_EXPORT_SAME_ALL_DAY,
+                        default=bool(options.get(CONF_EXPORT_SAME_ALL_DAY, True)),
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_EXPORT_FLAT_CENTS,
+                        default=float(options.get(CONF_EXPORT_FLAT_CENTS) or 0.0),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                        )
+                    ),
                 }
             ),
             errors=errors,
         )
+
+    # ---------------------------------------------------------------- feed-in
+
+    @guarded
+    async def async_step_export_menu(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Feed-in rates and when they apply."""
+        flat = bool(self.working.get(CONF_EXPORT_SAME_ALL_DAY, True))
+        listing = "\n".join(
+            f"  {rate.get(CONF_NAME)}   "
+            f"{float(rate.get(CONF_EXPORT_CENTS) or 0):.2f} c/kWh"
+            for rate in self._export_rates()
+        )
+        return self.async_show_menu(
+            step_id="export_menu",
+            menu_options=[
+                "export_rate_add",
+                "export_rate_pick",
+                "export_rate_remove",
+                "export_periods_pick",
+                "general",
+                "init",
+            ],
+            description_placeholders={
+                "rates": listing or "  none yet",
+                "mode": "one price all day"
+                if flat
+                else "different prices through the day",
+            },
+        )
+
+    @guarded
+    async def async_step_export_rate_pick(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose a feed-in rate to edit."""
+        names = self._export_rate_names()
+        if not names:
+            self._export_rate_index = None
+            return await self.async_step_export_rate_add()
+        if user_input is not None:
+            self._export_rate_index = names.index(str(user_input[CONF_NAME]))
+            return await self.async_step_export_rate_add()
+        return self.async_show_form(
+            step_id="export_rate_pick",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_NAME, default=names[0]): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=names)
+                    )
+                }
+            ),
+        )
+
+    @guarded
+    async def async_step_export_rate_add(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Add a feed-in rate, or edit the one chosen."""
+        errors: dict[str, str] = {}
+        index = self._export_rate_index
+        existing: dict[str, Any] = self._export_rates()[index] if index is not None else {}
+
+        if user_input is not None:
+            name = str(user_input[CONF_NAME]).strip()
+            clash = any(
+                rate.get(CONF_NAME) == name
+                for position, rate in enumerate(self._export_rates())
+                if position != index
+            )
+            if not name:
+                errors[CONF_NAME] = "name_required"
+            elif clash:
+                errors[CONF_NAME] = "rate_exists"
+            else:
+                record = {CONF_NAME: name, CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS]}
+                if index is None:
+                    self._export_rates().append(record)
+                else:
+                    previous = str(self._export_rates()[index].get(CONF_NAME, ""))
+                    self._export_rates()[index] = record
+                    if previous and previous != name:
+                        for pattern in self._day_patterns():
+                            for period in pattern.get(CONF_EXPORT_PERIODS, []):
+                                if period.get(CONF_RATE) == previous:
+                                    period[CONF_RATE] = name
+                self._export_rate_index = None
+                return await self.async_step_export_menu()
+
+        return self.async_show_form(
+            step_id="export_rate_add",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_NAME, default=str(existing.get(CONF_NAME) or "")
+                    ): selector.TextSelector(),
+                    vol.Required(
+                        CONF_EXPORT_CENTS,
+                        default=float(existing.get(CONF_EXPORT_CENTS) or 0.0),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+        )
+
+    @guarded
+    async def async_step_export_rate_remove(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Remove a feed-in rate that no feed-in period uses."""
+        errors: dict[str, str] = {}
+        names = self._export_rate_names()
+        if not names:
+            return await self.async_step_export_menu()
+        if user_input is not None:
+            name = str(user_input[CONF_NAME])
+            in_use = any(
+                period.get(CONF_RATE) == name
+                for pattern in self._day_patterns()
+                for period in pattern.get(CONF_EXPORT_PERIODS, [])
+            )
+            if in_use:
+                errors[CONF_NAME] = "rate_in_use"
+            else:
+                self.working[CONF_EXPORT_RATES] = [
+                    rate for rate in self._export_rates() if rate.get(CONF_NAME) != name
+                ]
+                return await self.async_step_export_menu()
+        return self.async_show_form(
+            step_id="export_rate_remove",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_NAME, default=names[0]): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=names)
+                    )
+                }
+            ),
+            errors=errors,
+        )
+
+    @guarded
+    async def async_step_export_periods_pick(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit the feed-in time periods, using the same screens as import."""
+        self._editing_export = True
+        return await self.async_step_periods_pick_day_pattern()
 
     # -------------------------------------------------------- usage tracking
 

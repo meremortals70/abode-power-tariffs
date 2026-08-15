@@ -10,6 +10,7 @@ DOMAIN: Final = "abode_power_tariffs"
 CONF_PLAN_NAME: Final = "plan_name"
 CONF_PLAN_DESCRIPTION: Final = "plan_description"
 CONF_ADD_ANOTHER: Final = "add_another"
+CONF_GO_BACK: Final = "go_back"
 
 # Config entry options — top level
 CONF_RATES: Final = "rates"

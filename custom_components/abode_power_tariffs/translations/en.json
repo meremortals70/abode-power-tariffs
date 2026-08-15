@@ -22,14 +22,16 @@
           "gst_percent": "Tax rate (%)",
           "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
           "export_same_all_day": "Feed-in is one price all day",
-          "export_flat_cents": "Feed-in price (c/kWh)"
+          "export_flat_cents": "Feed-in price (c/kWh)",
+          "go_back": "Go back"
         },
         "data_description": {
           "daily_supply_charge_cents": "The fixed charge per day. Zero if you do not have one.",
           "prices_include_gst": "Australian bills quote prices with GST included. Most European and US rate sheets quote them without.",
           "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. Mark which time periods it is measured in by ticking 'This is a demand charge period' on the relevant rate under Configure. The monthly amount is not calculated here.",
           "export_same_all_day": "Turn off if your feed-in rate changes through the day. You will be asked for the feed-in rates and their times after the import ones.",
-          "export_flat_cents": "Used only while 'Feed-in is one price all day' is on. Zero if you do not export."
+          "export_flat_cents": "Used only while 'Feed-in is one price all day' is on. Zero if you do not export.",
+          "go_back": "Go back to the previous screen. Anything typed here is discarded."
         }
       },
       "rates": {
@@ -38,12 +40,14 @@
         "data": {
           "name": "Rate name",
           "import_cents": "You pay (c/kWh)",
-          "add_another": "Add another rate"
+          "add_another": "Add another rate",
+          "go_back": "Go back"
         },
         "data_description": {
-          "name": "As it appears on your bill — peak, off peak, shoulder, free.",
+          "name": "As it appears on your bill - peak, off peak, shoulder, free. Leave the name blank and submit if you have entered them all and forgot to turn off 'Add another rate'.",
           "import_cents": "Cents per kilowatt hour, as the bill quotes it.",
-          "add_another": "Leave on to enter the next rate. Turn off when they are all in."
+          "add_another": "Leave on to enter the next rate. Turn off when they are all in.",
+          "go_back": "Go back to the previous screen. Anything typed here is discarded. On a list, this removes the last one you entered and stays here."
         }
       },
       "days": {
@@ -52,11 +56,13 @@
         "data": {
           "name": "Timetable name",
           "same_every_day": "Every day is the same",
-          "days": "Which days"
+          "days": "Which days",
+          "go_back": "Go back"
         },
         "data_description": {
           "same_every_day": "Leave on unless weekends, weekdays or public holidays are priced differently.",
-          "days": "Ignored while 'Every day is the same' is on. Public holidays need a holiday sensor, which is set under Configure."
+          "days": "Ignored while 'Every day is the same' is on. Public holidays need a holiday sensor, which is set under Configure.",
+          "go_back": "Go back to the previous screen. Anything typed here is discarded."
         }
       },
       "periods": {
@@ -66,10 +72,12 @@
           "start": "Starts at",
           "end": "Ends at",
           "rate": "Rate during this period",
-          "add_another": "Add another time period"
+          "add_another": "Add another time period",
+          "go_back": "Go back"
         },
         "data_description": {
-          "add_another": "Turn off to finish. The day must be fully covered before the plan will publish prices."
+          "add_another": "Turn off to finish. The day must be fully covered before the plan will publish prices.",
+          "go_back": "Go back to the previous screen. Anything typed here is discarded. On a list, this removes the last one you entered and stays here."
         }
       },
       "export_rates": {
@@ -78,11 +86,13 @@
         "data": {
           "name": "Feed-in rate name",
           "export_cents": "You are paid (c/kWh)",
-          "add_another": "Add another feed-in rate"
+          "add_another": "Add another feed-in rate",
+          "go_back": "Go back"
         },
         "data_description": {
-          "name": "Your own words - for example evening export, daytime export.",
-          "add_another": "Leave on to enter the next one. Turn off when they are all in."
+          "name": "Your own words - for example evening export, daytime export. Leave blank and submit if you have entered them all.",
+          "add_another": "Leave on to enter the next one. Turn off when they are all in.",
+          "go_back": "Go back to the previous screen. Anything typed here is discarded. On a list, this removes the last one you entered and stays here."
         }
       },
       "export_periods": {
@@ -92,10 +102,12 @@
           "start": "Starts at",
           "end": "Ends at",
           "rate": "Feed-in rate during this period",
-          "add_another": "Add another feed-in period"
+          "add_another": "Add another feed-in period",
+          "go_back": "Go back"
         },
         "data_description": {
-          "add_another": "Turn off to finish. The day must be fully covered."
+          "add_another": "Turn off to finish. The day must be fully covered.",
+          "go_back": "Go back to the previous screen. Anything typed here is discarded. On a list, this removes the last one you entered and stays here."
         }
       },
       "setup_failure": {
@@ -128,7 +140,8 @@
           "general": "Supply charge, tax, plan dates, sensors",
           "usage_tracking": "Track usage by rate",
           "rate_plan_card": "Rate plan card",
-          "save": "Save and finish"
+          "save": "Save and finish",
+          "export_menu": "Feed-in - what you are paid"
         }
       },
       "failure": {
@@ -276,14 +289,20 @@
           "valid_from": "Plan valid from",
           "valid_to": "Plan valid to",
           "holiday_sensor": "Public holiday sensor",
-          "import_energy_sensor": "Import energy sensor"
+          "import_energy_sensor": "Import energy sensor",
+          "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
+          "export_same_all_day": "Feed-in is one price all day",
+          "export_flat_cents": "Feed-in price (c/kWh)"
         },
         "data_description": {
           "prices_include_gst": "Australian bills quote prices with GST included. Most European and US rate sheets quote them without.",
           "valid_from": "Optional. Leave empty unless you are recording a plan that started on a known date.",
           "valid_to": "Optional. When your retailer reprices, set this and add a new channel for the new plan, so past costs stay correct against the price that was actually in force.",
           "holiday_sensor": "Optional. A Workday sensor from Home Assistant's built-in Workday integration, which is off on a public holiday. Needed only if holidays are priced differently.",
-          "import_energy_sensor": "Optional. Needed only to count a daily energy allowance."
+          "import_energy_sensor": "Optional. Needed only to count a daily energy allowance.",
+          "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here.",
+          "export_same_all_day": "Turn off to set feed-in rates and their times under Feed-in.",
+          "export_flat_cents": "Used only while 'Feed-in is one price all day' is on."
         }
       },
       "usage_tracking": {
@@ -320,6 +339,41 @@
       "rate_plan_card": {
         "title": "Rate plan card",
         "description": "For transcribing into an inverter's own tariff screen. Nothing is sent anywhere.\n\n```\n{card}\n```"
+      },
+      "export_menu": {
+        "title": "Feed-in",
+        "description": "Currently: {mode}. Change that under the general settings.\n\n```\n{rates}\n```",
+        "menu_options": {
+          "export_rate_add": "Add a feed-in rate",
+          "export_rate_pick": "Edit a feed-in rate",
+          "export_rate_remove": "Remove a feed-in rate",
+          "export_periods_pick": "Feed-in time periods",
+          "general": "One price all day, or not",
+          "init": "Back"
+        }
+      },
+      "export_rate_pick": {
+        "title": "Which feed-in rate?",
+        "data": {
+          "name": "Feed-in rate"
+        }
+      },
+      "export_rate_add": {
+        "title": "Feed-in rate",
+        "description": "Entered in cents per kWh, as the bill quotes it.",
+        "data": {
+          "name": "Feed-in rate name",
+          "export_cents": "You are paid (c/kWh)"
+        }
+      },
+      "export_rate_remove": {
+        "title": "Remove a feed-in rate",
+        "data": {
+          "name": "Feed-in rate"
+        }
+      },
+      "export_periods_pick": {
+        "title": "Feed-in time periods"
       }
     },
     "error": {
