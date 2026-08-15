@@ -97,6 +97,10 @@
         "data_description": {
           "add_another": "Turn off to finish. The day must be fully covered."
         }
+      },
+      "setup_failure": {
+        "title": "Setup failed",
+        "description": "The detail below is the whole error - select it and copy it.\n\n```\n{detail}\n```\n\nSubmit to close."
       }
     },
     "error": {
@@ -108,7 +112,8 @@
       "period_overlaps": "That overlaps a time period already entered."
     },
     "abort": {
-      "already_configured": "A channel with that name already exists."
+      "already_configured": "A channel with that name already exists.",
+      "setup_failed": "Setup was stopped by an error."
     }
   },
   "options": {

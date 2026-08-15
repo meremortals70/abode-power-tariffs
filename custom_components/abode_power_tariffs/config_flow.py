@@ -196,6 +196,23 @@ def _rate_schema(
     return vol.Schema(schema)
 
 
+def guarded_setup(func: Any) -> Any:
+    """Show the failure on screen instead of 'Unknown error occurred'."""
+
+    @functools.wraps(func)
+    async def wrapper(
+        self: AbodePowerTariffsConfigFlow, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        try:
+            return await func(self, user_input)
+        except Exception:  # Deliberate: nothing may escape into an empty dialog
+            _LOGGER.exception("Setup step %s failed", func.__name__)
+            self._failure = traceback.format_exc()
+            return await self.async_step_setup_failure()
+
+    return wrapper
+
+
 class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
     """Collect the whole plan: name, supply charge, rates, days, time periods.
 
@@ -217,6 +234,19 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._export_flat: float = 0.0
         self._export_rates: list[dict[str, Any]] = []
         self._export_periods: list[dict[str, Any]] = []
+        self._failure: str = ""
+
+    async def async_step_setup_failure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show what went wrong, in full, where it can be copied."""
+        if user_input is not None:
+            return self.async_abort(reason="setup_failed")
+        return self.async_show_form(
+            step_id="setup_failure",
+            data_schema=vol.Schema({}),
+            description_placeholders={"detail": self._failure or "No detail captured."},
+        )
         self._rates: list[dict[str, Any]] = []
         self._pattern_name: str = EVERY_DAY
         self._pattern_days: list[str] = list(ALL_DAY_TOKENS)
@@ -224,6 +254,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     # ---------------------------------------------------------------- 1 name
 
+    @guarded_setup
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -260,6 +291,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     # ------------------------------------------------------------- 2 charges
 
+    @guarded_setup
     async def async_step_charges(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -317,6 +349,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     # --------------------------------------------------------------- 3 rates
 
+    @guarded_setup
     async def async_step_rates(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -351,6 +384,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     # ---------------------------------------------------------------- 4 days
 
+    @guarded_setup
     async def async_step_days(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -395,6 +429,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     # ------------------------------------------------------------- 5 periods
 
+    @guarded_setup
     async def async_step_periods(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -476,6 +511,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
+    @guarded_setup
     async def async_step_export_rates(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -518,6 +554,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
+    @guarded_setup
     async def async_step_export_periods(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
