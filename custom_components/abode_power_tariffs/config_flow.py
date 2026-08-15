@@ -234,6 +234,10 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._export_flat: float = 0.0
         self._export_rates: list[dict[str, Any]] = []
         self._export_periods: list[dict[str, Any]] = []
+        self._rates: list[dict[str, Any]] = []
+        self._pattern_name: str = EVERY_DAY
+        self._pattern_days: list[str] = list(ALL_DAY_TOKENS)
+        self._periods: list[dict[str, Any]] = []
         self._failure: str = ""
 
     async def async_step_setup_failure(
@@ -247,10 +251,6 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({}),
             description_placeholders={"detail": self._failure or "No detail captured."},
         )
-        self._rates: list[dict[str, Any]] = []
-        self._pattern_name: str = EVERY_DAY
-        self._pattern_days: list[str] = list(ALL_DAY_TOKENS)
-        self._periods: list[dict[str, Any]] = []
 
     # ---------------------------------------------------------------- 1 name
 
