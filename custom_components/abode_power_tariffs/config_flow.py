@@ -328,7 +328,9 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     ),
                     vol.Required(CONF_DEMAND_RATE, default=0.0): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=1000, step=0.0001,
+                            min=0,
+                            max=1000,
+                            step="any",
                             mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
