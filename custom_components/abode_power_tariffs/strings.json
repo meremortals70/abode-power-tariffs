@@ -186,7 +186,7 @@
           "fallback_rate": "Rate once the allowance is used up"
         },
         "data_description": {
-          "constraints": "Comma separated, your own words. Each becomes a switch-like sensor your automations can trigger on — for example no_grid_import, grid_charge_battery. Leave empty if you do not need any.",
+          "constraints": "Pick from the list, or type your own and press enter to add it. Each one becomes a switch-like sensor your automations can trigger on. Anything already used elsewhere in this plan appears in the list, so the same rule is never spelled two different ways.",
           "coasting_permitted": "Tells other systems that letting a room drift is acceptable during this rate.",
           "demand_period": "A marker only. The monthly demand charge is not calculated here.",
           "daily_allowance_kwh": "Zero for none. Some plans give a period free only up to a daily cap.",

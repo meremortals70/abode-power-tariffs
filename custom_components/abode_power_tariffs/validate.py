@@ -100,14 +100,14 @@ def validate_day_coverage(plan: Plan) -> list[Problem]:
                     Problem(
                         "",
                         f"{token} on {probe.isoformat()} is claimed by more than one "
-                        f"seasonal day set: {', '.join(sorted(seasonal))}",
+                        f"seasonal timetable: {', '.join(sorted(seasonal))}",
                     )
                 )
             elif not seasonal and len(general) > 1:
                 problems.append(
                     Problem(
                         "",
-                        f"{token} is claimed by more than one day set: "
+                        f"{token} is claimed by more than one timetable: "
                         f"{', '.join(sorted(general))}",
                     )
                 )

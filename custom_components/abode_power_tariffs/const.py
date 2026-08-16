@@ -42,6 +42,19 @@ CONF_EXPORT_SAME_ALL_DAY: Final = "export_same_all_day"
 CONF_EXPORT_FLAT_CENTS: Final = "export_flat_cents"
 CONF_DEMAND_RATE: Final = "demand_rate_per_kw_month"
 CONF_CONSTRAINTS: Final = "constraints"
+
+# Seeded so the dropdown is never empty. These are the names Abode HVAC
+# Coordinator already acts on; anything else is the user's own and is typed
+# straight into the same control.
+CONSTRAINT_NO_GRID_IMPORT: Final = "no_grid_import"
+CONSTRAINT_PRECOOL_OPPORTUNITY: Final = "precool_opportunity"
+CONSTRAINT_GRID_CHARGE_BATTERY: Final = "grid_charge_battery"
+
+KNOWN_CONSTRAINTS: Final = (
+    CONSTRAINT_GRID_CHARGE_BATTERY,
+    CONSTRAINT_NO_GRID_IMPORT,
+    CONSTRAINT_PRECOOL_OPPORTUNITY,
+)
 CONF_COASTING_PERMITTED: Final = "coasting_permitted"
 CONF_DAILY_ALLOWANCE_KWH: Final = "daily_allowance_kwh"
 CONF_EXPORT_ALLOWANCE_KWH: Final = "export_allowance_kwh"

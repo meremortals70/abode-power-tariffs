@@ -70,6 +70,7 @@ from .const import (
     CONF_VALID_TO,
     DEFAULT_GST_PERCENT,
     DOMAIN,
+    KNOWN_CONSTRAINTS,
     MINUTES_PER_DAY,
     SUBMIT_ADD,
     SUBMIT_CONTINUE,
@@ -122,17 +123,23 @@ def _rate_record(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_NAME: str(user_input.get(CONF_NAME) or "").strip(),
         CONF_IMPORT_CENTS: user_input[CONF_IMPORT_CENTS],
         CONF_EXPORT_CENTS: user_input.get(CONF_EXPORT_CENTS, 0.0),
-        CONF_CONSTRAINTS: [
-            item.strip()
-            for item in str(user_input.get(CONF_CONSTRAINTS) or "").split(",")
-            if item.strip()
-        ],
+        CONF_CONSTRAINTS: _constraints_from(user_input),
         CONF_COASTING_PERMITTED: bool(user_input.get(CONF_COASTING_PERMITTED, True)),
         CONF_DEMAND_PERIOD: bool(user_input.get(CONF_DEMAND_PERIOD, False)),
         CONF_DAILY_ALLOWANCE_KWH: user_input.get(CONF_DAILY_ALLOWANCE_KWH) or None,
         CONF_EXPORT_ALLOWANCE_KWH: user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None,
         CONF_FALLBACK_RATE: user_input.get(CONF_FALLBACK_RATE) or None,
     }
+
+
+def _constraints_from(user_input: dict[str, Any]) -> list[str]:
+    """Read the rules off the multi-select, which also accepts a typed value."""
+    seen: list[str] = []
+    for item in user_input.get(CONF_CONSTRAINTS) or []:
+        rule = str(item).strip()
+        if rule and rule not in seen:
+            seen.append(rule)
+    return seen
 
 
 def _require_name(schema: vol.Schema) -> vol.Schema:
@@ -147,7 +154,11 @@ def _require_name(schema: vol.Schema) -> vol.Schema:
 
 
 def _rate_schema(
-    existing: dict[str, Any], fallback_options: list[str], *, minimal: bool
+    existing: dict[str, Any],
+    fallback_options: list[str],
+    *,
+    minimal: bool,
+    known_constraints: list[str] | None = None,
 ) -> vol.Schema:
     """Return the rate form. The setup form asks only what a plan cannot do without."""
     schema: dict[Any, Any] = {
@@ -163,11 +174,18 @@ def _rate_schema(
     if minimal:
         return vol.Schema(schema)
 
-    schema[
-        vol.Required(
-            CONF_CONSTRAINTS, default=", ".join(existing.get(CONF_CONSTRAINTS) or [])
+    mine = [str(item) for item in existing.get(CONF_CONSTRAINTS) or []]
+    offered = sorted(
+        dict.fromkeys([*KNOWN_CONSTRAINTS, *(known_constraints or []), *mine])
+    )
+    schema[vol.Optional(CONF_CONSTRAINTS, default=mine)] = selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=offered,
+            multiple=True,
+            custom_value=True,
+            mode=selector.SelectSelectorMode.DROPDOWN,
         )
-    ] = selector.TextSelector()
+    )
     schema[
         vol.Required(
             CONF_COASTING_PERMITTED, default=bool(existing.get(CONF_COASTING_PERMITTED, True))
@@ -893,6 +911,15 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
     def _rate_names(self) -> list[str]:
         return [str(rate.get(CONF_NAME, "")) for rate in self._rates()]
 
+    def _known_constraints(self) -> list[str]:
+        """Every rule already used anywhere in the plan, so it can be picked."""
+        found: list[str] = []
+        for rate in self._rates():
+            for rule in rate.get(CONF_CONSTRAINTS) or []:
+                if str(rule) not in found:
+                    found.append(str(rule))
+        return found
+
     def _day_pattern_names(self) -> list[str]:
         return [str(pattern.get(CONF_NAME, "")) for pattern in self._day_patterns()]
 
@@ -1030,7 +1057,14 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         ]
         return self.async_show_form(
             step_id="rate_add",
-            data_schema=_require_name(_rate_schema(existing, fallback_options, minimal=False)),
+            data_schema=_require_name(
+                _rate_schema(
+                    existing,
+                    fallback_options,
+                    minimal=False,
+                    known_constraints=self._known_constraints(),
+                )
+            ),
             errors=errors,
         )
 
