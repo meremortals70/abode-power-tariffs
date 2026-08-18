@@ -1,104 +1,49 @@
-"""The 24-hour text strip. Pure module.
+"""Rendering the plan as text. Pure module.
 
-One line per day set, one character per 30 minutes. Shown on the Configure menu
-and on every screen that touches periods, so a gap or an overlap is visible at
-the moment it is made rather than at save.
+There used to be a coloured 24-hour bar here, drawn with emoji squares under a
+character ruler. It could not be made to line up: the ruler is plain characters
+and the squares are emoji, and their widths differ by font and platform, so the
+bar drifted against the clock by hours on some browsers. A visual you cannot
+read against the clock is worse than none.
+
+So this renders the plan as plain text, which is exact everywhere, and the
+picture is left to Home Assistant. `sensor.<name>_rate` is an enum, so a
+built-in history-graph card draws it as a coloured timeline with a real time
+axis. See the README.
 """
 
 from __future__ import annotations
 
-from .const import MINUTES_PER_DAY
 from .plan import DayPattern, Plan, format_time
 from .validate import validate_periods
 
-SLOT_MINUTES = 30
-SLOTS = MINUTES_PER_DAY // SLOT_MINUTES
-
-# Coloured by price rank, cheapest to dearest. Emoji squares are used because
-# the frontend renders the strip as markdown and strips styling, but renders
-# emoji in colour. They are all double width, so the columns still line up.
-SCALE = ("\U0001f7e9", "\U0001f7e6", "\U0001f7e8", "\U0001f7e7", "\U0001f7e5")
-GAP = "\u2b1c"
-CLASH = "\u274c"
-
-RULER = "".join(f"{hour:<12}" for hour in range(0, 24, 3)).rstrip() + "  24"
-
-
-def _rate_symbols(plan: Plan) -> dict[str, str]:
-    """Map each rate to a colour, cheapest green through dearest red."""
-    if not plan.rates:
-        return {}
-    ranked = sorted(plan.rates, key=lambda rate: rate.import_price)
-    last = max(len(ranked) - 1, 1)
-    return {
-        rate.name: SCALE[round(position / last * (len(SCALE) - 1))]
-        for position, rate in enumerate(ranked)
-    }
-
 
 def render_legend(plan: Plan) -> str:
-    """Return one line per rate, colour then name then price."""
-    symbols = _rate_symbols(plan)
+    """Return one line per rate, cheapest first, identifier then price."""
     return "\n".join(
-        f"{symbols[rate.name]} {rate.name} — {rate.import_price * 100:.2f} c/kWh"
+        f"  {rate.qualified_name:<24}{rate.import_price * 100:>7.2f} c/kWh"
         for rate in sorted(plan.rates, key=lambda rate: rate.import_price)
     )
 
 
-def _export_symbols(plan: Plan) -> dict[str, str]:
-    """Map each export rate to a colour, dearest green because more is better."""
-    if not plan.export_rates:
-        return {}
-    ranked = sorted(plan.export_rates, key=lambda rate: -rate.price)
-    last = max(len(ranked) - 1, 1)
-    return {
-        rate.name: SCALE[round(position / last * (len(SCALE) - 1))]
-        for position, rate in enumerate(ranked)
-    }
-
-
 def render_export_row(plan: Plan, day_pattern: DayPattern) -> str:
-    """Return the export strip, or a one-line note when it is flat."""
+    """Return the feed-in side of one timetable as text."""
     if day_pattern.export_same_all_day:
-        return f"Export: {day_pattern.export_flat_price * 100:.2f} c/kWh all day"
-    symbols = _export_symbols(plan)
-    slots = [GAP] * SLOTS
+        return f"  Feed-in: {day_pattern.export_flat_price * 100:.2f} c/kWh all day"
+
+    lines = ["  Feed-in:"]
     for period in day_pattern.sorted_export_periods():
-        symbol = symbols.get(period.rate, "?")
-        first = period.start // SLOT_MINUTES
-        last = min(SLOTS, -(-period.end // SLOT_MINUTES))
-        for index in range(first, last):
-            slots[index] = CLASH if slots[index] != GAP else symbol
-    legend = "\n".join(
-        f"{symbols[rate.name]} {rate.name} - {rate.price * 100:.2f} c/kWh export"
-        for rate in sorted(plan.export_rates, key=lambda rate: -rate.price)
-    )
-    return "Export\n" + "".join(slots) + "\n" + legend
+        rate = plan.export_rate_by_name(period.rate)
+        price = "rate missing" if rate is None else f"{rate.price * 100:>7.2f} c/kWh"
+        lines.append(
+            f"    {format_time(period.start)}-{format_time(period.end)}"
+            f"  {period.rate:<20}{price}"
+        )
+    return "\n".join(lines)
 
 
 def render_day_pattern(plan: Plan, day_pattern: DayPattern) -> str:
-    """Render one day set as a strip, a legend line and a coverage line."""
-    symbols = _rate_symbols(plan)
-    slots = [GAP] * SLOTS
-
-    for period in day_pattern.sorted_periods():
-        symbol = symbols.get(period.rate, "?")
-        first = period.start // SLOT_MINUTES
-        last = min(SLOTS, -(-period.end // SLOT_MINUTES))
-        for index in range(first, last):
-            slots[index] = CLASH if slots[index] != GAP else symbol
-
-    strip = "".join(slots)
-
-    problems = validate_periods(day_pattern)
-    if problems:
-        coverage = "  " + "\n  ".join(problem.message for problem in problems)
-    else:
-        coverage = (
-            f"  Coverage: complete. {len(day_pattern.periods)} periods, no gaps, "
-            "no overlaps."
-        )
-
+    """Render one timetable: its periods, what each costs, and its coverage."""
     season = ""
     if day_pattern.is_seasonal:
         assert day_pattern.season_from is not None
@@ -108,24 +53,35 @@ def render_day_pattern(plan: Plan, day_pattern: DayPattern) -> str:
             f" - {day_pattern.season_to[1]:02d}/{day_pattern.season_to[0]:02d})"
         )
 
-    return "\n".join(
-        [
-            f"{day_pattern.name}{season}",
-            RULER,
-            strip,
-            "",
-            coverage,
-            "",
-            render_export_row(plan, day_pattern),
-        ]
-    )
+    lines = [f"{day_pattern.name}{season}"]
+    for period in day_pattern.sorted_periods():
+        rate = plan.rate_by_name(period.rate, day_pattern.name)
+        price = (
+            "rate missing" if rate is None else f"{rate.import_price * 100:>7.2f} c/kWh"
+        )
+        lines.append(
+            f"  {format_time(period.start)}-{format_time(period.end)}"
+            f"  {period.rate:<20}{price}"
+        )
+
+    problems = validate_periods(day_pattern)
+    if problems:
+        lines.extend(f"  {problem.message}" for problem in problems)
+    else:
+        lines.append(
+            f"  Coverage: complete. {len(day_pattern.periods)} periods, no gaps, "
+            "no overlaps."
+        )
+
+    lines.append(render_export_row(plan, day_pattern))
+    return "\n".join(lines)
 
 
 def render_plan(plan: Plan) -> str:
-    """Render every day pattern in the plan, with a colour legend."""
+    """Render every timetable in the plan, then the rates."""
     if not plan.rates:
         return "No rates entered yet."
-    legend = render_legend(plan)
+    legend = "Rates\n" + render_legend(plan)
     if not plan.day_patterns:
         return f"No day patterns configured yet.\n\n{legend}"
     body = "\n\n".join(
@@ -163,7 +119,7 @@ def render_rate_plan_card(plan: Plan) -> str:
                 f" to {day_pattern.season_to[1]:02d}/{day_pattern.season_to[0]:02d}"
             )
         for period in day_pattern.sorted_periods():
-            rate = plan.rate_by_name(period.rate)
+            rate = plan.rate_by_name(period.rate, day_pattern.name)
             if rate is None:
                 lines.append(
                     f"  {format_time(period.start)}-{format_time(period.end)}"
@@ -174,8 +130,8 @@ def render_rate_plan_card(plan: Plan) -> str:
                 f"  {format_time(period.start)}-{format_time(period.end)}"
                 f"  {rate.name:<12}"
                 f"  buy {rate.import_price:.4f}/kWh"
-                f"  sell {rate.export_price:.4f}/kWh"
             )
+        lines.append(f"  {render_export_row(plan, day_pattern).strip()}")
         lines.append("")
 
     return "\n".join(lines).rstrip()

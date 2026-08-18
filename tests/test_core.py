@@ -957,61 +957,6 @@ class TestAllowance(unittest.TestCase):
         self.assertAlmostEqual(allowance.accumulate(5.0, 7.5, 12.0), 14.5)
 
 
-class TestStrip(unittest.TestCase):
-    def test_complete_coverage(self) -> None:
-        text = strip.render_plan(sample_plan())
-        self.assertIn("Coverage: complete", text)
-        self.assertIn("Every day", text)
-        self.assertNotIn(strip.CLASH, text)
-
-    def test_strip_is_48_slots(self) -> None:
-        plan = sample_plan()
-        rendered = strip.render_day_pattern(plan, plan.day_patterns[0])
-        strip_line = rendered.splitlines()[2]
-        self.assertEqual(len(strip_line), 48)
-
-    def test_gap_is_visible(self) -> None:
-        plan = Plan(
-            "P",
-            (Rate("a", 0.1),),
-            (DayPattern("D", ALL_DAYS, (Period(0, 360, "a"),)),),
-        )
-        text = strip.render_plan(plan)
-        self.assertIn("nothing covers", text)
-
-    def test_overlap_marks_the_strip(self) -> None:
-        plan = Plan(
-            "P",
-            (Rate("a", 0.1), Rate("b", 0.2)),
-            (DayPattern("D", ALL_DAYS, (Period(0, 800, "a"), Period(600, 1440, "b"))),),
-        )
-        rendered = strip.render_day_pattern(plan, plan.day_patterns[0])
-        self.assertIn(strip.CLASH, rendered)
-
-    def test_no_day_patterns(self) -> None:
-        self.assertIn("No rates", strip.render_plan(Plan("P")))
-        plan = Plan("P", (Rate("a", 0.1),))
-        self.assertIn("No day patterns", strip.render_plan(plan))
-
-    def test_legend_is_ordered_cheapest_first(self) -> None:
-        legend = strip.render_legend(sample_plan()).splitlines()
-        self.assertIn("free", legend[0])
-        self.assertIn("peak", legend[-1])
-
-    def test_colour_scale_is_used(self) -> None:
-        rendered = strip.render_day_pattern(
-            sample_plan(), sample_plan().day_patterns[0]
-        )
-        self.assertIn(strip.SCALE[0], rendered)
-        self.assertIn(strip.SCALE[-1], rendered)
-
-    def test_rate_plan_card_lists_buy_and_sell(self) -> None:
-        card = strip.render_rate_plan_card(sample_plan())
-        self.assertIn("buy", card)
-        self.assertIn("sell", card)
-        self.assertIn("peak", card)
-
-
 class TestSerialise(unittest.TestCase):
     def test_windows_csv_has_a_row_per_window(self) -> None:
         text = serialise.periods_to_csv(sample_plan())
@@ -1176,105 +1121,154 @@ class TestExportSide(unittest.TestCase):
         self.assertAlmostEqual(rebuilt.demand_rate_per_kw_month, 12.5)
 
 
-class TestStripExportAndLegend(unittest.TestCase):
-    """The feed-in row, the legend, seasons and the card's edge cases."""
+class TestPlanText(unittest.TestCase):
+    """The plan is rendered as text, exact everywhere.
 
-    def _plan(self, flat: bool = True) -> Plan:
-        ExportRate = _pkg.plan.ExportRate
-        pattern = DayPattern(
-            "Every day",
-            ALL_DAYS,
-            (Period(0, 960, "off peak"), Period(960, 1440, "peak")),
-            None,
-            None,
-            (Period(0, 960, "daytime"), Period(960, 1440, "evening")),
-            flat,
-            0.05,
+    The coloured bar that used to be here could not be aligned: the ruler was
+    plain characters, the bar was emoji, and their widths differ by font, so it
+    drifted against the clock by hours. The picture is Home Assistant's job now
+    — the rate sensor is an enum, so a history-graph card draws it natively.
+    """
+
+    WEEKDAYS = frozenset({"mon", "tue", "wed", "thu", "fri"})
+    WEEKEND = frozenset({"sat", "sun", "holiday"})
+
+    def test_each_period_shows_its_hours_rate_and_price(self) -> None:
+        text = strip.render_day_pattern(sample_plan(), sample_plan().day_patterns[0])
+        self.assertIn("00:00-06:00", text)
+        self.assertIn("cheap", text)
+        self.assertIn("19.80 c/kWh", text)
+        self.assertIn("16:00-21:00", text)
+        self.assertIn("58.40 c/kWh", text)
+
+    def test_complete_coverage_says_so(self) -> None:
+        text = strip.render_plan(sample_plan())
+        self.assertIn("Coverage: complete", text)
+        self.assertIn("Every day", text)
+
+    def test_a_gap_is_named(self) -> None:
+        plan = Plan(
+            "P", (Rate("a", 0.1),), (DayPattern("D", ALL_DAYS, (Period(0, 360, "a"),)),)
         )
-        return Plan(
+        self.assertIn("nothing covers", strip.render_plan(plan))
+
+    def test_an_overlap_is_named(self) -> None:
+        plan = Plan(
             "P",
-            (Rate("off peak", 0.198), Rate("peak", 0.5688)),
-            (pattern,),
-            daily_supply_charge=1.166,
-            export_rates=(ExportRate("daytime", 0.027), ExportRate("evening", 0.12)),
+            (Rate("a", 0.1), Rate("b", 0.2)),
+            (DayPattern("D", ALL_DAYS, (Period(0, 800, "a"), Period(600, 1440, "b"))),),
         )
+        self.assertIn("overlaps", strip.render_plan(plan))
 
-    def test_a_flat_export_row_states_the_price(self) -> None:
-        text = strip.render_plan(self._plan(flat=True))
-        self.assertIn("Export: 5.00 c/kWh all day", text)
-
-    def test_a_timed_export_row_is_a_coloured_strip(self) -> None:
-        text = strip.render_plan(self._plan(flat=False))
-        self.assertIn("Export", text)
-        self.assertIn("evening", text)
-        self.assertIn("c/kWh export", text)
-
-    def test_the_best_export_rate_is_green(self) -> None:
-        rendered = strip.render_export_row(
-            self._plan(flat=False), self._plan(flat=False).day_patterns[0]
-        )
-        legend = [line for line in rendered.splitlines() if "export" in line]
-        self.assertTrue(legend[0].startswith(strip.SCALE[0]))
-        self.assertIn("evening", legend[0])
-
-    def test_an_export_overlap_is_marked(self) -> None:
-        ExportRate = _pkg.plan.ExportRate
-        pattern = DayPattern(
-            "Every day",
-            ALL_DAYS,
-            (Period(0, 1440, "peak"),),
-            None,
-            None,
-            (Period(0, 800, "daytime"), Period(600, 1440, "evening")),
-            False,
-            0.0,
-        )
+    def test_a_missing_rate_is_named(self) -> None:
         plan = Plan(
             "P",
             (Rate("peak", 0.5),),
-            (pattern,),
-            export_rates=(ExportRate("daytime", 0.02), ExportRate("evening", 0.12)),
+            (DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "missing"),)),),
         )
-        self.assertIn(strip.CLASH, strip.render_export_row(plan, pattern))
+        self.assertIn(
+            "rate missing", strip.render_day_pattern(plan, plan.day_patterns[0])
+        )
 
-    def test_a_season_is_named_in_the_heading(self) -> None:
+    def test_rates_are_listed_cheapest_first(self) -> None:
+        lines = strip.render_legend(sample_plan()).splitlines()
+        self.assertIn("free", lines[0])
+        self.assertIn("peak", lines[-1])
+
+    def test_nothing_entered_yet(self) -> None:
+        self.assertIn("No rates", strip.render_plan(Plan("P")))
+        self.assertIn(
+            "No day patterns", strip.render_plan(Plan("P", (Rate("a", 0.1),)))
+        )
+
+    def test_a_season_is_named(self) -> None:
         pattern = DayPattern(
             "Summer", ALL_DAYS, (Period(0, 1440, "peak"),), (11, 1), (3, 31)
         )
         plan = Plan("P", (Rate("peak", 0.5),), (pattern,))
         self.assertIn("01/11", strip.render_day_pattern(plan, pattern))
 
-    def test_an_unknown_rate_renders_a_question_mark(self) -> None:
-        pattern = DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "missing"),))
-        plan = Plan("P", (Rate("peak", 0.5),), (pattern,))
-        self.assertIn("?", strip.render_day_pattern(plan, pattern))
+    def test_a_flat_feed_in_states_the_price(self) -> None:
+        pattern = DayPattern(
+            "Every day", ALL_DAYS, (Period(0, 1440, "a"),), None, None, (), True, 0.05
+        )
+        plan = Plan("P", (Rate("a", 0.1),), (pattern,))
+        self.assertIn("Feed-in: 5.00 c/kWh all day", strip.render_plan(plan))
 
-    def test_the_legend_is_empty_without_rates(self) -> None:
-        self.assertEqual(strip.render_legend(Plan("P")), "")
+    def test_a_timed_feed_in_lists_its_periods(self) -> None:
+        ExportRate = _pkg.plan.ExportRate
+        pattern = DayPattern(
+            "Every day",
+            ALL_DAYS,
+            (Period(0, 1440, "a"),),
+            None,
+            None,
+            (Period(0, 960, "daytime"), Period(960, 1440, "evening")),
+            False,
+            0.0,
+        )
+        plan = Plan(
+            "P",
+            (Rate("a", 0.1),),
+            (pattern,),
+            export_rates=(ExportRate("daytime", 0.027), ExportRate("evening", 0.12)),
+        )
+        text = strip.render_plan(plan)
+        self.assertIn("16:00-24:00", text)
+        self.assertIn("evening", text)
+        self.assertIn("12.00 c/kWh", text)
+
+    def test_two_timetables_with_the_same_rate_name_stay_apart(self) -> None:
+        plan = Plan(
+            "P",
+            (
+                Rate("Peak", 0.5688, timetable="Weekday"),
+                Rate("Peak", 0.30, timetable="Weekend"),
+            ),
+            (
+                DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Peak"),)),
+                DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+            ),
+        )
+        weekday, weekend = (
+            strip.render_day_pattern(plan, pattern) for pattern in plan.day_patterns
+        )
+        self.assertIn("56.88 c/kWh", weekday)
+        self.assertIn("30.00 c/kWh", weekend)
+        self.assertNotIn("rate missing", weekday + weekend)
+        legend = strip.render_legend(plan)
+        self.assertIn("weekend.peak", legend)
+        self.assertIn("weekday.peak", legend)
+
+    def test_the_card_resolves_every_period(self) -> None:
+        plan = Plan(
+            "P",
+            (
+                Rate("Peak", 0.5688, timetable="Weekday"),
+                Rate("Peak", 0.30, timetable="Weekend"),
+            ),
+            (
+                DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Peak"),)),
+                DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+            ),
+        )
+        card = strip.render_rate_plan_card(plan)
+        self.assertNotIn("rate missing", card)
+        self.assertIn("buy 0.5688/kWh", card)
+        self.assertIn("buy 0.3000/kWh", card)
 
     def test_the_card_shows_tax_and_charges(self) -> None:
-        card = strip.render_rate_plan_card(self._plan())
+        plan = Plan("P", (Rate("a", 0.1),), daily_supply_charge=1.166)
+        card = strip.render_rate_plan_card(plan)
         self.assertIn("Prices include GST", card)
         self.assertIn("Daily supply charge: 116.60 c/day", card)
 
     def test_the_card_shows_a_monthly_charge_only_when_there_is_one(self) -> None:
-        plan = self._plan()
+        plan = Plan("P", (Rate("a", 0.1),))
         self.assertNotIn("Monthly charge", strip.render_rate_plan_card(plan))
-        with_fee = Plan(plan.name, plan.rates, plan.day_patterns, monthly_charge=19.0)
+        with_fee = Plan("P", (Rate("a", 0.1),), monthly_charge=19.0)
         self.assertIn("Monthly charge: 19.00", strip.render_rate_plan_card(with_fee))
 
     def test_the_card_says_when_prices_exclude_tax(self) -> None:
         plan = Plan("P", (Rate("a", 0.1),), prices_include_gst=False)
         self.assertIn("exclude tax", strip.render_rate_plan_card(plan))
-
-    def test_the_card_names_a_season(self) -> None:
-        pattern = DayPattern(
-            "Summer", ALL_DAYS, (Period(0, 1440, "peak"),), (11, 1), (3, 31)
-        )
-        plan = Plan("P", (Rate("peak", 0.5),), (pattern,))
-        self.assertIn("Season 01/11 to 31/03", strip.render_rate_plan_card(plan))
-
-    def test_the_card_flags_a_missing_rate(self) -> None:
-        pattern = DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "missing"),))
-        plan = Plan("P", (Rate("peak", 0.5),), (pattern,))
-        self.assertIn("rate missing", strip.render_rate_plan_card(plan))

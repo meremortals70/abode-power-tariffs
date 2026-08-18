@@ -304,6 +304,50 @@ tariffs:
 
 ---
 
+### Seeing the plan as a picture
+
+Configure shows the plan as text — every period, what it costs, and whether the
+day is covered. There is deliberately no chart in there: a config dialog renders
+markdown, and a bar drawn from characters cannot be made to line up with a clock
+across every font and platform.
+
+Home Assistant already draws it properly. `sensor.<name>_rate` is an enum, so a
+built-in **history-graph** card renders it as a coloured timeline with a real
+time axis, one band per rate:
+
+```yaml
+type: vertical-stack
+cards:
+  - type: history-graph
+    title: Tariff
+    hours_to_show: 24
+    entities:
+      - entity: sensor.<name>_rate
+        name: Rate
+
+  - type: history-graph
+    hours_to_show: 24
+    entities:
+      - entity: sensor.<name>_import_price
+        name: Import
+      - entity: sensor.<name>_export_price
+        name: Feed-in
+
+  - type: entities
+    entities:
+      - sensor.<name>_import_price
+      - sensor.<name>_export_price
+      - sensor.<name>_rate
+      - sensor.<name>_next_rate_change
+      - sensor.<name>_daily_supply_charge
+```
+
+Replace `<name>` with your plan's slug. The first card is the coloured bar; the
+second plots the two prices over the same period. History is the last 24 hours,
+so a plan set up today fills in as the day goes.
+
+---
+
 ## Rate plan card
 
 Under Configure there is a **Rate plan card**: the plan laid out with buy and

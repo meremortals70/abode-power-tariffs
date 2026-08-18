@@ -147,6 +147,7 @@
         "description": "```\n{plan}\n```",
         "menu_options": {
           "rates_menu": "Rates — what energy costs",
+          "allowance_counting": "Allowance counting — capped rates",
           "day_patterns_menu": "Day patterns — which days share a timetable",
           "periods_pick_day_pattern": "Time periods — when each rate applies",
           "general": "Supply charge, tax, plan dates, sensors",
