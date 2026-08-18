@@ -290,7 +290,7 @@ class TestSensorPlatform(PlatformCase):
 
     def _capped(self, **extra: Any) -> dict[str, Any]:
         data = options(**extra)
-        data[CONST.CONF_RATES][0][CONST.CONF_DAILY_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
         data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         return data
 
@@ -337,7 +337,7 @@ class TestSensorPlatform(PlatformCase):
                 CONST.CONF_COUNT_ALLOWANCE: True,
             }
         )
-        data[CONST.CONF_RATES][0][CONST.CONF_DAILY_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
         data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         sensor = self.sensors(data).by_key("allowance_remaining")
         self.assertAlmostEqual(sensor.native_value, 24.0)
@@ -350,31 +350,51 @@ class TestSensorPlatform(PlatformCase):
                 CONST.CONF_COUNT_ALLOWANCE: True,
             }
         )
-        data[CONST.CONF_RATES][0][CONST.CONF_DAILY_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
         data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         sensor = self.sensors(data).by_key("allowance_remaining")
         sensor.hass = self.coordinator.hass
-        restored = types.SimpleNamespace(native_value=9.0)
-        _ha_stubs.sys.modules[
-            "homeassistant.components.sensor"
-        ].RestoreSensor.RESTORED = restored
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(native_value=9.0)
+        # Recorded in the slot the component has come back into.
+        module.RestoreSensor.RESTORED_STATE = types.SimpleNamespace(
+            attributes={
+                CONST.ATTR_ALLOWANCE_SLOT: self.coordinator.state.allowance_slot
+            }
+        )
         run(sensor.async_added_to_hass())
         self.assertAlmostEqual(self.coordinator.state.allowance_used_kwh, 15.0)
-        _ha_stubs.sys.modules[
-            "homeassistant.components.sensor"
-        ].RestoreSensor.RESTORED = None
+        module.RestoreSensor.RESTORED = None
+        module.RestoreSensor.RESTORED_STATE = None
 
-    def test_the_supply_charge_pair_is_opt_in(self) -> None:
+    def test_a_count_from_another_slot_is_not_restored(self) -> None:
+        """The allowance is the slot's. A figure from another one says nothing."""
+        data = options(
+            **{
+                CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid",
+                CONST.CONF_COUNT_ALLOWANCE: True,
+            }
+        )
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        sensor = self.sensors(data).by_key("allowance_remaining")
+        sensor.hass = self.coordinator.hass
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(native_value=9.0)
+        module.RestoreSensor.RESTORED_STATE = types.SimpleNamespace(
+            attributes={CONST.ATTR_ALLOWANCE_SLOT: "some.other@0-60/2001-01-01"}
+        )
+        run(sensor.async_added_to_hass())
+        self.assertEqual(self.coordinator.state.allowance_used_kwh, 0.0)
+        module.RestoreSensor.RESTORED = None
+        module.RestoreSensor.RESTORED_STATE = None
+
+    def test_the_supply_charge_is_declared_and_never_accumulated(self) -> None:
+        """The charge is a statement of what it is. A total is the consumer's."""
         keys = {entity._key for entity in self.sensors().entities}
+        self.assertIn("daily_supply_charge", keys)
         self.assertNotIn("supply_charge_today", keys)
-
-        added = self.sensors(options(**{CONST.CONF_SUPPLY_CHARGE_ENTITIES: True}))
-        cost = added.by_key("supply_charge_today")
-        energy = added.by_key("supply_charge_energy")
-        self.assertTrue(cost.available)
-        self.assertEqual(energy.native_value, 0.0)
-        energy._handle_update()
-        self.assertGreater(energy.native_value, 0.0)
+        self.assertNotIn("supply_charge_energy", keys)
 
 
 class TestBinarySensorPlatform(PlatformCase):
@@ -529,7 +549,7 @@ class TestMigration(unittest.TestCase):
             ],
         }
         self.assertTrue(run(PKG.async_migrate_entry(self.hass, entry)))
-        self.assertEqual(entry.version, 2)
+        self.assertEqual(entry.version, 3)
         self.assertIn("day_patterns", entry.options)
         self.assertNotIn("day_sets", entry.options)
         self.assertIn("periods", entry.options["day_patterns"][0])
@@ -539,13 +559,31 @@ class TestMigration(unittest.TestCase):
 
     def test_a_current_entry_is_left_alone(self) -> None:
         entry = FakeEntry()
+        entry.version = 3
         self.assertTrue(run(PKG.async_migrate_entry(self.hass, entry)))
-        self.assertEqual(entry.version, 2)
+        self.assertEqual(entry.version, 3)
 
     def test_a_future_entry_is_refused(self) -> None:
         entry = FakeEntry()
-        entry.version = 3
+        entry.version = 4
         self.assertFalse(run(PKG.async_migrate_entry(self.hass, entry)))
+
+    def test_version_two_renames_the_allowance_and_drops_the_supply_pair(self) -> None:
+        """The allowance is the slot's, not the day's, and the key says so."""
+        entry = FakeEntry()
+        entry.version = 2
+        entry.options = {
+            "rates": [
+                {"name": "Peak", "import_cents": 50, "daily_allowance_kwh": 24.0}
+            ],
+            "supply_charge_entities": True,
+        }
+        self.assertTrue(run(PKG.async_migrate_entry(self.hass, entry)))
+        self.assertEqual(entry.version, 3)
+        rate = entry.options["rates"][0]
+        self.assertEqual(rate["rate_allowance_kwh"], 24.0)
+        self.assertNotIn("daily_allowance_kwh", rate)
+        self.assertNotIn("supply_charge_entities", entry.options)
 
 
 class TestTheAction(PlatformCase):

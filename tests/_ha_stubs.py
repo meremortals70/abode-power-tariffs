@@ -349,9 +349,13 @@ def install() -> None:
 
     class _RestoreSensor(_SensorEntity):
         RESTORED: Any = None
+        RESTORED_STATE: Any = None
 
         async def async_get_last_sensor_data(self) -> Any:
             return _RestoreSensor.RESTORED
+
+        async def async_get_last_state(self) -> Any:
+            return _RestoreSensor.RESTORED_STATE
 
     sensor_mod.SensorEntity = _SensorEntity
     sensor_mod.RestoreSensor = _RestoreSensor

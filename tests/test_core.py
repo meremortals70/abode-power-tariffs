@@ -264,7 +264,7 @@ class TestValidation(unittest.TestCase):
     def test_allowance_needs_a_fallback(self) -> None:
         plan = Plan(
             "P",
-            (Rate("free", 0.0, daily_allowance_kwh=24.0),),
+            (Rate("free", 0.0, rate_allowance_kwh=24.0),),
             (DayPattern("D", ALL_DAYS, (Period(0, 1440, "free"),)),),
         )
         self.assertTrue(any("fallback" in p.message for p in validate_plan(plan)))
@@ -273,8 +273,8 @@ class TestValidation(unittest.TestCase):
         plan = Plan(
             "P",
             (
-                Rate("free", 0.0, daily_allowance_kwh=24.0, fallback_rate="also"),
-                Rate("also", 0.3, daily_allowance_kwh=10.0, fallback_rate="free"),
+                Rate("free", 0.0, rate_allowance_kwh=24.0, fallback_rate="also"),
+                Rate("also", 0.3, rate_allowance_kwh=10.0, fallback_rate="free"),
             ),
             (DayPattern("D", ALL_DAYS, (Period(0, 1440, "free"),)),),
         )
@@ -510,6 +510,73 @@ class TestBoundaries(unittest.TestCase):
         self.assertGreater(nxt, now)
 
 
+class TestBoundariesAcrossTheFallBack(unittest.TestCase):
+    """A boundary inside the hour that happens twice.
+
+    Sydney falls back 2026-04-05: 03:00 becomes 02:00, so every wall-clock
+    time between 02:00 and 03:00 names two real instants an hour apart. A
+    boundary is stored as minutes past midnight, which alone does not say
+    which.
+
+    Every assertion here is about elapsed time. An assertion that writes down
+    an expected wall-clock time passes against the broken code, because the
+    expected value is built the same wrong way the code builds it.
+    """
+
+    def _plan(self) -> Plan:
+        # Boundaries at 02:00 and 02:30, both inside the repeated hour.
+        return Plan(
+            "P",
+            (Rate("A", 0.10), Rate("B", 0.20), Rate("C", 0.30)),
+            (
+                DayPattern(
+                    "D",
+                    ALL_DAYS,
+                    (
+                        Period(0, 120, "A"),
+                        Period(120, 150, "B"),
+                        Period(150, 1440, "C"),
+                    ),
+                ),
+            ),
+        )
+
+    def _gap(self, now: datetime) -> timedelta:
+        nxt = intervals.next_boundary(self._plan(), now, SYDNEY, never_holiday)
+        assert nxt is not None
+        return nxt.astimezone(UTC) - now.astimezone(UTC)
+
+    def test_the_next_boundary_is_ahead_in_the_second_pass(self) -> None:
+        """The whole fault in one assertion: it used to return a past instant."""
+        now = datetime(2026, 4, 5, 2, 15, tzinfo=SYDNEY, fold=1)
+        self.assertEqual(self._gap(now), timedelta(minutes=15))
+
+    def test_the_second_pass_of_a_boundary_is_scheduled(self) -> None:
+        """Standing in the first pass, the next change is the second 02:00."""
+        now = datetime(2026, 4, 5, 1, 45, tzinfo=SYDNEY, fold=0)
+        self.assertEqual(self._gap(now), timedelta(minutes=15))
+
+    def test_it_does_not_sleep_through_the_repeated_hour(self) -> None:
+        """It used to fall through to tomorrow midnight and sleep 22 hours."""
+        now = datetime(2026, 4, 5, 2, 30, tzinfo=SYDNEY, fold=0)
+        self.assertLess(self._gap(now), timedelta(hours=2))
+
+    def test_an_instant_is_built_for_each_pass(self) -> None:
+        both = intervals.instants_at(date(2026, 4, 5), 150, SYDNEY)
+        self.assertEqual(len(both), 2)
+        self.assertEqual(
+            both[1].astimezone(UTC) - both[0].astimezone(UTC), timedelta(hours=1)
+        )
+
+    def test_an_ordinary_day_names_one_instant(self) -> None:
+        self.assertEqual(len(intervals.instants_at(date(2026, 6, 10), 150, SYDNEY)), 1)
+
+    def test_the_spring_forward_day_is_unaffected(self) -> None:
+        """Twenty-three hours long. Nothing repeats, so nothing changes."""
+        now = datetime(2026, 10, 4, 1, 45, tzinfo=SYDNEY)
+        self.assertEqual(self._gap(now), timedelta(minutes=15))
+
+
 class TestTheCapIsDeclaredEvenWhenNothingCountsIt(unittest.TestCase):
     """The plan says what the cap is and what is paid past it.
 
@@ -521,7 +588,7 @@ class TestTheCapIsDeclaredEvenWhenNothingCountsIt(unittest.TestCase):
         return Plan(
             "P",
             (
-                Rate("Free", 0.0, daily_allowance_kwh=24.0, fallback_rate="Peak"),
+                Rate("Free", 0.0, rate_allowance_kwh=24.0, fallback_rate="Peak"),
                 Rate("Peak", 0.5688),
             ),
             (DayPattern("D", ALL_DAYS, (Period(0, 1440, "Free"),)),),
@@ -566,7 +633,7 @@ class TestTheMidnightWarning(unittest.TestCase):
         night = Rate(
             "Night",
             0.0,
-            daily_allowance_kwh=24.0 if capped else None,
+            rate_allowance_kwh=24.0 if capped else None,
             fallback_rate="Day" if capped else None,
         )
         periods = (
@@ -712,7 +779,7 @@ class TestRateScoping(unittest.TestCase):
                     "Free",
                     0.0,
                     timetable="Weekday",
-                    daily_allowance_kwh=24.0,
+                    rate_allowance_kwh=24.0,
                     fallback_rate="Peak",
                 ),
                 Rate("Peak", 0.5688, timetable="Weekday"),
@@ -920,7 +987,7 @@ class TestAllowance(unittest.TestCase):
         self.plan = Plan(
             "P",
             (
-                Rate("free", 0.0, daily_allowance_kwh=24.0, fallback_rate="standard"),
+                Rate("free", 0.0, rate_allowance_kwh=24.0, fallback_rate="standard"),
                 Rate("standard", 0.321),
             ),
             (DayPattern("D", ALL_DAYS, (Period(0, 1440, "free"),)),),

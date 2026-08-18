@@ -32,9 +32,8 @@ from homeassistant.util import slugify
 from .const import (
     ALL_DAY_TOKENS,
     CONF_COASTING_PERMITTED,
-    CONF_COUNT_ALLOWANCE,
     CONF_CONSTRAINTS,
-    CONF_DAILY_ALLOWANCE_KWH,
+    CONF_COUNT_ALLOWANCE,
     CONF_DAY_PATTERNS,
     CONF_DAYS,
     CONF_DEMAND_PERIOD,
@@ -61,15 +60,15 @@ from .const import (
     CONF_PLAN_NAME,
     CONF_PRICES_INCLUDE_GST,
     CONF_RATE,
+    CONF_RATE_ALLOWANCE_KWH,
     CONF_RATES,
     CONF_SEASON_FROM,
     CONF_SEASON_TO,
     CONF_SOURCE_ENERGY_SENSOR,
     CONF_START,
     CONF_SUPPLY_CHARGE_CENTS,
-    CONF_SUPPLY_CHARGE_ENTITIES,
-    CONF_TIMETABLE,
     CONF_TARIFF_SELECTS,
+    CONF_TIMETABLE,
     CONF_VALID_FROM,
     CONF_VALID_TO,
     DEFAULT_GST_PERCENT,
@@ -143,7 +142,7 @@ def _rate_record(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_ENFORCEABLE_CONSTRAINTS: enforceable,
         CONF_COASTING_PERMITTED: bool(user_input.get(CONF_COASTING_PERMITTED, True)),
         CONF_DEMAND_PERIOD: bool(user_input.get(CONF_DEMAND_PERIOD, False)),
-        CONF_DAILY_ALLOWANCE_KWH: user_input.get(CONF_DAILY_ALLOWANCE_KWH) or None,
+        CONF_RATE_ALLOWANCE_KWH: user_input.get(CONF_RATE_ALLOWANCE_KWH) or None,
         CONF_EXPORT_ALLOWANCE_KWH: user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None,
         CONF_FALLBACK_RATE: user_input.get(CONF_FALLBACK_RATE) or None,
     }
@@ -319,8 +318,8 @@ def _rate_schema(
     ] = selector.BooleanSelector()
     schema[
         vol.Required(
-            CONF_DAILY_ALLOWANCE_KWH,
-            default=float(existing.get(CONF_DAILY_ALLOWANCE_KWH) or 0.0),
+            CONF_RATE_ALLOWANCE_KWH,
+            default=float(existing.get(CONF_RATE_ALLOWANCE_KWH) or 0.0),
         )
     ] = selector.NumberSelector(
         selector.NumberSelectorConfig(
@@ -407,7 +406,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
     Nothing is created that the user did not enter.
     """
 
-    VERSION = 2
+    VERSION = 3
     MINOR_VERSION = 1
 
     def __init__(self) -> None:
@@ -1849,7 +1848,7 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         capped = [
             str(rate.get(CONF_NAME))
             for rate in self._rates()
-            if rate.get(CONF_DAILY_ALLOWANCE_KWH)
+            if rate.get(CONF_RATE_ALLOWANCE_KWH)
         ]
         return self.async_show_form(
             step_id="allowance_counting",
@@ -2109,9 +2108,6 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             self.working[CONF_TARIFF_SELECTS] = (
                 user_input.get(CONF_TARIFF_SELECTS) or []
             )
-            self.working[CONF_SUPPLY_CHARGE_ENTITIES] = user_input[
-                CONF_SUPPLY_CHARGE_ENTITIES
-            ]
             return self._menu("init")
 
         options = self.working
@@ -2127,10 +2123,6 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="select", multiple=True)
                     ),
-                    vol.Required(
-                        CONF_SUPPLY_CHARGE_ENTITIES,
-                        default=bool(options.get(CONF_SUPPLY_CHARGE_ENTITIES, False)),
-                    ): selector.BooleanSelector(),
                 }
             ),
             description_placeholders={"rates": ", ".join(self._rate_names()) or "none"},

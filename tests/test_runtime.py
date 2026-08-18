@@ -18,7 +18,7 @@ import types
 import unittest
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -183,17 +183,28 @@ class TestScheduling(CoordinatorCase):
         self.assertEqual(_ha_stubs.SCHEDULED.cancelled, 1)
         self.assertEqual(len(_ha_stubs.SCHEDULED.points), 2)
 
-    def test_midnight_reset_is_registered_on_start(self) -> None:
+    def test_a_minute_tick_is_registered_on_start(self) -> None:
+        """On the zero second, so a tick lands on each whole-minute boundary.
+
+        Nothing is then load-bearing: a wrong scheduled instant costs a minute
+        rather than hours.
+        """
+        coordinator = a_coordinator()
+        run(coordinator.async_start())
+        ticks = [
+            t
+            for t in _ha_stubs.SCHEDULED.time_changes
+            if t.get("second") == 0 and t.get("hour") is None
+        ]
+        self.assertEqual(len(ticks), 1)
+
+    def test_midnight_is_no_longer_a_barrier(self) -> None:
+        """The allowance belongs to the slot, so the calendar resets nothing."""
         coordinator = a_coordinator()
         run(coordinator.async_start())
         registered = [t for t in _ha_stubs.SCHEDULED.time_changes if t.get("hour") == 0]
-        self.assertEqual(len(registered), 1)
-
-    def test_midnight_clears_the_allowance(self) -> None:
-        coordinator = a_coordinator()
-        coordinator.state.allowance_used_kwh = 12.0
-        coordinator._handle_midnight(at(0, 0, day=15))
-        self.assertEqual(coordinator.state.allowance_used_kwh, 0.0)
+        self.assertEqual(registered, [])
+        self.assertFalse(hasattr(coordinator, "_handle_midnight"))
 
     def test_entities_are_told(self) -> None:
         coordinator = a_coordinator()
@@ -210,11 +221,11 @@ class TestScheduling(CoordinatorCase):
 class TestExportScheduling(CoordinatorCase):
     """The import rate and the feed-in price are scheduled and reported apart."""
 
-    EXPORT_PERIODS = [
+    EXPORT_PERIODS: ClassVar[list[dict[str, Any]]] = [
         {CONST.CONF_START: "00:00", CONST.CONF_END: "09:00", CONST.CONF_RATE: "Night"},
         {CONST.CONF_START: "09:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Day"},
     ]
-    EXPORT_RATES = [
+    EXPORT_RATES: ClassVar[list[dict[str, Any]]] = [
         {CONST.CONF_NAME: "Night", CONST.CONF_EXPORT_CENTS: 0.0},
         {CONST.CONF_NAME: "Day", CONST.CONF_EXPORT_CENTS: 5.0},
     ]
@@ -319,7 +330,7 @@ class TestHolidays(CoordinatorCase):
 class TestAllowanceAccounting(CoordinatorCase):
     def _capped(self) -> Any:
         options = sample_options()
-        options[CONST.CONF_RATES][0][CONST.CONF_DAILY_ALLOWANCE_KWH] = 24.0
+        options[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
         options[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         options[CONST.CONF_COUNT_ALLOWANCE] = True
@@ -357,6 +368,51 @@ class TestAllowanceAccounting(CoordinatorCase):
         coordinator.hass.states.set("sensor.grid_import", "unavailable")
         coordinator._accumulate_energy("sensor.grid_import")
         self.assertTrue(coordinator._energy_warned)
+
+    def test_the_count_starts_again_in_a_new_slot_occurrence(self) -> None:
+        """The allowance is the slot's. Tomorrow is a different occurrence.
+
+        Nothing is carried between slots, days or billing cycles. A restart the
+        morning after used to carry yesterday's figure until midnight.
+        """
+        coordinator = self._capped()
+        PKG.coordinator.dt_util.NOW = at(9, 0, day=14)
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "110.0")
+        coordinator._accumulate_energy("sensor.grid_import")
+        self.assertAlmostEqual(coordinator.state.allowance_used_kwh, 10.0)
+        first = coordinator.state.allowance_slot
+
+        PKG.coordinator.dt_util.NOW = at(9, 0, day=15)
+        coordinator.async_refresh()
+        self.assertNotEqual(coordinator.state.allowance_slot, first)
+        self.assertEqual(coordinator.state.allowance_used_kwh, 0.0)
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_the_count_survives_within_one_slot_occurrence(self) -> None:
+        """Recomputing inside the same slot must not zero a live count."""
+        coordinator = self._capped()
+        PKG.coordinator.dt_util.NOW = at(9, 0, day=14)
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "110.0")
+        coordinator._accumulate_energy("sensor.grid_import")
+        PKG.coordinator.dt_util.NOW = at(9, 1, day=14)
+        coordinator.async_refresh()
+        self.assertAlmostEqual(coordinator.state.allowance_used_kwh, 10.0)
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_the_slot_names_the_period_not_just_the_rate(self) -> None:
+        """Two periods naming one rate are two slots with an allowance each."""
+        coordinator = self._capped()
+        PKG.coordinator.dt_util.NOW = at(9, 0, day=14)
+        coordinator.async_refresh()
+        slot = coordinator.state.allowance_slot
+        assert slot is not None
+        resolution = coordinator.state.resolution
+        assert resolution is not None
+        self.assertIn(str(resolution.period.start), slot)
+        self.assertIn(resolution.rate.qualified_name, slot)
+        PKG.coordinator.dt_util.NOW = None
 
 
 class TestForwardSeriesIsHeld(CoordinatorCase):
@@ -407,7 +463,7 @@ class TestTheTraceHoldsStill(CoordinatorCase):
 
     def _capped(self) -> Any:
         data = sample_options()
-        data[CONST.CONF_RATES][0][CONST.CONF_DAILY_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
         data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         data[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         data[CONST.CONF_COUNT_ALLOWANCE] = True
@@ -877,11 +933,10 @@ class TestOptionsFlowBranches(unittest.TestCase):
         driver.start()
         driver.choose("usage_tracking")
         driver.choose("meter_link")
-        driver.submit(tariff_selects=["select.meter"], supply_charge_entities=True)
+        driver.submit(tariff_selects=["select.meter"])
         self.assertEqual(
             driver.flow.working[CONST.CONF_TARIFF_SELECTS], ["select.meter"]
         )
-        self.assertTrue(driver.flow.working[CONST.CONF_SUPPLY_CHARGE_ENTITIES])
 
     def test_creating_a_meter_needs_rates(self) -> None:
         driver = self._empty()
@@ -1067,7 +1122,7 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
             {
                 CONST.CONF_COASTING_PERMITTED,
                 CONST.CONF_DEMAND_PERIOD,
-                CONST.CONF_DAILY_ALLOWANCE_KWH,
+                CONST.CONF_RATE_ALLOWANCE_KWH,
                 CONST.CONF_EXPORT_ALLOWANCE_KWH,
                 CONST.CONF_FALLBACK_RATE,
             },

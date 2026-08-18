@@ -12,12 +12,12 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import UnitOfEnergy
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import TariffConfigEntry
 from .const import (
-    CONF_SUPPLY_CHARGE_ENTITIES,
+    ATTR_ALLOWANCE_SLOT,
     DEFAULT_HOURS,
     DEFAULT_RESOLUTION_MINUTES,
 )
@@ -62,10 +62,6 @@ async def async_setup_entry(
         rate.has_allowance for rate in coordinator.plan.rates
     ):
         entities.append(AllowanceRemainingSensor(coordinator))
-
-    if coordinator.options.get(CONF_SUPPLY_CHARGE_ENTITIES):
-        entities.append(SupplyChargeCostSensor(coordinator, currency))
-        entities.append(SupplyChargeEnergySensor(coordinator))
 
     async_add_entities(entities)
 
@@ -249,10 +245,13 @@ class SupplyChargeSensor(TariffEntity, SensorEntity):
 
 
 class AllowanceRemainingSensor(TariffEntity, RestoreSensor):
-    """How much of today's energy allowance is left.
+    """How much of this slot's energy allowance is left.
 
     Restored across a restart: an accumulator that resets on restart reads high
-    and says nothing about it.
+    and says nothing about it. The restore is qualified by the slot occurrence
+    the figure was recorded in — a count is only still true if the component
+    comes back inside the same one. Coming back into a different slot, or the
+    same slot on another day, starts from zero.
     """
 
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
@@ -265,20 +264,27 @@ class AllowanceRemainingSensor(TariffEntity, RestoreSensor):
         super().__init__(coordinator, "allowance_remaining")
 
     async def async_added_to_hass(self) -> None:
-        """Restore today's usage before subscribing."""
+        """Restore this slot's usage before subscribing."""
         await super().async_added_to_hass()
         last = await self.async_get_last_sensor_data()
         if last is None or last.native_value is None:
             return
-        rate = self.coordinator.state.resolution
-        if rate is None or rate.rate.daily_allowance_kwh is None:
+        resolution = self.coordinator.state.resolution
+        if resolution is None or resolution.rate.rate_allowance_kwh is None:
+            return
+        restored_slot = None
+        if (state := await self.async_get_last_state()) is not None:
+            restored_slot = state.attributes.get(ATTR_ALLOWANCE_SLOT)
+        if restored_slot != self.coordinator.state.allowance_slot:
+            # A different slot occurrence. The figure belonged to that one and
+            # says nothing about this; the allowance is the slot's, not the day's.
             return
         try:
             remaining = float(last.native_value)
         except (TypeError, ValueError):
             return
         self.coordinator.state.allowance_used_kwh = max(
-            0.0, rate.rate.daily_allowance_kwh - remaining
+            0.0, resolution.rate.rate_allowance_kwh - remaining
         )
 
     @property
@@ -287,68 +293,11 @@ class AllowanceRemainingSensor(TariffEntity, RestoreSensor):
         return self.coordinator.state.allowance_remaining_kwh
 
     @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Publish the slot the count belongs to, so a restore can check it."""
+        return {ATTR_ALLOWANCE_SLOT: self.coordinator.state.allowance_slot}
+
+    @property
     def available(self) -> bool:
         """Available only while a rate carrying an allowance is in force."""
         return self.coordinator.state.allowance_remaining_kwh is not None
-
-
-class SupplyChargeCostSensor(TariffEntity, RestoreSensor):
-    """An accumulating cost for the daily supply charge.
-
-    The Energy dashboard has no field for a fixed daily charge. Paired with the
-    matching energy sensor below and added as a second grid consumption source
-    using "use an entity tracking the total costs", this puts the supply charge
-    into the dashboard's figures.
-    """
-
-    _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
-    _attr_suggested_display_precision = 2
-
-    def __init__(self, coordinator: TariffCoordinator, currency: str) -> None:
-        """Initialise the accumulating supply charge cost sensor."""
-        super().__init__(coordinator, "supply_charge_today")
-        self._attr_native_unit_of_measurement = currency
-
-    @property
-    def native_value(self) -> float:
-        """Return today's supply charge so far."""
-        return round(self.coordinator.state.supply_charge_today, 4)
-
-    @property
-    def available(self) -> bool:
-        """Does not depend on a period resolving."""
-        return True
-
-
-class SupplyChargeEnergySensor(TariffEntity, SensorEntity):
-    """A near-zero energy sensor the Energy dashboard can attach a cost to.
-
-    The dashboard prices a consumption source, so a fixed charge needs a source
-    to hang from. This one contributes a negligible amount of energy.
-    """
-
-    _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
-    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_suggested_display_precision = 6
-
-    def __init__(self, coordinator: TariffCoordinator) -> None:
-        """Initialise the token energy sensor the dashboard needs."""
-        super().__init__(coordinator, "supply_charge_energy")
-        self._counter = 0.0
-
-    @callback
-    def _handle_update(self) -> None:
-        self._counter += 0.000001
-        super()._handle_update()
-
-    @property
-    def native_value(self) -> float:
-        """Return the token energy total."""
-        return round(self._counter, 6)
-
-    @property
-    def available(self) -> bool:
-        """Does not depend on a period resolving."""
-        return True

@@ -201,7 +201,7 @@
           "enforceable_constraints": "Enforceable rules",
           "coasting_permitted": "Good time to stop drawing power",
           "demand_period": "This is a demand charge period",
-          "daily_allowance_kwh": "Daily energy allowance (kWh)",
+          "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
           "export_allowance_kwh": "Daily export allowance (kWh)",
           "fallback_rate": "Rate once the allowance is used up"
         },
@@ -211,7 +211,7 @@
           "enforceable_constraints": "Rules you are declaring to be part of what this rate means, so another system should treat them as a rule rather than a hint. This integration still enforces nothing — it only says so, and the consuming system decides what to do. A rule belongs in one list or the other, not both.",
           "coasting_permitted": "Tells other systems that letting a room drift is acceptable during this rate.",
           "demand_period": "A marker only. The monthly demand charge is not calculated here.",
-          "daily_allowance_kwh": "Zero for none. Some plans give a period free only up to a daily cap.",
+          "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
           "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent."
         }
       },
@@ -358,12 +358,9 @@
         "title": "Keep the dropdown in step",
         "description": "Choose the tariff dropdowns to set to the rate in force whenever the rate changes. The tariff names on the helper must match your rate names exactly: {rates}\n\nLeave empty to do nothing.",
         "data": {
-          "tariff_selects": "Tariff dropdowns",
-          "supply_charge_entities": "Also create the supply charge pair"
+          "tariff_selects": "Tariff dropdowns"
         },
-        "data_description": {
-          "supply_charge_entities": "The Energy dashboard has no field for a fixed daily charge. This creates a running cost sensor and a matching token energy sensor to add as a second grid consumption source."
-        }
+        "data_description": {}
       },
       "rate_plan_card": {
         "title": "Rate plan card",

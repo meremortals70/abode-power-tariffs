@@ -1,8 +1,13 @@
-"""Daily energy allowance accounting. Pure module.
+"""Rate allowance accounting. Pure module.
 
-Some plans give a period free or discounted only up to a daily cap — three free
-hours capped at 24 kWh, for instance. Past the cap, consumption is priced at a
+Some plans give a period free or discounted only up to a cap — three free hours
+capped at 24 kWh, for instance. Past the cap, consumption is priced at a
 nominated fallback rate.
+
+The allowance belongs to the time slot, not to the day. Each occurrence of a
+capped slot has its own; nothing is carried between slots, days or billing
+cycles. Anything spanning them is the consumer's arithmetic, from the cap and
+fallback this component always publishes.
 """
 
 from __future__ import annotations
@@ -38,14 +43,14 @@ class AllowanceState:
 
 
 def apply(plan: Plan, rate: Rate, used_kwh: float) -> AllowanceState:
-    """Return the rate actually in force given today's consumption so far."""
+    """Return the rate actually in force given this slot's consumption so far."""
     if not rate.has_allowance:
         return AllowanceState(
             rate=rate, exhausted=False, used_kwh=used_kwh, remaining_kwh=None
         )
 
-    assert rate.daily_allowance_kwh is not None
-    remaining = max(0.0, rate.daily_allowance_kwh - used_kwh)
+    assert rate.rate_allowance_kwh is not None
+    remaining = max(0.0, rate.rate_allowance_kwh - used_kwh)
 
     if remaining > 0:
         return AllowanceState(
@@ -72,7 +77,7 @@ def apply(plan: Plan, rate: Rate, used_kwh: float) -> AllowanceState:
 def accumulate(
     previous_total: float | None, new_total: float | None, used_kwh: float
 ) -> float:
-    """Add the delta of a monotonic energy meter to today's usage.
+    """Add the delta of a monotonic energy meter to this slot's usage.
 
     A meter that resets, or that reports nothing, contributes nothing rather
     than a spurious negative or a spike.

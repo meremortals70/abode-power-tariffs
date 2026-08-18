@@ -17,7 +17,6 @@ from .const import (
     CONF_COASTING_PERMITTED,
     CONF_COMPONENTS,
     CONF_CONSTRAINTS,
-    CONF_DAILY_ALLOWANCE_KWH,
     CONF_DAY_PATTERNS,
     CONF_DAYS,
     CONF_DEMAND_PERIOD,
@@ -39,6 +38,7 @@ from .const import (
     CONF_PLAN_DESCRIPTION,
     CONF_PRICES_INCLUDE_GST,
     CONF_RATE,
+    CONF_RATE_ALLOWANCE_KWH,
     CONF_RATES,
     CONF_SEASON_FROM,
     CONF_SEASON_TO,
@@ -139,7 +139,7 @@ class Rate:
     # rate, not an instruction: this component still enforces nothing.
     enforceable_constraints: frozenset[str] = field(default_factory=frozenset)
     coasting_permitted: bool = True
-    daily_allowance_kwh: float | None = None
+    rate_allowance_kwh: float | None = None
     export_allowance_kwh: float | None = None
     fallback_rate: str | None = None
     demand_period: bool = False
@@ -148,7 +148,7 @@ class Rate:
     @property
     def has_allowance(self) -> bool:
         """Return whether this rate is capped by a daily energy allowance."""
-        return self.daily_allowance_kwh is not None
+        return self.rate_allowance_kwh is not None
 
     @property
     def informational_constraints(self) -> frozenset[str]:
@@ -183,7 +183,7 @@ class Rate:
             CONF_CONSTRAINTS: sorted(self.constraints),
             CONF_ENFORCEABLE_CONSTRAINTS: sorted(self.enforceable_constraints),
             CONF_COASTING_PERMITTED: self.coasting_permitted,
-            CONF_DAILY_ALLOWANCE_KWH: self.daily_allowance_kwh,
+            CONF_RATE_ALLOWANCE_KWH: self.rate_allowance_kwh,
             CONF_EXPORT_ALLOWANCE_KWH: self.export_allowance_kwh,
             CONF_FALLBACK_RATE: self.fallback_rate,
             CONF_DEMAND_PERIOD: self.demand_period,
@@ -219,7 +219,7 @@ class Rate:
                 if str(item).strip()
             ),
             coasting_permitted=bool(raw.get(CONF_COASTING_PERMITTED, True)),
-            daily_allowance_kwh=_optional_float(raw.get(CONF_DAILY_ALLOWANCE_KWH)),
+            rate_allowance_kwh=_optional_float(raw.get(CONF_RATE_ALLOWANCE_KWH)),
             export_allowance_kwh=_optional_float(raw.get(CONF_EXPORT_ALLOWANCE_KWH)),
             fallback_rate=(
                 str(raw[CONF_FALLBACK_RATE]) if raw.get(CONF_FALLBACK_RATE) else None

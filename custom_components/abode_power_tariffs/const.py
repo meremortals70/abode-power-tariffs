@@ -34,7 +34,6 @@ CONF_IMPORT_ENERGY_SENSOR: Final = "import_energy_sensor"
 CONF_COUNT_ALLOWANCE: Final = "count_allowance"
 CONF_TARIFF_SELECTS: Final = "tariff_selects"
 CONF_SOURCE_ENERGY_SENSOR: Final = "source_energy_sensor"
-CONF_SUPPLY_CHARGE_ENTITIES: Final = "supply_charge_entities"
 
 # Rate keys
 CONF_NAME: Final = "name"
@@ -70,7 +69,7 @@ KNOWN_CONSTRAINTS: Final = (
     CONSTRAINT_PRECOOL_OPPORTUNITY,
 )
 CONF_COASTING_PERMITTED: Final = "coasting_permitted"
-CONF_DAILY_ALLOWANCE_KWH: Final = "daily_allowance_kwh"
+CONF_RATE_ALLOWANCE_KWH: Final = "rate_allowance_kwh"
 CONF_EXPORT_ALLOWANCE_KWH: Final = "export_allowance_kwh"
 CONF_FALLBACK_RATE: Final = "fallback_rate"
 CONF_DEMAND_PERIOD: Final = "demand_period"
@@ -103,6 +102,7 @@ CONF_RATE: Final = "rate"
 
 # Service
 SERVICE_GET_INTERVALS: Final = "get_intervals"
+ATTR_ALLOWANCE_SLOT: Final = "allowance_slot"
 ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"
 ATTR_HOURS: Final = "hours"
 ATTR_RESOLUTION_MINUTES: Final = "resolution_minutes"

@@ -110,6 +110,26 @@ def resolve_at(
     return plan.resolve(day, minutes, is_holiday(day))
 
 
+def instants_at(day: date, minutes: int, zone: tzinfo) -> tuple[datetime, ...]:
+    """Return every real instant a wall-clock time names on a local date.
+
+    One ordinarily. Two on the morning the clocks go back, when the same
+    minute past midnight comes round twice an hour apart — a boundary is
+    stored as minutes past midnight and that alone does not identify a moment.
+
+    The arithmetic is done while the value is naive and the zone attached
+    afterwards. Adding a timedelta to an aware midnight is wall-clock
+    arithmetic and always lands on the first pass, so the second is never
+    built and cannot be chosen.
+    """
+    naive = datetime.combine(day, datetime.min.time()) + timedelta(minutes=minutes)
+    first = naive.replace(tzinfo=zone, fold=0)
+    second = naive.replace(tzinfo=zone, fold=1)
+    if first.utcoffset() == second.utcoffset():
+        return (first,)
+    return (first, second)
+
+
 def next_boundary(
     plan: Plan,
     moment: datetime,
@@ -122,14 +142,19 @@ def next_boundary(
     """Return the next instant at which the resolved period changes.
 
     Walks forward over the wall-clock boundaries of today and the following
-    days, converting each to an instant.
+    days, building every real instant each one names and taking the soonest
+    that is still ahead.
+
+    The comparison is made in UTC. Two aware datetimes that share a tzinfo are
+    compared on the wall clock, where the two passes through a repeated hour
+    are indistinguishable, and the earlier one wins on the digits alone.
 
     With ``export`` set, walks the feed-in boundaries instead of the import
     ones. Returns None when there are none to find — a plan on one feed-in
     price all day has nothing to schedule.
     """
-    local_now = moment.astimezone(zone)
-    day = local_now.date()
+    reference = moment.astimezone(UTC)
+    day = moment.astimezone(zone).date()
 
     for offset in range(max_days + 1):
         current_day = day + timedelta(days=offset)
@@ -141,6 +166,7 @@ def next_boundary(
         if not edges:
             # No day set on this date; the next day may still have one.
             continue
+        soonest: datetime | None = None
         for edge in edges:
             if edge >= MINUTES_PER_DAY:
                 candidate_day = current_day + timedelta(days=1)
@@ -148,18 +174,20 @@ def next_boundary(
             else:
                 candidate_day = current_day
                 candidate_minutes = edge
-            candidate = datetime.combine(
-                candidate_day,
-                datetime.min.time(),
-                tzinfo=zone,
-            ) + timedelta(minutes=candidate_minutes)
-            if candidate > moment:
-                return candidate.astimezone(moment.tzinfo or zone)
+            for candidate in instants_at(candidate_day, candidate_minutes, zone):
+                if candidate.astimezone(UTC) <= reference:
+                    continue
+                if soonest is None or candidate.astimezone(UTC) < soonest.astimezone(
+                    UTC
+                ):
+                    soonest = candidate
+        if soonest is not None:
+            return soonest.astimezone(moment.tzinfo or zone)
 
     return None
 
 
-def generate(  # noqa: PLR0913 - every argument is required to resolve a plan
+def generate(
     plan: Plan,
     start: datetime,
     zone: tzinfo,
@@ -217,7 +245,7 @@ def generate(  # noqa: PLR0913 - every argument is required to resolve a plan
                         sorted(resolution.rate.enforceable_constraints)
                     ),
                     coasting_permitted=resolution.rate.coasting_permitted,
-                    allowance_kwh=resolution.rate.daily_allowance_kwh,
+                    allowance_kwh=resolution.rate.rate_allowance_kwh,
                     fallback_rate=None if fallback is None else fallback.qualified_name,
                     fallback_per_kwh=None
                     if fallback is None

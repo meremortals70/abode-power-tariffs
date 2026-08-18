@@ -47,6 +47,20 @@ _LOGGER = logging.getLogger(__name__)
 UNUSABLE = (STATE_UNAVAILABLE, STATE_UNKNOWN, None, "")
 
 
+def _allowance_slot(resolution: Resolution, day: date) -> str:
+    """Identify one occurrence of one slot.
+
+    The slot is the period, qualified by its timetable's rate, and the date it
+    falls on. Two periods naming the same rate on the same day are two slots
+    with an allowance each; the same period tomorrow is a different occurrence.
+    """
+    return (
+        f"{resolution.rate.qualified_name}"
+        f"@{resolution.period.start}-{resolution.period.end}"
+        f"/{day.isoformat()}"
+    )
+
+
 @dataclass(slots=True)
 class TariffState:
     """Everything the entities read, recomputed at each boundary."""
@@ -56,10 +70,13 @@ class TariffState:
     allowance_used_kwh: float = 0.0
     allowance_remaining_kwh: float | None = None
     allowance_exhausted: bool = False
+    # Which occurrence of which capped slot the count above belongs to. The
+    # allowance is the slot's, not the day's, so this and not the calendar is
+    # what says whether a count is still live.
+    allowance_slot: str | None = None
     next_change: datetime | None = None
     next_export_change: datetime | None = None
     plan_expired: bool = False
-    supply_charge_today: float = 0.0
     trace: tuple[str, ...] = ()
 
 
@@ -104,10 +121,15 @@ class TariffCoordinator:
                 )
             )
 
+        # Recompute on the zero second of every minute. Boundaries are whole
+        # minutes, so a tick lands on each one exactly, and resolve_at works
+        # forwards from the current instant so it is already right inside a
+        # repeated hour. Nothing is then load-bearing: a wrong scheduled
+        # instant costs a minute rather than hours. A tick that changes
+        # nothing writes nothing, because async_write_ha_state is a no-op on
+        # an unchanged value.
         self._unsubscribes.append(
-            async_track_time_change(
-                self.hass, self._handle_midnight, hour=0, minute=0, second=5
-            )
+            async_track_time_change(self.hass, self.async_refresh, second=0)
         )
 
         self._seed_energy_total()
@@ -194,6 +216,13 @@ class TariffCoordinator:
             trace.append("no period resolves at this moment")
         else:
             trace.append(f"day set {resolution.day_pattern.name}")
+            slot = _allowance_slot(resolution, today)
+            if slot != self.state.allowance_slot:
+                # A different slot, or the same slot on another day. The
+                # allowance belongs to the slot, so the count starts again;
+                # nothing is carried from an earlier one.
+                self.state.allowance_used_kwh = 0.0
+                self.state.allowance_slot = slot
             if self.counting_allowance:
                 allowance_state = allowance_module.apply(
                     self.plan, resolution.rate, self.state.allowance_used_kwh
@@ -302,13 +331,6 @@ class TariffCoordinator:
                 self._last_energy_total, reading, self.state.allowance_used_kwh
             )
         self._last_energy_total = reading
-
-    @callback
-    def _handle_midnight(self, _now: datetime) -> None:
-        self.state.allowance_used_kwh = 0.0
-        self.state.supply_charge_today = self.plan.daily_supply_charge
-        _LOGGER.debug("Daily allowance reset")
-        self.async_refresh()
 
     # ------------------------------------------------------- utility  meters
 

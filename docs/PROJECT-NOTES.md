@@ -59,6 +59,18 @@ single all-day export price, which ends the export branch on submission.
 afterwards in Configure. That short flow is also the answer to losing work if
 the dialog is closed — see section 5.
 
+**6a. The allowance belongs to the time slot, not the day.** Each occurrence of
+a capped slot has its own count, from entry to exit. Nothing is carried between
+slots, days or billing cycles — that arithmetic is the consumer's. A period
+cannot wrap past midnight (`Period.contains` is `start <= minutes < end`), so a
+capped slot written across midnight is two slots with an allowance each.
+
+**6b. The supply charge is declared, never accumulated.** The Energy dashboard
+has no field for a fixed daily charge; that is not this component's problem to
+solve. A user wanting a running total builds a `utility_meter` against the
+declared figure, in their own config entry. Adding one here would mean owning
+the billing cycle, which is the accounting system section 1 refuses to be.
+
 **6. Declaring a cap is not counting against it.** The plan always declares the
 allowance and what is paid past it, and publishes both, so a consumer can apply
 the rule itself. Whether this component keeps a running total is a separate
@@ -120,6 +132,20 @@ sibling key rather than nesting, because the flat list is a published contract.
 | P6 | Forecast rebuilt and written to the database constantly | Unrecorded attribute, series held within a slot, live figure out of the trace |
 | P7 | Allowance counting sat inside the core | Opt-in behind its own Configure screen; cap and fallback always published |
 | P8 | The test suite existed but was never committed | Committed, plus `mypy.ini`, `ATTRIBUTION.md`, pinned CI |
+
+### Proposals closed in session two (19 August, shipped as 0.8.2)
+
+| # | What | Where it landed |
+|---|---|---|
+| P9 | `next_boundary` returned an instant already past on the fall-back morning | `instants_at()` builds every real instant a wall-clock time names; the choice is made in UTC, not on clock digits |
+| P10 | One scheduled wake was load-bearing, so a wrong instant cost hours | `async_track_time_change(second=0)` recomputes every minute; boundaries are whole minutes so a tick lands on each exactly |
+| P11 | The supply charge accumulator was an accounting function, and read as a meter reset on any mid-day restart | Both sensors, the state field, the Configure tickbox and its strings removed |
+| P13 | The allowance zeroed on the calendar but counted per rate | Scoped to the slot occurrence; reset on entry; restore qualified by slot; midnight handler deleted; `daily_allowance_kwh` → `rate_allowance_kwh` with a version 3 migration |
+
+P12 (billing cycle as a declared fact) was raised and parked pending research.
+
+Every one of these has tests that fail against the code as it was before,
+demonstrated by stashing the change and running them.
 | P9 | The 24-hour bar could not be aligned with the clock | Removed. Configure shows the plan as text; the picture is a built-in `history-graph` card, documented in the README |
 
 Every one of these has tests that fail against the code as it was before.
@@ -236,21 +262,13 @@ agreed; they are observations from reading the source at v0.7.2.
 
 **Worth doing next**
 
-- `next_boundary` compares wall-clock, not real time. It happens to return
-  correct instants for plausible plans because of how ZoneInfo maps a
-  nonexistent local time — it works by accident, and its docstring describes a
-  mechanism that is not in the loop. Separately, `datetime.combine` always
-  produces fold 0, so on the day the clocks go back the second pass through a
-  repeated hour is never scheduled and a rate can be stale for up to an hour,
-  once a year.
-- `supply_charge_today` is 0 until the first midnight and `SupplyChargeCostSensor`
-  never restores, so a mid-day restart reads as a meter reset to the Energy
-  dashboard.
-- Allowance restore has no date guard and does not refresh state. Restarting the
-  morning after carries yesterday's usage until midnight.
 - `demand_period` and `demand_rate_per_kw_month` are collected from the user and
   published nowhere. `demand_period` belongs on the interval and as a binary
   sensor. Calculating the charge is out of scope and should stay out.
+
+Closed in session two: `next_boundary` (P9), the supply charge accumulator
+(P11, removed rather than fixed), the allowance restore (P13, reframed as slot
+scoping rather than a date guard).
 
 **Smaller**
 

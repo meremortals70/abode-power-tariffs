@@ -29,7 +29,6 @@ action. It answers questions and other things decide.
 | `sensor.<name>_daily_supply_charge` | Your daily supply charge |
 | `sensor.<name>_allowance_remaining` | kWh left of a capped period, when you have asked for it to be counted |
 | `binary_sensor.<name>_<constraint>` | One per rule you declared — see below |
-| `sensor.<name>_supply_charge_today` and `..._supply_charge_energy` | Optional pair that gets the daily supply charge into the Energy dashboard |
 
 Plus an action, `abode_power_tariffs.get_intervals`, returning the forward
 series.
@@ -197,7 +196,7 @@ Beyond the name and the price, a rate carries:
 | Enforceable rules | The same, but declared as part of what the rate means. See below |
 | Coasting permitted | Tells other systems a room may drift during this rate |
 | Demand charge period | Marks the period the demand charge is measured in. The monthly amount is not calculated |
-| Daily energy allowance | Some plans give a period free only up to a cap. Zero for none |
+| Energy allowance for this rate | Some plans give a period free only up to a cap. Zero for none. The allowance belongs to the time slot, not the day |
 | Rate beyond the allowance | Required when there is an allowance |
 
 ### Rate names
@@ -267,13 +266,14 @@ consumption source → **Use an entity with current price** → pick
 **Return to grid.** The same, with `sensor.<name>_export_price`.
 
 **Daily supply charge.** The Energy dashboard has no field for a fixed daily
-charge — it is one of its longest-running open requests. Turn on **Create the
-supply charge pair** under Track usage by rate and you get two entities: an
-accumulating cost and a matching token energy sensor. Add
-`sensor.<name>_supply_charge_energy` as a second grid consumption source and
-choose **use an entity tracking the total costs**, pointing at
-`sensor.<name>_supply_charge_today`. The supply charge then appears in the
-dashboard's figures.
+charge — it is one of its longest-running open requests. This integration
+declares the charge as `sensor.<name>_daily_supply_charge` and stops there: it
+states what the charge is, and does not keep a running total against it.
+
+If you want that total, build it yourself with a `utility_meter` helper against
+the declared figure. That keeps the billing cycle where it belongs — plans
+rarely start on the first of the month, and owning the cycle would make this an
+accounting system rather than a statement of what your plan says.
 
 **Usage split by rate.** Create a `utility_meter` helper with your rate names as
 its tariffs. It makes one meter per rate plus a select naming which is in force.
@@ -476,9 +476,13 @@ and resolved locally.
 The next boundary is computed and scheduled; when it fires, every entity updates
 and the following one is scheduled. Both sides count: the import rate changing
 and the feed-in price changing are separate boundaries and separate sensors, and
-whichever comes first is what wakes the integration. There is also a midnight
-trigger that resets the daily allowance and the supply-charge accumulator, and
-an update whenever the nominated holiday or import energy sensor changes.
+whichever comes first is what wakes the integration.
+
+Everything is also recomputed on the zero second of every minute. Time periods
+are whole minutes, so that tick lands on each boundary exactly, and no single
+scheduled instant is load-bearing — a mistake costs a minute rather than hours.
+A recompute that changes nothing writes nothing. There is also an update
+whenever the nominated holiday or import energy sensor changes.
 
 ### Daylight saving
 
@@ -494,6 +498,13 @@ not emitted; the hour that happens twice is emitted twice, with its two
 different offsets. A rate covering 02:00 to 03:00 is in force for no time at all
 on the short day and for two hours on the long one, because that is what
 happened.
+
+The same applies to the sensors, not just the forecast. On the morning the
+clocks go back, a plan with a boundary inside the repeated hour changes rate,
+changes back, and changes again — because that hour genuinely happens twice.
+A boundary is stored as minutes past midnight, which on that one morning names
+two real instants an hour apart, so both are built and the nearer one ahead is
+taken.
 
 Everything is reported in local time, with the offset. Nothing is published in
 UTC.

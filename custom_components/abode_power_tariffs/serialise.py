@@ -28,7 +28,7 @@ RATE_HEADER = (
     "export_c_per_kwh",
     "constraints",
     "coasting_permitted",
-    "daily_allowance_kwh",
+    "rate_allowance_kwh",
     "fallback_rate",
 )
 
@@ -78,7 +78,7 @@ def rates_to_csv(plan: Plan) -> str:
                 f"{rate.export_price * 100:.4f}",
                 " ".join(sorted(rate.constraints)),
                 "yes" if rate.coasting_permitted else "no",
-                "" if rate.daily_allowance_kwh is None else rate.daily_allowance_kwh,
+                "" if rate.rate_allowance_kwh is None else rate.rate_allowance_kwh,
                 rate.fallback_rate or "",
             ]
         )

@@ -105,7 +105,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Move an older entry forward. A version bump never costs the user a re-entry."""
-    if entry.version > 2:
+    if entry.version > 3:
         # Downgrade. Nothing sensible to do; refuse rather than corrupt.
         return False
 
@@ -122,6 +122,18 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         options.setdefault("plan_description", "")
         hass.config_entries.async_update_entry(entry, options=options, version=2)
         _LOGGER.info("Migrated %s to version 2", entry.title)
+
+    if entry.version == 2:
+        options = dict(entry.options)
+        # The allowance belongs to the slot, not the day, so the key says so.
+        for rate in options.get("rates", []):
+            if "daily_allowance_kwh" in rate:
+                rate["rate_allowance_kwh"] = rate.pop("daily_allowance_kwh")
+        # The supply charge accumulator and its token energy sensor are gone.
+        # The charge is declared, not counted; a total is the consumer's.
+        options.pop("supply_charge_entities", None)
+        hass.config_entries.async_update_entry(entry, options=options, version=3)
+        _LOGGER.info("Migrated %s to version 3", entry.title)
 
     return True
 
