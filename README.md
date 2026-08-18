@@ -23,10 +23,11 @@ action. It answers questions and other things decide.
 |---|---|
 | `sensor.<name>_import_price` | Price now, in currency per kWh. Goes straight into the Energy dashboard |
 | `sensor.<name>_export_price` | Feed-in price now |
-| `sensor.<name>_rate` | The name of the rate in force — `peak`, `free`, whatever you called it |
-| `sensor.<name>_next_rate_change` | When it next changes |
+| `sensor.<name>_rate` | The rate in force, as `weekday.peak` — its timetable and its name |
+| `sensor.<name>_next_rate_change` | When the import rate next changes |
+| `sensor.<name>_next_export_change` | When the feed-in price next changes, if it moves during the day |
 | `sensor.<name>_daily_supply_charge` | Your daily supply charge |
-| `sensor.<name>_allowance_remaining` | kWh left of a capped free time period, when you have one |
+| `sensor.<name>_allowance_remaining` | kWh left of a capped period, when you have asked for it to be counted |
 | `binary_sensor.<name>_<constraint>` | One per rule you declared — see below |
 | `sensor.<name>_supply_charge_today` and `..._supply_charge_energy` | Optional pair that gets the daily supply charge into the Energy dashboard |
 
@@ -108,9 +109,15 @@ order:
 **3. Timetable** — its name, and which days it covers. Leave "Every day is the
 same" on unless weekends or public holidays are priced differently.
 
-**4. Rates** — the prices on this timetable. Type `Peak` on a timetable called
-`Weekday` and it is stored as `Weekday Peak`. Enter one and the screen returns
-for the next; choose **Continue to the time periods** when they are all in.
+**4. Rates** — the prices on this timetable, and any rules that apply during
+them. Call it `Peak` and it stays `Peak`: it belongs to the timetable you are
+entering, so a weekday Peak and a weekend Peak can both be called Peak at
+different prices. It is published as `weekday.peak`. Enter one and the screen
+returns for the next; choose **Continue to the time periods** when they are all
+in.
+
+Allowances, fallback rates and demand periods are not asked for here. They have
+sensible defaults and are set afterwards in Configure.
 
 **5. Time periods** — start, end, and which rate. The start is included and the
 end is not, so one period can end at 16:00 and the next begin at 16:00. A period
@@ -120,7 +127,7 @@ is covered.
 **6. Feed-in** — one price all day, or not. Leave the switch on and enter the
 price, and this timetable is done. Turn it off and you get:
 
-- **6a. Feed-in rates** — same as step 4, same prefixing
+- **6a. Feed-in rates** — same as step 4
 - **6b. Feed-in time periods** — same as step 5, independent of the import ones
 
 **7. Timetable complete** — two buttons. **Add a timetable for other days**
@@ -185,11 +192,25 @@ Beyond the name and the price, a rate carries:
 
 | Field | Notes |
 |---|---|
-| Constraints | Comma separated, your own words. Each becomes a binary sensor. See below |
+| Timetable | Which timetable the rate belongs to. Rates are identified by the pair, so two timetables can each have a Peak |
+| Information only rules | Your own words. Each becomes a binary sensor. See below |
+| Enforceable rules | The same, but declared as part of what the rate means. See below |
 | Coasting permitted | Tells other systems a room may drift during this rate |
 | Demand charge period | Marks the period the demand charge is measured in. The monthly amount is not calculated |
 | Daily energy allowance | Some plans give a period free only up to a cap. Zero for none |
 | Rate beyond the allowance | Required when there is an allowance |
+
+### Rate names
+
+A rate is identified by its timetable and its name together. Type `Peak` on the
+Weekday timetable and on the Weekend one and you have two rates, both called
+Peak, at whatever prices you gave them. They are published as `weekday.peak` and
+`weekend.peak`, and that is what the rate sensor reports and what a
+`utility_meter` tariff should be called.
+
+Plans created before this carry rates named `Weekday Peak` and the like, with no
+timetable of their own. They keep those names and keep working. Nothing is
+renamed underneath you.
 
 ### Seasons
 
@@ -215,6 +236,25 @@ This is what battery, hot water and EV automations should trigger on, instead of
 a clock comparison. When the plan moves, they move with it and you edit nothing.
 
 Note what they are: **rules you declared**, not decisions the integration made.
+
+### Information only, or enforceable
+
+Rules go in one of two lists on the rate.
+
+**Information only** is a useful fact about the rate. A consuming system can
+look at it and decide it does not care.
+
+**Enforceable** says you are declaring the rule to be part of what the rate
+means, so another system should treat it as a rule rather than a hint.
+
+The difference is a declaration about your tariff, not an instruction. This
+integration enforces nothing either way — it says which rules you meant as
+rules, and the consuming system decides what to do about them.
+
+Every rule appears in the `constraints` list as it always has. The enforceable
+ones also appear in `enforceable_constraints`, and each binary sensor carries an
+`enforceable` attribute. Rules on a plan created before this are all information
+only until you say otherwise.
 
 ---
 
@@ -297,16 +337,31 @@ intervals:
     duration: 30
     per_kwh: 0.584
     export_per_kwh: 0.043
-    rate: peak
-    constraints: [no_grid_import]
+    rate: weekday.peak
+    constraints: [no_grid_import, precool_opportunity]
+    enforceable_constraints: [no_grid_import]
     coasting_permitted: true
     allowance_kwh: null
-    day_set: Every day
+    fallback_rate: null
+    fallback_per_kwh: null
+    day_pattern: Weekday
     forecast: false
 ```
 
 `per_kwh` is in dollars and the field names match the core Amber Electric
 integration, so anything already written against that shape works here.
+
+Times are local, with the offset. On the day the clocks go back a wall-clock
+time appears twice and the offsets tell the two apart; `duration` is always the
+real length of the interval.
+
+`rate` is the identifier — the timetable and the name. `constraints` is every
+rule as it always was; `enforceable_constraints` is the subset declared as part
+of what the rate means.
+
+`allowance_kwh`, `fallback_rate` and `fallback_per_kwh` are the cap and what is
+paid past it, published whether or not this integration is counting, so a
+consumer can apply the rule itself.
 
 `forecast` marks a value that was predicted rather than contracted. A static
 plan is always `false`.
@@ -374,15 +429,30 @@ actions:
 Nothing is polled and nothing is fetched. The plan is stored in the config entry
 and resolved locally.
 
-The next time period boundary is computed and scheduled; when it fires, every entity
-updates and the following boundary is scheduled. There is also a midnight
+The next boundary is computed and scheduled; when it fires, every entity updates
+and the following one is scheduled. Both sides count: the import rate changing
+and the feed-in price changing are separate boundaries and separate sensors, and
+whichever comes first is what wakes the integration. There is also a midnight
 trigger that resets the daily allowance and the supply-charge accumulator, and
 an update whenever the nominated holiday or import energy sensor changes.
 
-Time periods are wall-clock times, which is what you want: a peak time period is 16:00
-local on both sides of a daylight-saving transition. The forward series is
-generated in real instants, so a 23-hour day is an hour short and a 25-hour day
-repeats one, with no gap, no overlap and no duplicated interval either way.
+### Daylight saving
+
+Time periods are wall-clock times, which is what you want: a peak period is
+16:00 local on both sides of a transition, and your plan does not change because
+the clocks did.
+
+The horizon is wall clock too. Twenty-four hours from 18:00 means 18:00
+tomorrow, which is 23 real hours on the day the clocks go forward and 25 on the
+day they go back. Inside that, the series is walked in real instants, so every
+interval is genuinely the length it says it is. The hour that does not exist is
+not emitted; the hour that happens twice is emitted twice, with its two
+different offsets. A rate covering 02:00 to 03:00 is in force for no time at all
+on the short day and for two hours on the long one, because that is what
+happened.
+
+Everything is reported in local time, with the offset. Nothing is published in
+UTC.
 
 ---
 
@@ -409,6 +479,22 @@ select actually offers.
 **Public holidays are being priced as ordinary days.** Nominate a holiday sensor
 under the general settings. Without one the day option is not offered, and
 holidays follow the calendar weekday.
+
+**Nothing is counting my allowance.** Counting is off by default and separate
+from the plan. Open Configure, then **Allowance counting**, switch it on and
+nominate a meter. Your plan declares the cap and the fallback either way, and
+publishes both, so a consuming system can apply the rule itself.
+
+**The count does not match my bill.** It will not. It counts the meter you
+nominated and resets at local midnight; your retailer meters and resets on their
+own terms. It exists so the Energy dashboard stays roughly honest on capped
+plans, not to reconcile a bill.
+
+**A capped rate runs through midnight.** Configure will say so. A period cannot
+cross midnight here, so a capped stretch from 22:00 to 02:00 is two periods
+naming the same rate, and the count resets between them — that one stretch gets
+its full allowance twice. Whether that is right depends on how your retailer
+counts it, so it warns rather than refusing to save.
 
 **The allowance reads high after a restart.** It should not — it is restored. If
 it does, the import energy sensor was unavailable at the moment of restore. It

@@ -32,15 +32,19 @@
       },
       "rates": {
         "title": "Rates",
-        "description": "The prices that apply on {pattern}. Each one is stored as '{pattern}' followed by the name you type.\n\nEntered so far: {so_far}",
+        "description": "The prices that apply on {pattern}. Each one is stored as '{pattern}' followed by the name you type.\n\nAllowances, fallback rates and demand periods are set afterwards in Configure.\n\nEntered so far: {so_far}",
         "data": {
           "name": "Rate name",
           "import_cents": "You pay (c/kWh)",
+          "information_constraints": "Information only rules",
+          "enforceable_constraints": "Enforceable rules",
           "on_submit": "When I submit"
         },
         "data_description": {
           "name": "As it appears on your bill - peak, off peak, shoulder, free. '{pattern}' is put in front automatically.",
           "import_cents": "Cents per kilowatt hour, as the bill quotes it.",
+          "information_constraints": "Useful facts about this rate that other systems can look at. Pick from the list, or type your own and press enter. Each one becomes a switch-like sensor your automations can trigger on.",
+          "enforceable_constraints": "Rules you are declaring to be part of what this rate means, so another system should treat them as a rule rather than a hint. This integration still enforces nothing — it only says so, and the consuming system decides what to do. A rule belongs in one list or the other, not both.",
           "on_submit": "Choose 'Continue to the time periods' when this timetable's rates are all in. Every rate you have entered is kept."
         }
       },
@@ -128,7 +132,8 @@
       "days_required": "Choose at least one day.",
       "end_before_start": "The end must be after the start.",
       "bad_time": "That is not a valid time.",
-      "period_overlaps": "That overlaps a time period already entered."
+      "period_overlaps": "That overlaps a time period already entered.",
+      "rule_in_both_lists": "A rule cannot be information only and enforceable at once. Choose one list."
     },
     "abort": {
       "already_configured": "A channel with that name already exists.",
@@ -165,6 +170,18 @@
           "init": "Back"
         }
       },
+      "allowance_counting": {
+        "title": "Allowance counting",
+        "description": "Some plans give a period free or cheap only up to a daily cap. Your plan already says what the cap is and what you pay past it, and publishes both, whatever you choose here.\n\nThis only decides whether this integration keeps its own running total, so the price sensor switches to the fallback once the cap is spent. That keeps the Energy dashboard honest on these plans.\n\nIt is an estimate. It counts the meter you nominate and resets at local midnight. Your retailer meters and resets on their own terms, so it will not match your bill exactly and is not meant to.\n\nCapped rates in this plan: {capped}",
+        "data": {
+          "count_allowance": "Count my usage against the cap",
+          "import_energy_sensor": "Meter to count"
+        },
+        "data_description": {
+          "count_allowance": "Off by default. With it off the price sensor reports the scheduled rate and says that the cap is not being accounted for.",
+          "import_energy_sensor": "A total grid import energy sensor in kWh. Nothing is counted without one."
+        }
+      },
       "rate_pick": {
         "title": "Which rate?",
         "data": {
@@ -176,9 +193,11 @@
         "description": "Prices are entered in cents per kWh, as bills quote them, and published in dollars per kWh, which is what the Energy dashboard wants.",
         "data": {
           "name": "Rate name",
+          "timetable": "Timetable this rate belongs to",
           "import_cents": "You pay (c/kWh)",
           "export_cents": "You are paid (c/kWh)",
-          "constraints": "Rules that apply during this rate",
+          "information_constraints": "Information only rules",
+          "enforceable_constraints": "Enforceable rules",
           "coasting_permitted": "Good time to stop drawing power",
           "demand_period": "This is a demand charge period",
           "daily_allowance_kwh": "Daily energy allowance (kWh)",
@@ -186,7 +205,9 @@
           "fallback_rate": "Rate once the allowance is used up"
         },
         "data_description": {
-          "constraints": "Pick from the list, or type your own and press enter to add it. Each one becomes a switch-like sensor your automations can trigger on. Anything already used elsewhere in this plan appears in the list, so the same rule is never spelled two different ways.",
+          "timetable": "Rates are identified by their timetable and their name together, so a weekday Peak and a weekend Peak can both be called Peak at different prices. The rate is published as 'weekday.peak'. A rate from an older plan carries no timetable and keeps the name it already has.",
+          "information_constraints": "Useful facts about this rate that other systems can look at. Pick from the list, or type your own and press enter. Each one becomes a switch-like sensor your automations can trigger on.",
+          "enforceable_constraints": "Rules you are declaring to be part of what this rate means, so another system should treat them as a rule rather than a hint. This integration still enforces nothing — it only says so, and the consuming system decides what to do. A rule belongs in one list or the other, not both.",
           "coasting_permitted": "Tells other systems that letting a room drift is acceptable during this rate.",
           "demand_period": "A marker only. The monthly demand charge is not calculated here.",
           "daily_allowance_kwh": "Zero for none. Some plans give a period free only up to a daily cap.",
@@ -300,7 +321,6 @@
           "valid_from": "Plan valid from",
           "valid_to": "Plan valid to",
           "holiday_sensor": "Public holiday sensor",
-          "import_energy_sensor": "Import energy sensor",
           "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
           "monthly_charge": "Monthly charge"
         },
@@ -309,7 +329,6 @@
           "valid_from": "Optional. Leave empty unless you are recording a plan that started on a known date.",
           "valid_to": "Optional. When your retailer reprices, set this and add a new channel for the new plan, so past costs stay correct against the price that was actually in force.",
           "holiday_sensor": "Optional. A Workday sensor from Home Assistant's built-in Workday integration, which is off on a public holiday. Needed only if holidays are priced differently.",
-          "import_energy_sensor": "Optional. Needed only to count a daily energy allowance.",
           "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here.",
           "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one."
         }
@@ -392,7 +411,8 @@
       "end_before_start": "The end must be after the start.",
       "bad_time": "That is not a valid time.",
       "validity_backwards": "The plan cannot end before it starts.",
-      "meter_not_created": "The Utility Meter helper could not be created. The reason is in the log."
+      "meter_not_created": "The Utility Meter helper could not be created. The reason is in the log.",
+      "rule_in_both_lists": "A rule cannot be information only and enforceable at once. Choose one list."
     }
   },
   "selector": {
@@ -446,6 +466,9 @@
       },
       "next_rate_change": {
         "name": "Next rate change"
+      },
+      "next_export_change": {
+        "name": "Next export change"
       },
       "daily_supply_charge": {
         "name": "Daily supply charge"

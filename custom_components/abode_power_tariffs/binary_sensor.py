@@ -51,14 +51,25 @@ class ConstraintBinarySensor(TariffEntity, BinarySensorEntity):
         return rate is not None and self._constraint in rate.constraints
 
     @property
+    def enforceable(self) -> bool:
+        """Return whether the rate in force declares this rule enforceable.
+
+        A declaration about what the rate means, not an instruction. Whether
+        anything acts on it is the consuming system's decision.
+        """
+        rate = self.coordinator.state.effective_rate
+        return rate is not None and self._constraint in rate.enforceable_constraints
+
+    @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the period this constraint is currently attached to."""
         resolution = self.coordinator.state.resolution
         if resolution is None or not self.is_on:
-            return {"constraint": self._constraint}
+            return {"constraint": self._constraint, "enforceable": self.enforceable}
         return {
             "constraint": self._constraint,
-            "rate": resolution.rate.name,
+            "enforceable": self.enforceable,
+            "rate": resolution.rate.qualified_name,
             "period_start": format_time(resolution.period.start),
             "period_end": format_time(resolution.period.end),
         }
@@ -66,4 +77,6 @@ class ConstraintBinarySensor(TariffEntity, BinarySensorEntity):
 
 def _slug(value: str) -> str:
     """Return a value safe to use in a unique id."""
-    return "".join(character if character.isalnum() else "_" for character in value.lower())
+    return "".join(
+        character if character.isalnum() else "_" for character in value.lower()
+    )

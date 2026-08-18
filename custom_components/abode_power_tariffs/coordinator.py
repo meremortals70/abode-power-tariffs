@@ -10,11 +10,17 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    callback,
+)
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
     async_track_point_in_time,
@@ -26,6 +32,7 @@ from homeassistant.util import dt as dt_util
 from . import allowance as allowance_module
 from . import intervals as intervals_module
 from .const import (
+    CONF_COUNT_ALLOWANCE,
     CONF_HOLIDAY_SENSOR,
     CONF_IMPORT_ENERGY_SENSOR,
     CONF_TARIFF_SELECTS,
@@ -50,6 +57,7 @@ class TariffState:
     allowance_remaining_kwh: float | None = None
     allowance_exhausted: bool = False
     next_change: datetime | None = None
+    next_export_change: datetime | None = None
     plan_expired: bool = False
     supply_charge_today: float = 0.0
     trace: tuple[str, ...] = ()
@@ -78,6 +86,8 @@ class TariffCoordinator:
         self._last_written_tariff: str | None = None
         self._holiday_warned = False
         self._energy_warned = False
+        self._forward_key: tuple[Any, ...] | None = None
+        self._forward_series: list[intervals_module.Interval] = []
 
     # ------------------------------------------------------------------ setup
 
@@ -89,11 +99,15 @@ class TariffCoordinator:
         tracked = [entity for entity in (holiday_entity, energy_entity) if entity]
         if tracked:
             self._unsubscribes.append(
-                async_track_state_change_event(self.hass, tracked, self._handle_state_change)
+                async_track_state_change_event(
+                    self.hass, tracked, self._handle_state_change
+                )
             )
 
         self._unsubscribes.append(
-            async_track_time_change(self.hass, self._handle_midnight, hour=0, minute=0, second=5)
+            async_track_time_change(
+                self.hass, self._handle_midnight, hour=0, minute=0, second=5
+            )
         )
 
         self._seed_energy_total()
@@ -110,6 +124,19 @@ class TariffCoordinator:
             self._boundary_unsubscribe = None
 
     # -------------------------------------------------------------- resolving
+
+    @property
+    def counting_allowance(self) -> bool:
+        """Return whether this channel keeps a running total against a cap.
+
+        Off by default and separate from the plan. The plan always declares
+        the cap and what is paid past it; counting is an estimate from a meter
+        the user nominates, reset on a local 24-hour clock, and will not agree
+        exactly with a retailer counting it their own way.
+        """
+        return bool(self.options.get(CONF_COUNT_ALLOWANCE)) and bool(
+            self.options.get(CONF_IMPORT_ENERGY_SENSOR)
+        )
 
     @property
     def zone(self) -> Any:
@@ -157,7 +184,9 @@ class TariffCoordinator:
         if self.state.plan_expired:
             trace.append("plan validity has passed; holding the expired plan")
 
-        resolution = intervals_module.resolve_at(self.plan, now, self.zone, self.is_holiday)
+        resolution = intervals_module.resolve_at(
+            self.plan, now, self.zone, self.is_holiday
+        )
         self.state.resolution = resolution
 
         if resolution is None:
@@ -165,18 +194,34 @@ class TariffCoordinator:
             trace.append("no period resolves at this moment")
         else:
             trace.append(f"day set {resolution.day_pattern.name}")
-            allowance_state = allowance_module.apply(
-                self.plan, resolution.rate, self.state.allowance_used_kwh
-            )
-            self.state.effective_rate = allowance_state.rate
-            self.state.allowance_remaining_kwh = allowance_state.remaining_kwh
-            self.state.allowance_exhausted = allowance_state.exhausted
-            trace.append(allowance_state.reason)
-            if allowance_state.exhausted:
-                trace.append(f"priced at {allowance_state.rate.name}")
+            if self.counting_allowance:
+                allowance_state = allowance_module.apply(
+                    self.plan, resolution.rate, self.state.allowance_used_kwh
+                )
+                self.state.effective_rate = allowance_state.rate
+                self.state.allowance_remaining_kwh = allowance_state.remaining_kwh
+                self.state.allowance_exhausted = allowance_state.exhausted
+                trace.append(allowance_state.reason)
+                if allowance_state.exhausted:
+                    trace.append(f"priced at {allowance_state.rate.name}")
+            else:
+                # The cap is declared and published; nothing is counted here,
+                # so the price is the scheduled one and a consumer applying
+                # the rule itself has the cap and the fallback to work from.
+                self.state.effective_rate = resolution.rate
+                self.state.allowance_remaining_kwh = None
+                self.state.allowance_exhausted = False
+                if resolution.rate.has_allowance:
+                    trace.append("capped, but usage is not being counted here")
 
+        # Two separate facts. The import rate can be flat all day while the
+        # feed-in price moves, and a consumer weighing an export against a
+        # cheaper import later needs to know which of the two is changing.
         self.state.next_change = intervals_module.next_boundary(
             self.plan, now, self.zone, self.is_holiday
+        )
+        self.state.next_export_change = intervals_module.next_boundary(
+            self.plan, now, self.zone, self.is_holiday, export=True
         )
         self.state.trace = tuple(trace)
 
@@ -185,19 +230,34 @@ class TariffCoordinator:
         async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_{self.entry_id}")
 
     def _schedule_next_boundary(self) -> None:
+        """Wake at whichever comes first, the import change or the feed-in one.
+
+        Compared as real instants. Two datetimes carrying the same tzinfo are
+        compared on the wall clock, which picks the wrong one on the day the
+        clocks go back.
+        """
         if self._boundary_unsubscribe is not None:
             self._boundary_unsubscribe()
             self._boundary_unsubscribe = None
-        if self.state.next_change is None:
+        candidates = [
+            moment
+            for moment in (self.state.next_change, self.state.next_export_change)
+            if moment is not None
+        ]
+        if not candidates:
             _LOGGER.debug("No further boundary found; nothing scheduled")
             return
         self._boundary_unsubscribe = async_track_point_in_time(
-            self.hass, self.async_refresh, self.state.next_change
+            self.hass,
+            self.async_refresh,
+            min(candidates, key=lambda moment: moment.astimezone(UTC)),
         )
 
     # ------------------------------------------------------------- allowances
 
     def _seed_energy_total(self) -> None:
+        if not self.counting_allowance:
+            return
         entity_id = self.options.get(CONF_IMPORT_ENERGY_SENSOR)
         if not entity_id:
             return
@@ -215,7 +275,9 @@ class TariffCoordinator:
     @callback
     def _handle_state_change(self, event: Event[EventStateChangedData]) -> None:
         entity_id = event.data["entity_id"]
-        if entity_id == self.options.get(CONF_IMPORT_ENERGY_SENSOR):
+        if self.counting_allowance and entity_id == self.options.get(
+            CONF_IMPORT_ENERGY_SENSOR
+        ):
             self._accumulate_energy(entity_id)
         self.async_refresh()
 
@@ -261,7 +323,8 @@ class TariffCoordinator:
         if not selects:
             return
         rate = self.state.effective_rate
-        if rate is None or rate.name == self._last_written_tariff:
+        tariff = None if rate is None else rate.qualified_name
+        if tariff is None or tariff == self._last_written_tariff:
             return
 
         for entity_id in selects:
@@ -270,46 +333,62 @@ class TariffCoordinator:
                 _LOGGER.warning("Tariff select %s does not exist", entity_id)
                 continue
             options = state.attributes.get("options") or []
-            if rate.name not in options:
+            if tariff not in options:
                 _LOGGER.warning(
                     "Tariff select %s has no option '%s'; its options are: %s",
                     entity_id,
-                    rate.name,
+                    tariff,
                     ", ".join(options) or "none",
                 )
                 continue
-            if state.state == rate.name:
+            if state.state == tariff:
                 continue
             self.hass.async_create_task(
                 self.hass.services.async_call(
                     "select",
                     "select_option",
-                    {"entity_id": entity_id, "option": rate.name},
+                    {"entity_id": entity_id, "option": tariff},
                     blocking=False,
                 )
             )
-        self._last_written_tariff = rate.name
+        self._last_written_tariff = tariff
 
     # ------------------------------------------------------------------ views
 
     def export_price_now(self) -> float:
         """Return the feed-in price in force, in dollars per kWh."""
         now = dt_util.now()
-        return self.plan.export_price_at(now.date(), now.hour * 60 + now.minute,
-                                         self.is_holiday(now.date()))
+        return self.plan.export_price_at(
+            now.date(), now.hour * 60 + now.minute, self.is_holiday(now.date())
+        )
 
     def forward_intervals(
         self, hours: int, resolution_minutes: int
     ) -> list[intervals_module.Interval]:
-        """Return the forward interval series from now."""
-        return intervals_module.generate(
-            self.plan,
-            dt_util.now(),
-            self.zone,
-            self.is_holiday,
-            hours=hours,
-            resolution_minutes=resolution_minutes,
-        )
+        """Return the forward interval series from now.
+
+        Held between calls. The series is aligned to the resolution grid, so it
+        is the same for every moment inside one slot, and the price sensors ask
+        for it every time their attributes are read — which is every state
+        write, which with an energy meter attached is several times a minute.
+        """
+        now = dt_util.now()
+        today = now.date()
+        aligned = (
+            (now.hour * 60 + now.minute) // resolution_minutes
+        ) * resolution_minutes
+        key = (today, aligned, hours, resolution_minutes, self.is_holiday(today))
+        if key != self._forward_key:
+            self._forward_series = intervals_module.generate(
+                self.plan,
+                now,
+                self.zone,
+                self.is_holiday,
+                hours=hours,
+                resolution_minutes=resolution_minutes,
+            )
+            self._forward_key = key
+        return self._forward_series
 
     @property
     def problems(self) -> list[str]:
@@ -326,6 +405,7 @@ class TariffCoordinator:
         self.plan = plan
         self.options = options
         self._last_written_tariff = None
+        self._forward_key = None
         self.async_refresh()
 
 

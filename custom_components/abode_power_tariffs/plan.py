@@ -23,6 +23,7 @@ from .const import (
     CONF_DEMAND_PERIOD,
     CONF_DEMAND_RATE,
     CONF_END,
+    CONF_ENFORCEABLE_CONSTRAINTS,
     CONF_EXPORT_ALLOWANCE_KWH,
     CONF_EXPORT_CENTS,
     CONF_EXPORT_FLAT_CENTS,
@@ -43,6 +44,7 @@ from .const import (
     CONF_SEASON_TO,
     CONF_START,
     CONF_SUPPLY_CHARGE_CENTS,
+    CONF_TIMETABLE,
     CONF_VALID_FROM,
     CONF_VALID_TO,
     DAY_HOLIDAY,
@@ -95,6 +97,18 @@ def format_month_day(value: tuple[int, int]) -> str:
     return f"{value[0]:02d}-{value[1]:02d}"
 
 
+def slug(value: str) -> str:
+    """Reduce a name to lowercase words joined by underscores.
+
+    Used to build a rate's unique identifier from its timetable and its name.
+    Pure, so it cannot use Home Assistant's slugify.
+    """
+    cleaned = "".join(
+        character if character.isalnum() else " " for character in value.lower()
+    )
+    return "_".join(cleaned.split())
+
+
 def day_token(day: date, is_holiday: bool) -> str:
     """Return the day type token for a calendar date."""
     if is_holiday:
@@ -108,8 +122,22 @@ class Rate:
 
     name: str
     import_price: float
+    # Which timetable this rate belongs to. Two timetables can each have a
+    # rate called Peak at different prices, because a rate is identified by
+    # the pair rather than by the name alone.
+    #
+    # None means the rate was stored before the scoping existed, when the
+    # setup flow guaranteed uniqueness by prefixing the timetable name onto
+    # the rate name. Such a rate keeps the name it was given, is already
+    # unique, and resolves in any timetable. It is not a way to share a rate;
+    # it is what the old plans look like.
+    timetable: str | None = None
     export_price: float = 0.0
     constraints: frozenset[str] = field(default_factory=frozenset)
+    # The subset of the above the user has declared other systems should treat
+    # as a rule rather than a hint. A declaration about the meaning of the
+    # rate, not an instruction: this component still enforces nothing.
+    enforceable_constraints: frozenset[str] = field(default_factory=frozenset)
     coasting_permitted: bool = True
     daily_allowance_kwh: float | None = None
     export_allowance_kwh: float | None = None
@@ -122,13 +150,38 @@ class Rate:
         """Return whether this rate is capped by a daily energy allowance."""
         return self.daily_allowance_kwh is not None
 
+    @property
+    def informational_constraints(self) -> frozenset[str]:
+        """Return the rules the user did not declare enforceable."""
+        return self.constraints - self.enforceable_constraints
+
+    @property
+    def qualified_name(self) -> str:
+        """Return the identifier that is unique across the whole plan.
+
+        'weekday.peak'. This is what appears anywhere uniqueness is required —
+        the rate sensor, the utility meter's tariffs — while the name the user
+        typed is what they see on the rate itself.
+
+        Always qualified when the rate belongs to a timetable. At the point
+        setup names the first timetable's rates it cannot know whether a second
+        timetable is coming, and Configure can add one years later, so an
+        identifier that depended on the count would be assigned before the
+        fact that decides it is known.
+        """
+        if self.timetable is None:
+            return self.name
+        return f"{slug(self.timetable)}.{slug(self.name)}"
+
     def as_dict(self) -> dict[str, Any]:
         """Return the rate as a plain dictionary."""
         return {
             CONF_NAME: self.name,
+            CONF_TIMETABLE: self.timetable,
             CONF_IMPORT_CENTS: round(self.import_price * 100, 4),
             CONF_EXPORT_CENTS: round(self.export_price * 100, 4),
             CONF_CONSTRAINTS: sorted(self.constraints),
+            CONF_ENFORCEABLE_CONSTRAINTS: sorted(self.enforceable_constraints),
             CONF_COASTING_PERMITTED: self.coasting_permitted,
             CONF_DAILY_ALLOWANCE_KWH: self.daily_allowance_kwh,
             CONF_EXPORT_ALLOWANCE_KWH: self.export_allowance_kwh,
@@ -144,17 +197,33 @@ class Rate:
         if not name:
             raise PlanError("A rate must have a name")
         components = raw.get(CONF_COMPONENTS) or {}
+        timetable = raw.get(CONF_TIMETABLE)
         return cls(
             name=name,
+            # Absent on a plan stored before the scoping existed, whose rate
+            # names already carry the timetable and are already unique.
+            timetable=str(timetable).strip() or None if timetable else None,
             import_price=_cents_to_dollars(raw.get(CONF_IMPORT_CENTS)),
             export_price=_cents_to_dollars(raw.get(CONF_EXPORT_CENTS)),
             constraints=frozenset(
-                str(item).strip() for item in raw.get(CONF_CONSTRAINTS) or () if str(item).strip()
+                str(item).strip()
+                for item in raw.get(CONF_CONSTRAINTS) or ()
+                if str(item).strip()
+            ),
+            # Absent on a plan written before the distinction existed, which
+            # loads as nothing enforceable. Existing rules keep the meaning
+            # they were given rather than being silently strengthened.
+            enforceable_constraints=frozenset(
+                str(item).strip()
+                for item in raw.get(CONF_ENFORCEABLE_CONSTRAINTS) or ()
+                if str(item).strip()
             ),
             coasting_permitted=bool(raw.get(CONF_COASTING_PERMITTED, True)),
             daily_allowance_kwh=_optional_float(raw.get(CONF_DAILY_ALLOWANCE_KWH)),
             export_allowance_kwh=_optional_float(raw.get(CONF_EXPORT_ALLOWANCE_KWH)),
-            fallback_rate=(str(raw[CONF_FALLBACK_RATE]) if raw.get(CONF_FALLBACK_RATE) else None),
+            fallback_rate=(
+                str(raw[CONF_FALLBACK_RATE]) if raw.get(CONF_FALLBACK_RATE) else None
+            ),
             demand_period=bool(raw.get(CONF_DEMAND_PERIOD, False)),
             components=tuple(
                 (str(key), float(value)) for key, value in sorted(components.items())
@@ -290,8 +359,12 @@ class DayPattern:
         return {
             CONF_NAME: self.name,
             CONF_DAYS: [token for token in ALL_DAY_TOKENS if token in self.days],
-            CONF_SEASON_FROM: (format_month_day(self.season_from) if self.season_from else None),
-            CONF_SEASON_TO: (format_month_day(self.season_to) if self.season_to else None),
+            CONF_SEASON_FROM: (
+                format_month_day(self.season_from) if self.season_from else None
+            ),
+            CONF_SEASON_TO: (
+                format_month_day(self.season_to) if self.season_to else None
+            ),
             CONF_PERIODS: [period.as_dict() for period in self.sorted_periods()],
             CONF_EXPORT_PERIODS: [
                 period.as_dict() for period in self.sorted_export_periods()
@@ -309,13 +382,17 @@ class DayPattern:
         days = frozenset(str(token) for token in raw.get(CONF_DAYS) or ())
         unknown = days - set(ALL_DAY_TOKENS)
         if unknown:
-            raise PlanError(f"Unknown day types in '{name}': {', '.join(sorted(unknown))}")
+            raise PlanError(
+                f"Unknown day types in '{name}': {', '.join(sorted(unknown))}"
+            )
         season_from = raw.get(CONF_SEASON_FROM)
         season_to = raw.get(CONF_SEASON_TO)
         return cls(
             name=name,
             days=days,
-            periods=tuple(Period.from_dict(item) for item in raw.get(CONF_PERIODS) or ()),
+            periods=tuple(
+                Period.from_dict(item) for item in raw.get(CONF_PERIODS) or ()
+            ),
             export_periods=tuple(
                 Period.from_dict(item) for item in raw.get(CONF_EXPORT_PERIODS) or ()
             ),
@@ -352,17 +429,41 @@ class Plan:
     demand_rate_per_kw_month: float = 0.0
     monthly_charge: float = 0.0
 
-    def rate_by_name(self, name: str) -> Rate | None:
-        """Return a rate by name, or None."""
+    def rate_by_name(self, name: str, timetable: str | None = None) -> Rate | None:
+        """Return a rate by name, preferring one belonging to a timetable.
+
+        A rate scoped to the timetable asked for wins, so a period in the
+        Weekend timetable naming 'Peak' gets the weekend's Peak and not the
+        weekday's. An unscoped rate is the fallback, which is what a plan
+        stored before the scoping existed consists of entirely.
+        """
+        unscoped: Rate | None = None
         for rate in self.rates:
-            if rate.name == name:
+            if rate.name != name:
+                continue
+            if timetable is not None and rate.timetable == timetable:
                 return rate
-        return None
+            if rate.timetable is None and unscoped is None:
+                unscoped = rate
+        return unscoped
+
+    def rates_for(self, timetable: str) -> tuple[Rate, ...]:
+        """Return the rates belonging to one timetable, plus any unscoped ones."""
+        return tuple(
+            rate
+            for rate in self.rates
+            if rate.timetable == timetable or rate.timetable is None
+        )
 
     @property
     def rate_names(self) -> tuple[str, ...]:
-        """Return every rate name, in configured order."""
+        """Return every rate's name as the user typed it, in configured order."""
         return tuple(rate.name for rate in self.rates)
+
+    @property
+    def qualified_rate_names(self) -> tuple[str, ...]:
+        """Return every rate's unique identifier, in configured order."""
+        return tuple(rate.qualified_name for rate in self.rates)
 
     @property
     def constraints(self) -> tuple[str, ...]:
@@ -436,18 +537,44 @@ class Plan:
         period = day_pattern.period_at(minutes)
         if period is None:
             return None
-        rate = self.rate_by_name(period.rate)
+        rate = self.rate_by_name(period.rate, day_pattern.name)
         if rate is None:
             return None
         return Resolution(day_pattern=day_pattern, period=period, rate=rate)
 
+    @property
+    def has_export_periods(self) -> bool:
+        """Return whether any timetable prices feed-in by time of day."""
+        return any(
+            not day_pattern.export_same_all_day and day_pattern.export_periods
+            for day_pattern in self.day_patterns
+        )
+
     def boundaries_for(self, day: date, is_holiday: bool) -> tuple[int, ...]:
-        """Return the period boundaries in force on a date, in minutes."""
+        """Return the import period boundaries in force on a date, in minutes."""
         day_pattern = self.day_pattern_for(day, is_holiday)
         if day_pattern is None:
             return ()
         edges = {0, MINUTES_PER_DAY}
         for period in day_pattern.periods:
+            edges.add(period.start)
+            edges.add(period.end)
+        return tuple(sorted(edges))
+
+    def export_boundaries_for(self, day: date, is_holiday: bool) -> tuple[int, ...]:
+        """Return the feed-in price boundaries in force on a date, in minutes.
+
+        Empty when the timetable is on one price all day: the feed-in price
+        never changes, so there is nothing to wake up for. Kept apart from the
+        import boundaries because the two are separate facts — the import rate
+        can be flat while the feed-in price moves, and a consumer deciding what
+        to do about that needs to know which one is changing.
+        """
+        day_pattern = self.day_pattern_for(day, is_holiday)
+        if day_pattern is None or day_pattern.export_same_all_day:
+            return ()
+        edges = {0, MINUTES_PER_DAY}
+        for period in day_pattern.export_periods:
             edges.add(period.start)
             edges.add(period.end)
         return tuple(sorted(edges))
@@ -461,7 +588,9 @@ class Plan:
             CONF_EXPORT_RATES: [rate.as_dict() for rate in self.export_rates],
             CONF_DEMAND_RATE: self.demand_rate_per_kw_month,
             CONF_MONTHLY_CHARGE: self.monthly_charge,
-            CONF_DAY_PATTERNS: [day_pattern.as_dict() for day_pattern in self.day_patterns],
+            CONF_DAY_PATTERNS: [
+                day_pattern.as_dict() for day_pattern in self.day_patterns
+            ],
             CONF_SUPPLY_CHARGE_CENTS: round(self.daily_supply_charge * 100, 4),
             CONF_PRICES_INCLUDE_GST: self.prices_include_gst,
             CONF_GST_PERCENT: self.gst_percent,
@@ -477,8 +606,7 @@ class Plan:
             description=str(raw.get(CONF_PLAN_DESCRIPTION) or ""),
             rates=tuple(Rate.from_dict(item) for item in raw.get(CONF_RATES) or ()),
             day_patterns=tuple(
-                DayPattern.from_dict(item)
-                for item in raw.get(CONF_DAY_PATTERNS) or ()
+                DayPattern.from_dict(item) for item in raw.get(CONF_DAY_PATTERNS) or ()
             ),
             daily_supply_charge=_cents_to_dollars(raw.get(CONF_SUPPLY_CHARGE_CENTS)),
             prices_include_gst=bool(raw.get(CONF_PRICES_INCLUDE_GST, True)),

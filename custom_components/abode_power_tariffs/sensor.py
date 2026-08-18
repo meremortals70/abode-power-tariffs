@@ -17,7 +17,6 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import TariffConfigEntry
 from .const import (
-    CONF_IMPORT_ENERGY_SENSOR,
     CONF_SUPPLY_CHARGE_ENTITIES,
     DEFAULT_HOURS,
     DEFAULT_RESOLUTION_MINUTES,
@@ -52,7 +51,14 @@ async def async_setup_entry(
         SupplyChargeSensor(coordinator, currency),
     ]
 
-    if coordinator.options.get(CONF_IMPORT_ENERGY_SENSOR) and any(
+    # Only when the feed-in price actually moves. A plan on one export price
+    # all day would get an entity that never has anything to say.
+    if coordinator.plan.has_export_periods:
+        entities.append(NextExportChangeSensor(coordinator))
+
+    # Only when the user asked for it. Without counting there is nothing to
+    # report, and an entity that never has a value is clutter.
+    if coordinator.counting_allowance and any(
         rate.has_allowance for rate in coordinator.plan.rates
     ):
         entities.append(AllowanceRemainingSensor(coordinator))
@@ -70,6 +76,11 @@ class _PriceSensor(TariffEntity, SensorEntity):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 4
 
+    # The forecast is a 24-hour prediction, roughly 4 KB of it, rebuilt on the
+    # half hour. Keeping a history of predictions has no value and writing one
+    # every time the entity updates is measured in tens of megabytes a day.
+    _unrecorded_attributes = frozenset({"forecast"})
+
     def __init__(self, coordinator: TariffCoordinator, key: str, currency: str) -> None:
         """Initialise a price sensor with the configured currency."""
         super().__init__(coordinator, key)
@@ -83,18 +94,26 @@ class _PriceSensor(TariffEntity, SensorEntity):
         rate = state.effective_rate
 
         attributes: dict[str, Any] = {
-            "rate": rate.name if rate else None,
+            "rate": rate.qualified_name if rate else None,
+            "rate_name": rate.name if rate else None,
             "day_pattern": resolution.day_pattern.name if resolution else None,
             "season": (
                 resolution.day_pattern.name
                 if resolution and resolution.day_pattern.is_seasonal
                 else None
             ),
-            "period_start": format_time(resolution.period.start) if resolution else None,
+            "period_start": format_time(resolution.period.start)
+            if resolution
+            else None,
             "period_end": format_time(resolution.period.end) if resolution else None,
             "constraints": sorted(rate.constraints) if rate else [],
+            "enforceable_constraints": (
+                sorted(rate.enforceable_constraints) if rate else []
+            ),
             "coasting_permitted": rate.coasting_permitted if rate else None,
             "allowance_exhausted": state.allowance_exhausted,
+            # Says plainly whether this price accounts for a cap being spent.
+            "allowance_counted": self.coordinator.counting_allowance,
             "plan_expired": state.plan_expired,
             "trace": list(state.trace),
         }
@@ -147,20 +166,22 @@ class RateSensor(TariffEntity, SensorEntity):
     def __init__(self, coordinator: TariffCoordinator) -> None:
         """Initialise the rate sensor with the plan's rate names as options."""
         super().__init__(coordinator, "rate")
-        self._attr_options = list(coordinator.plan.rate_names)
+        self._attr_options = list(coordinator.plan.qualified_rate_names)
 
     @property
     def native_value(self) -> str | None:
         """Return the rate name."""
         rate = self.coordinator.state.effective_rate
-        return None if rate is None else rate.name
+        return None if rate is None else rate.qualified_name
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the scheduled rate, which differs when an allowance is spent."""
         resolution = self.coordinator.state.resolution
         return {
-            "scheduled_rate": resolution.rate.name if resolution else None,
+            "scheduled_rate": (resolution.rate.qualified_name if resolution else None),
+            "rate_name": resolution.rate.name if resolution else None,
+            "timetable": resolution.rate.timetable if resolution else None,
             "allowance_exhausted": self.coordinator.state.allowance_exhausted,
         }
 
@@ -178,6 +199,31 @@ class NextRateChangeSensor(TariffEntity, SensorEntity):
     def native_value(self) -> datetime | None:
         """Return the next boundary."""
         return self.coordinator.state.next_change
+
+
+class NextExportChangeSensor(TariffEntity, SensorEntity):
+    """When the feed-in price next changes.
+
+    Separate from the rate change, because they are separate facts. A battery
+    weighing a good export now against a cheaper import later needs both, and
+    an automation should be able to trigger on either without the other.
+    """
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, coordinator: TariffCoordinator) -> None:
+        """Initialise the next feed-in change sensor."""
+        super().__init__(coordinator, "next_export_change")
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the next feed-in boundary."""
+        return self.coordinator.state.next_export_change
+
+    @property
+    def available(self) -> bool:
+        """The feed-in schedule does not depend on an import period resolving."""
+        return True
 
 
 class SupplyChargeSensor(TariffEntity, SensorEntity):

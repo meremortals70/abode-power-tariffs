@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from .const import ALL_DAY_TOKENS, MINUTES_PER_DAY
-from .plan import DayPattern, Plan, format_time
+from .plan import DayPattern, Plan, Rate, format_time
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,21 +174,47 @@ def validate_export(plan: Plan) -> list[Problem]:
             cursor = max(cursor, period.end)
         if cursor < MINUTES_PER_DAY:
             problems.append(
-                Problem(f"{pattern.name} export", f"nothing covers {format_time(cursor)}-24:00")
+                Problem(
+                    f"{pattern.name} export",
+                    f"nothing covers {format_time(cursor)}-24:00",
+                )
             )
     return problems
 
 
 def validate_rates(plan: Plan) -> list[Problem]:
-    """Check rate references and allowance fallbacks."""
+    """Check rate identity, references and allowance fallbacks."""
     problems: list[Problem] = []
-    names = set(plan.rate_names)
 
     if not plan.rates:
         problems.append(Problem("", "the plan has no rates"))
 
-    if len(names) != len(plan.rates):
-        problems.append(Problem("", "two rates share a name"))
+    # A rate is identified by its timetable and its name together, so two
+    # timetables can each have a Peak at a different price.
+    pairs = [(rate.timetable, rate.name) for rate in plan.rates]
+    if len(set(pairs)) != len(pairs):
+        problems.append(Problem("", "two rates in the same timetable share a name"))
+
+    # The qualified form is what entities and utility meter tariffs are named
+    # by, so it has to be unique even when the names it is built from are not
+    # identical. 'Off Peak' and 'off-peak' both reduce to off_peak.
+    identifiers = [rate.qualified_name for rate in plan.rates]
+    clashing = sorted({name for name in identifiers if identifiers.count(name) > 1})
+    if clashing:
+        problems.append(
+            Problem("", f"two rates end up with the same id: {', '.join(clashing)}")
+        )
+
+    for rate in plan.rates:
+        stray = rate.enforceable_constraints - rate.constraints
+        if stray:
+            problems.append(
+                Problem(
+                    rate.name,
+                    "declares rules enforceable that it does not carry: "
+                    f"{', '.join(sorted(stray))}",
+                )
+            )
 
     for rate in plan.rates:
         if rate.has_allowance:
@@ -199,14 +225,19 @@ def validate_rates(plan: Plan) -> list[Problem]:
                         "has a daily allowance but no fallback rate for beyond it",
                     )
                 )
-            elif rate.fallback_rate not in names:
-                problems.append(
-                    Problem(rate.name, f"names a fallback rate '{rate.fallback_rate}' "
-                            "that does not exist")
-                )
             else:
-                fallback = plan.rate_by_name(rate.fallback_rate)
-                if fallback is not None and fallback.has_allowance:
+                # A fallback is looked up in the rate's own timetable first,
+                # so a weekday rate falls back to the weekday's rate.
+                fallback = plan.rate_by_name(rate.fallback_rate, rate.timetable)
+                if fallback is None:
+                    problems.append(
+                        Problem(
+                            rate.name,
+                            f"names a fallback rate '{rate.fallback_rate}' "
+                            "that does not exist",
+                        )
+                    )
+                elif fallback.has_allowance:
                     problems.append(
                         Problem(
                             rate.name,
@@ -217,7 +248,7 @@ def validate_rates(plan: Plan) -> list[Problem]:
 
     for day_pattern in plan.day_patterns:
         for period in day_pattern.periods:
-            if period.rate not in names:
+            if plan.rate_by_name(period.rate, day_pattern.name) is None:
                 problems.append(
                     Problem(
                         day_pattern.name,
@@ -255,3 +286,47 @@ def validate_plan(plan: Plan) -> list[Problem]:
 def is_valid(plan: Plan) -> bool:
     """Return whether the plan passes every check."""
     return not validate_plan(plan)
+
+
+def rates_capped_across_midnight(plan: Plan) -> list[Rate]:
+    """Return capped rates that run through midnight.
+
+    A period cannot cross midnight in this model — the day has to be covered
+    exactly once from 00:00 to 24:00 — so a capped stretch running 22:00 to
+    02:00 is entered as two periods naming the same rate, one either side.
+    Finding the same rate at both ends of a day is how that is spotted.
+    """
+    found: list[Rate] = []
+    for day_pattern in plan.day_patterns:
+        ends = {
+            period.rate
+            for period in day_pattern.periods
+            if period.end == MINUTES_PER_DAY
+        }
+        starts = {period.rate for period in day_pattern.periods if period.start == 0}
+        for name in sorted(ends & starts):
+            rate = plan.rate_by_name(name, day_pattern.name)
+            if rate is not None and rate.has_allowance and rate not in found:
+                found.append(rate)
+    return found
+
+
+def plan_warnings(plan: Plan) -> list[Problem]:
+    """Return advice that does not stop the plan being saved.
+
+    A warning is a configuration that is perfectly legitimate but where only
+    the user knows whether it is what they meant. Refusing to save would be
+    wrong; saying nothing would be worse.
+    """
+    warnings: list[Problem] = []
+    for rate in rates_capped_across_midnight(plan):
+        warnings.append(
+            Problem(
+                rate.name,
+                "is capped and runs through midnight, where the count resets. "
+                "One unbroken stretch will be given its full allowance twice. "
+                "Check how your retailer counts it — this component works to a "
+                "24-hour clock.",
+            )
+        )
+    return warnings

@@ -30,7 +30,9 @@ async def async_get_config_entry_diagnostics(
         "current": {
             "rate": state.effective_rate.name if state.effective_rate else None,
             "scheduled_rate": state.resolution.rate.name if state.resolution else None,
-            "day_pattern": state.resolution.day_pattern.name if state.resolution else None,
+            "day_pattern": state.resolution.day_pattern.name
+            if state.resolution
+            else None,
             "next_change": state.next_change.isoformat() if state.next_change else None,
             "allowance_used_kwh": state.allowance_used_kwh,
             "allowance_remaining_kwh": state.allowance_remaining_kwh,

@@ -57,9 +57,9 @@ GET_INTERVALS_SCHEMA = vol.Schema(
         vol.Optional(ATTR_HOURS, default=DEFAULT_HOURS): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=168)
         ),
-        vol.Optional(ATTR_RESOLUTION_MINUTES, default=DEFAULT_RESOLUTION_MINUTES): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=1440)
-        ),
+        vol.Optional(
+            ATTR_RESOLUTION_MINUTES, default=DEFAULT_RESOLUTION_MINUTES
+        ): vol.All(vol.Coerce(int), vol.Range(min=1, max=1440)),
     }
 )
 

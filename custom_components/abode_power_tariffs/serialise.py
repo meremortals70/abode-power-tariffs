@@ -13,7 +13,15 @@ import io
 from .const import ALL_DAY_TOKENS
 from .plan import Plan, format_time
 
-PERIOD_HEADER = ("day_pattern", "days", "season_from", "season_to", "start", "end", "rate")
+PERIOD_HEADER = (
+    "day_pattern",
+    "days",
+    "season_from",
+    "season_to",
+    "start",
+    "end",
+    "rate",
+)
 RATE_HEADER = (
     "rate",
     "import_c_per_kwh",

@@ -23,18 +23,26 @@ class AllowanceState:
 
     @property
     def reason(self) -> str:
-        """Return a short explanation for the trace."""
+        """Return a short explanation for the trace.
+
+        No live figures. The trace is published as a sensor attribute, so a
+        number that moves with every meter reading rewrites the attribute, and
+        the entity state with it, several times a minute for no gain. How much
+        allowance is left is published properly by its own sensor.
+        """
         if self.remaining_kwh is None:
             return "no allowance on this rate"
         if self.exhausted:
-            return f"allowance exhausted, {self.used_kwh:.2f} kWh used"
-        return f"{self.remaining_kwh:.2f} kWh of allowance remaining"
+            return "allowance spent"
+        return "within the allowance"
 
 
 def apply(plan: Plan, rate: Rate, used_kwh: float) -> AllowanceState:
     """Return the rate actually in force given today's consumption so far."""
     if not rate.has_allowance:
-        return AllowanceState(rate=rate, exhausted=False, used_kwh=used_kwh, remaining_kwh=None)
+        return AllowanceState(
+            rate=rate, exhausted=False, used_kwh=used_kwh, remaining_kwh=None
+        )
 
     assert rate.daily_allowance_kwh is not None
     remaining = max(0.0, rate.daily_allowance_kwh - used_kwh)
@@ -44,7 +52,13 @@ def apply(plan: Plan, rate: Rate, used_kwh: float) -> AllowanceState:
             rate=rate, exhausted=False, used_kwh=used_kwh, remaining_kwh=remaining
         )
 
-    fallback = plan.rate_by_name(rate.fallback_rate) if rate.fallback_rate else None
+    # Looked up in the rate's own timetable first, so a weekday rate falls back
+    # to the weekday's rate and not to a weekend rate of the same name.
+    fallback = (
+        plan.rate_by_name(rate.fallback_rate, rate.timetable)
+        if rate.fallback_rate
+        else None
+    )
     # Validation guarantees a fallback exists, but a plan can be loaded from
     # storage written by an older version, so fall back to the rate itself.
     return AllowanceState(
@@ -55,7 +69,9 @@ def apply(plan: Plan, rate: Rate, used_kwh: float) -> AllowanceState:
     )
 
 
-def accumulate(previous_total: float | None, new_total: float | None, used_kwh: float) -> float:
+def accumulate(
+    previous_total: float | None, new_total: float | None, used_kwh: float
+) -> float:
     """Add the delta of a monotonic energy meter to today's usage.
 
     A meter that resets, or that reports nothing, contributes nothing rather

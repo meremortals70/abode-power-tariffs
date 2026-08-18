@@ -28,12 +28,19 @@ CONF_VALID_FROM: Final = "valid_from"
 CONF_VALID_TO: Final = "valid_to"
 CONF_HOLIDAY_SENSOR: Final = "holiday_sensor"
 CONF_IMPORT_ENERGY_SENSOR: Final = "import_energy_sensor"
+# Counting usage against a cap is a separate, opt-in thing. The plan always
+# declares the cap and what is paid past it; whether this component keeps a
+# running total is the user's choice, and it is an estimate either way.
+CONF_COUNT_ALLOWANCE: Final = "count_allowance"
 CONF_TARIFF_SELECTS: Final = "tariff_selects"
 CONF_SOURCE_ENERGY_SENSOR: Final = "source_energy_sensor"
 CONF_SUPPLY_CHARGE_ENTITIES: Final = "supply_charge_entities"
 
 # Rate keys
 CONF_NAME: Final = "name"
+# Which timetable a rate belongs to. Rates are identified by the pair, so
+# two timetables can each have a Peak at different prices.
+CONF_TIMETABLE: Final = "timetable"
 CONF_IMPORT_CENTS: Final = "import_cents"
 CONF_EXPORT_CENTS: Final = "export_cents"
 CONF_EXPORT_RATES: Final = "export_rates"
@@ -42,6 +49,13 @@ CONF_EXPORT_SAME_ALL_DAY: Final = "export_same_all_day"
 CONF_EXPORT_FLAT_CENTS: Final = "export_flat_cents"
 CONF_DEMAND_RATE: Final = "demand_rate_per_kw_month"
 CONF_CONSTRAINTS: Final = "constraints"
+# The subset of the above the user has declared other systems should treat as
+# a rule rather than a hint. This component still enforces nothing.
+CONF_ENFORCEABLE_CONSTRAINTS: Final = "enforceable_constraints"
+# Form only, never stored. The rate form asks for the two lists separately so
+# nothing has to be typed twice; what is stored is the union plus the
+# enforceable subset, so anything reading the flat list sees what it always saw.
+CONF_INFORMATION_CONSTRAINTS: Final = "information_constraints"
 
 # Seeded so the dropdown is never empty. These are the names Abode HVAC
 # Coordinator already acts on; anything else is the user's own and is typed

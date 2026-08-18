@@ -15,7 +15,7 @@ import functools
 import logging
 import traceback
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Final
 
 import voluptuous as vol
 from homeassistant.config_entries import (
@@ -32,6 +32,7 @@ from homeassistant.util import slugify
 from .const import (
     ALL_DAY_TOKENS,
     CONF_COASTING_PERMITTED,
+    CONF_COUNT_ALLOWANCE,
     CONF_CONSTRAINTS,
     CONF_DAILY_ALLOWANCE_KWH,
     CONF_DAY_PATTERNS,
@@ -39,6 +40,7 @@ from .const import (
     CONF_DEMAND_PERIOD,
     CONF_DEMAND_RATE,
     CONF_END,
+    CONF_ENFORCEABLE_CONSTRAINTS,
     CONF_EXPORT_ALLOWANCE_KWH,
     CONF_EXPORT_CENTS,
     CONF_EXPORT_FLAT_CENTS,
@@ -50,6 +52,7 @@ from .const import (
     CONF_HOLIDAY_SENSOR,
     CONF_IMPORT_CENTS,
     CONF_IMPORT_ENERGY_SENSOR,
+    CONF_INFORMATION_CONSTRAINTS,
     CONF_MONTHLY_CHARGE,
     CONF_NAME,
     CONF_ON_SUBMIT,
@@ -65,6 +68,7 @@ from .const import (
     CONF_START,
     CONF_SUPPLY_CHARGE_CENTS,
     CONF_SUPPLY_CHARGE_ENTITIES,
+    CONF_TIMETABLE,
     CONF_TARIFF_SELECTS,
     CONF_VALID_FROM,
     CONF_VALID_TO,
@@ -87,9 +91,9 @@ from .const import (
     UTILITY_METER_DOMAIN,
     WEEKDAY_TOKENS,
 )
-from .plan import Plan, PlanError, format_time, parse_time
+from .plan import Plan, PlanError, format_time, parse_time, slug
 from .strip import render_day_pattern, render_plan, render_rate_plan_card
-from .validate import validate_plan
+from .validate import plan_warnings, validate_plan
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -118,12 +122,25 @@ def _minutes_to_selector(minutes: int) -> str:
 
 
 def _rate_record(user_input: dict[str, Any]) -> dict[str, Any]:
-    """Build a stored rate from a submitted form."""
+    """Build a stored rate from a submitted form.
+
+    The form asks for the two rule lists separately so nothing has to be typed
+    twice. What is stored is the union plus the enforceable subset, so anything
+    reading the flat list sees exactly what it always saw.
+    """
+    informational = _rules_from(user_input, CONF_INFORMATION_CONSTRAINTS)
+    enforceable = _rules_from(user_input, CONF_ENFORCEABLE_CONSTRAINTS)
+    union = [
+        *informational,
+        *(rule for rule in enforceable if rule not in informational),
+    ]
     return {
         CONF_NAME: str(user_input.get(CONF_NAME) or "").strip(),
+        CONF_TIMETABLE: _timetable_from(user_input),
         CONF_IMPORT_CENTS: user_input[CONF_IMPORT_CENTS],
         CONF_EXPORT_CENTS: user_input.get(CONF_EXPORT_CENTS, 0.0),
-        CONF_CONSTRAINTS: _constraints_from(user_input),
+        CONF_CONSTRAINTS: union,
+        CONF_ENFORCEABLE_CONSTRAINTS: enforceable,
         CONF_COASTING_PERMITTED: bool(user_input.get(CONF_COASTING_PERMITTED, True)),
         CONF_DEMAND_PERIOD: bool(user_input.get(CONF_DEMAND_PERIOD, False)),
         CONF_DAILY_ALLOWANCE_KWH: user_input.get(CONF_DAILY_ALLOWANCE_KWH) or None,
@@ -132,14 +149,59 @@ def _rate_record(user_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _constraints_from(user_input: dict[str, Any]) -> list[str]:
-    """Read the rules off the multi-select, which also accepts a typed value."""
+UNSCOPED_TIMETABLE: Final = "(not set - older plan)"
+
+
+def _timetable_from(user_input: dict[str, Any]) -> str | None:
+    """Read the timetable off the form, if the form asked for one.
+
+    The setup form does not: it is entering one timetable at a time and sets
+    the field itself. The sentinel means a rate stored before the scoping
+    existed, which keeps the unique name it was given.
+    """
+    chosen = str(user_input.get(CONF_TIMETABLE) or "").strip()
+    if not chosen or chosen == UNSCOPED_TIMETABLE:
+        return None
+    return chosen
+
+
+def rate_id(rate: dict[str, Any]) -> str:
+    """Return the identifier a stored rate will be published under."""
+    timetable = rate.get(CONF_TIMETABLE)
+    name = str(rate.get(CONF_NAME, ""))
+    return f"{slug(str(timetable))}.{slug(name)}" if timetable else name
+
+
+def _rules_from(user_input: dict[str, Any], key: str) -> list[str]:
+    """Read one rules multi-select, which also accepts a typed value."""
     seen: list[str] = []
-    for item in user_input.get(CONF_CONSTRAINTS) or []:
+    for item in user_input.get(key) or []:
         rule = str(item).strip()
         if rule and rule not in seen:
             seen.append(rule)
     return seen
+
+
+def _rules_in_both_lists(user_input: dict[str, Any]) -> set[str]:
+    """Return rules put in both lists, which is a contradiction to resolve."""
+    return set(_rules_from(user_input, CONF_INFORMATION_CONSTRAINTS)) & set(
+        _rules_from(user_input, CONF_ENFORCEABLE_CONSTRAINTS)
+    )
+
+
+def known_constraints(rates: list[dict[str, Any]]) -> list[str]:
+    """Every rule already used by these rates, so it can be picked not retyped.
+
+    Shared by the setup form and the edit form. Two copies of this is how the
+    same rule ends up spelled two different ways in one plan.
+    """
+    found: list[str] = []
+    for rate in rates:
+        for key in (CONF_CONSTRAINTS, CONF_ENFORCEABLE_CONSTRAINTS):
+            for rule in rate.get(key) or []:
+                if str(rule) not in found:
+                    found.append(str(rule))
+    return found
 
 
 def _require_name(schema: vol.Schema) -> vol.Schema:
@@ -153,32 +215,26 @@ def _require_name(schema: vol.Schema) -> vol.Schema:
     return vol.Schema(rebuilt)
 
 
-def _rate_schema(
-    existing: dict[str, Any],
-    fallback_options: list[str],
-    *,
-    minimal: bool,
-    known_constraints: list[str] | None = None,
-) -> vol.Schema:
-    """Return the rate form. The setup form asks only what a plan cannot do without."""
-    schema: dict[Any, Any] = {
-        vol.Optional(CONF_NAME, default=existing.get(CONF_NAME, "")): selector.TextSelector(),
-        vol.Required(
-            CONF_IMPORT_CENTS, default=float(existing.get(CONF_IMPORT_CENTS) or 0.0)
-        ): selector.NumberSelector(
-            selector.NumberSelectorConfig(
-                min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
-            )
-        ),
-    }
-    if minimal:
-        return vol.Schema(schema)
+# What the first-run form asks for. Everything else has a sensible default and
+# is set afterwards in Configure. The two rule lists are here because they are
+# the only rate fields that create entities: a plan set up without them gets no
+# constraint sensors at all, and nothing on screen says the feature exists.
+SETUP_RATE_FIELDS: Final = (
+    CONF_NAME,
+    CONF_IMPORT_CENTS,
+    CONF_INFORMATION_CONSTRAINTS,
+    CONF_ENFORCEABLE_CONSTRAINTS,
+)
 
-    mine = [str(item) for item in existing.get(CONF_CONSTRAINTS) or []]
-    offered = sorted(
-        dict.fromkeys([*KNOWN_CONSTRAINTS, *(known_constraints or []), *mine])
-    )
-    schema[vol.Optional(CONF_CONSTRAINTS, default=mine)] = selector.SelectSelector(
+
+def _field_name(key: Any) -> str:
+    """Return the plain key behind a voluptuous marker."""
+    return str(getattr(key, "schema", key))
+
+
+def _rules_selector(offered: list[str]) -> selector.SelectSelector:
+    """A multi-select seeded with the known rules that also takes a typed one."""
+    return selector.SelectSelector(
         selector.SelectSelectorConfig(
             options=offered,
             multiple=True,
@@ -186,9 +242,74 @@ def _rate_schema(
             mode=selector.SelectSelectorMode.DROPDOWN,
         )
     )
+
+
+def _rate_schema(
+    existing: dict[str, Any],
+    fallback_options: list[str],
+    *,
+    fields: tuple[str, ...] | None = None,
+    known_constraints: list[str] | None = None,
+    timetables: list[str] | None = None,
+) -> vol.Schema:
+    """Return the rate form.
+
+    Every field is defined once, here. ``fields`` chooses which of them a
+    screen shows; it never changes how one behaves. The setup form and the edit
+    form therefore cannot drift apart — asking for less is the only difference
+    between them. They used to be two schemas, and the setup one quietly wrote
+    a default over everything it had not asked about.
+    """
+    stored = [str(item) for item in existing.get(CONF_CONSTRAINTS) or []]
+    enforceable = [
+        str(item) for item in existing.get(CONF_ENFORCEABLE_CONSTRAINTS) or []
+    ]
+    # A plan written before the distinction existed has rules but nothing
+    # marked enforceable, so they all load as information only.
+    informational = [rule for rule in stored if rule not in enforceable]
+    offered = sorted(
+        dict.fromkeys([*KNOWN_CONSTRAINTS, *(known_constraints or []), *stored])
+    )
+
+    schema: dict[Any, Any] = {
+        vol.Optional(
+            CONF_NAME, default=existing.get(CONF_NAME, "")
+        ): selector.TextSelector(),
+    }
+    if timetables:
+        current = existing.get(CONF_TIMETABLE)
+        offered_timetables = list(timetables)
+        if not current and existing:
+            # Stored before the scoping existed. Offer leaving it alone rather
+            # than forcing a change that would rename its entity.
+            offered_timetables = [UNSCOPED_TIMETABLE, *offered_timetables]
+        schema[
+            vol.Required(
+                CONF_TIMETABLE,
+                default=current or offered_timetables[0],
+            )
+        ] = selector.SelectSelector(
+            selector.SelectSelectorConfig(options=offered_timetables)
+        )
+    schema |= {
+        vol.Required(
+            CONF_IMPORT_CENTS, default=float(existing.get(CONF_IMPORT_CENTS) or 0.0)
+        ): selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+            )
+        ),
+        vol.Optional(
+            CONF_INFORMATION_CONSTRAINTS, default=informational
+        ): _rules_selector(offered),
+        vol.Optional(
+            CONF_ENFORCEABLE_CONSTRAINTS, default=enforceable
+        ): _rules_selector(offered),
+    }
     schema[
         vol.Required(
-            CONF_COASTING_PERMITTED, default=bool(existing.get(CONF_COASTING_PERMITTED, True))
+            CONF_COASTING_PERMITTED,
+            default=bool(existing.get(CONF_COASTING_PERMITTED, True)),
         )
     ] = selector.BooleanSelector()
     schema[
@@ -225,6 +346,10 @@ def _rate_schema(
         ] = selector.SelectSelector(
             selector.SelectSelectorConfig(options=fallback_options)
         )
+    if fields is not None:
+        schema = {
+            key: value for key, value in schema.items() if _field_name(key) in fields
+        }
     return vol.Schema(schema)
 
 
@@ -246,6 +371,7 @@ def on_submit(
             )
         )
     }
+
 
 # Where each step goes when the user ticks Go back.
 PREVIOUS_STEP = {
@@ -318,13 +444,18 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def _pattern_rates(self) -> list[dict[str, Any]]:
         """Return the import rates belonging to the timetable being entered."""
-        prefix = f"{self._pattern_name} "
-        return [rate for rate in self._rates if rate[CONF_NAME].startswith(prefix)]
+        return [
+            rate
+            for rate in self._rates
+            if rate.get(CONF_TIMETABLE) == self._pattern_name
+        ]
 
     def _pattern_export_rates(self) -> list[dict[str, Any]]:
         """Return the feed-in rates belonging to the timetable being entered."""
         prefix = f"{self._pattern_name} "
-        return [rate for rate in self._export_rates if rate[CONF_NAME].startswith(prefix)]
+        return [
+            rate for rate in self._export_rates if rate[CONF_NAME].startswith(prefix)
+        ]
 
     def _store_pattern(self) -> None:
         """Put the timetable just entered into the plan and start clean."""
@@ -362,7 +493,9 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(slugify(name))
                 self._abort_if_unique_id_configured()
                 self._name = name
-                self._description = str(user_input.get(CONF_PLAN_DESCRIPTION) or "").strip()
+                self._description = str(
+                    user_input.get(CONF_PLAN_DESCRIPTION) or ""
+                ).strip()
                 return await self.async_step_charges()
 
         return self.async_show_form(
@@ -405,12 +538,20 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_SUPPLY_CHARGE_CENTS, default=0.0
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
-                    vol.Required(CONF_MONTHLY_CHARGE, default=0.0): selector.NumberSelector(
+                    vol.Required(
+                        CONF_MONTHLY_CHARGE, default=0.0
+                    ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
                     vol.Required(
@@ -420,10 +561,15 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_GST_PERCENT, default=DEFAULT_GST_PERCENT
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=100, step=0.1, mode=selector.NumberSelectorMode.BOX
+                            min=0,
+                            max=100,
+                            step=0.1,
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
-                    vol.Required(CONF_DEMAND_RATE, default=0.0): selector.NumberSelector(
+                    vol.Required(
+                        CONF_DEMAND_RATE, default=0.0
+                    ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
                             min=0,
                             max=1000,
@@ -451,18 +597,34 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 return await self.async_step_periods()
             record = _rate_record(user_input)
             typed = record[CONF_NAME]
-            # The rate belongs to this timetable, so it carries its name. That
-            # is what lets a weekend peak sit alongside a weekday peak.
-            record[CONF_NAME] = f"{self._pattern_name} {typed}".strip()
+            # The rate belongs to this timetable, and says so in a field rather
+            # than by having the timetable's name pushed onto the front of its
+            # own. That is what lets a weekend Peak sit alongside a weekday
+            # Peak while both are still called Peak.
+            record[CONF_TIMETABLE] = self._pattern_name
             if not typed:
                 errors[CONF_NAME] = "name_required"
-            elif any(rate[CONF_NAME] == record[CONF_NAME] for rate in self._rates):
+            elif any(
+                rate[CONF_NAME] == typed
+                and rate.get(CONF_TIMETABLE) == self._pattern_name
+                for rate in self._rates
+            ):
                 errors[CONF_NAME] = "rate_exists"
+            elif _rules_in_both_lists(user_input):
+                errors[CONF_ENFORCEABLE_CONSTRAINTS] = "rule_in_both_lists"
             else:
                 self._rates.append(record)
                 return await self.async_step_rates()
 
-        schema = {**_rate_schema({}, [], minimal=True).schema, **on_submit("submit_rates")}
+        schema = {
+            **_rate_schema(
+                {},
+                [],
+                fields=SETUP_RATE_FIELDS,
+                known_constraints=known_constraints(self._rates),
+            ).schema,
+            **on_submit("submit_rates"),
+        }
 
         return self.async_show_form(
             step_id="rates",
@@ -568,7 +730,9 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                     return await self.async_step_periods()
 
-        ordered = sorted(self._periods, key=lambda period: parse_time(period[CONF_START]))
+        ordered = sorted(
+            self._periods, key=lambda period: parse_time(period[CONF_START])
+        )
         next_start = 0
         for period in ordered:
             if parse_time(period[CONF_START]) > next_start:
@@ -641,7 +805,10 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_EXPORT_CENTS, default=0.0
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
                     **on_submit("submit_export_rates"),
@@ -763,7 +930,10 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_EXPORT_FLAT_CENTS, default=0.0
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
                 }
@@ -814,7 +984,9 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> AbodePowerTariffsOptionsFlow:
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> AbodePowerTariffsOptionsFlow:
         """Return the options flow."""
         return AbodePowerTariffsOptionsFlow()
 
@@ -847,6 +1019,7 @@ def guarded(func: StepHandler) -> StepHandler:
 
 MENU = [
     "rates_menu",
+    "allowance_counting",
     "day_patterns_menu",
     "periods_pick_day_pattern",
     "export_menu",
@@ -894,7 +1067,14 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         summary = render_plan(plan)
         problems = validate_plan(plan)
         if problems:
-            summary += "\n\nNot ready to save:\n" + "\n".join(f"  {p}" for p in problems)
+            summary += "\n\nNot ready to save:\n" + "\n".join(
+                f"  {p}" for p in problems
+            )
+        # Warnings do not stop a save. They are configurations only the user
+        # can judge, so they are said out loud rather than enforced.
+        warnings = plan_warnings(plan)
+        if warnings:
+            summary += "\n\nWorth checking:\n" + "\n".join(f"  {w}" for w in warnings)
         return summary
 
     def _placeholders(self) -> dict[str, str]:
@@ -911,14 +1091,19 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
     def _rate_names(self) -> list[str]:
         return [str(rate.get(CONF_NAME, "")) for rate in self._rates()]
 
+    def _rate_ids(self) -> list[str]:
+        """Return what each rate will be published as, which is unique."""
+        return [rate_id(rate) for rate in self._rates()]
+
+    def _rate_index_by_id(self, wanted: str) -> int | None:
+        for position, rate in enumerate(self._rates()):
+            if rate_id(rate) == wanted:
+                return position
+        return None
+
     def _known_constraints(self) -> list[str]:
         """Every rule already used anywhere in the plan, so it can be picked."""
-        found: list[str] = []
-        for rate in self._rates():
-            for rule in rate.get(CONF_CONSTRAINTS) or []:
-                if str(rule) not in found:
-                    found.append(str(rule))
-        return found
+        return known_constraints(self._rates())
 
     def _day_pattern_names(self) -> list[str]:
         return [str(pattern.get(CONF_NAME, "")) for pattern in self._day_patterns()]
@@ -987,8 +1172,8 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         """Add, edit or remove a rate."""
         listing = "\n".join(
             f"  {rate.get(CONF_NAME)}   "
-            f"{float(rate.get(CONF_IMPORT_CENTS) or 0):.2f} c/kWh in, "
-            f"{float(rate.get(CONF_EXPORT_CENTS) or 0):.2f} c/kWh out"
+            f"{float(rate.get(CONF_IMPORT_CENTS) or 0):.2f} c/kWh"
+            f"   [{rate_id(rate)}]"
             for rate in self._rates()
         )
         return self.async_show_menu(
@@ -1002,12 +1187,12 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Choose a rate to edit."""
-        names = self._rate_names()
+        names = self._rate_ids()
         if not names:
             self._rate_index = None
             return await self.async_step_rate_add()
         if user_input is not None:
-            self._rate_index = names.index(str(user_input[CONF_NAME]))
+            self._rate_index = self._rate_index_by_id(str(user_input[CONF_NAME]))
             return await self.async_step_rate_add()
         return self.async_show_form(
             step_id="rate_pick",
@@ -1032,8 +1217,11 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         if user_input is not None:
             record = _rate_record(user_input)
             name = record[CONF_NAME]
+            # Identified by the pair, so the same name under a different
+            # timetable is a different rate rather than a clash.
             clash = any(
                 rate.get(CONF_NAME) == name
+                and rate.get(CONF_TIMETABLE) == record.get(CONF_TIMETABLE)
                 for position, rate in enumerate(self._rates())
                 if position != index
             )
@@ -1041,6 +1229,8 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 errors[CONF_NAME] = "name_required"
             elif clash:
                 errors[CONF_NAME] = "rate_exists"
+            elif _rules_in_both_lists(user_input):
+                errors[CONF_ENFORCEABLE_CONSTRAINTS] = "rule_in_both_lists"
             else:
                 if index is None:
                     self._rates().append(record)
@@ -1048,12 +1238,17 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     previous = str(self._rates()[index].get(CONF_NAME, ""))
                     self._rates()[index] = record
                     if previous and previous != name:
-                        self._rename_rate(previous, name)
+                        self._rename_rate(previous, name, record.get(CONF_TIMETABLE))
                 self._rate_index = None
                 return await self.async_step_rates_menu()
 
+        # A rate falls back to another in its own timetable.
+        scope = existing.get(CONF_TIMETABLE)
         fallback_options = [
-            name for name in self._rate_names() if name != existing.get(CONF_NAME)
+            str(rate.get(CONF_NAME, ""))
+            for rate in self._rates()
+            if rate.get(CONF_TIMETABLE) == scope
+            and rate.get(CONF_NAME) != existing.get(CONF_NAME)
         ]
         return self.async_show_form(
             step_id="rate_add",
@@ -1061,21 +1256,30 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 _rate_schema(
                     existing,
                     fallback_options,
-                    minimal=False,
                     known_constraints=self._known_constraints(),
+                    timetables=self._day_pattern_names(),
                 )
             ),
             errors=errors,
         )
 
-    def _rename_rate(self, previous: str, current: str) -> None:
-        """Follow a rate rename into every period that names it."""
+    def _rename_rate(self, previous: str, current: str, timetable: str | None) -> None:
+        """Follow a rate rename into the periods that name it.
+
+        Scoped to the rate's own timetable: renaming the weekday Peak must not
+        repoint the weekend's periods at it.
+        """
         for pattern in self._day_patterns():
+            if timetable is not None and pattern.get(CONF_NAME) != timetable:
+                continue
             for period in pattern.get(CONF_PERIODS, []):
                 if period.get(CONF_RATE) == previous:
                     period[CONF_RATE] = current
         for rate in self._rates():
-            if rate.get(CONF_FALLBACK_RATE) == previous:
+            if (
+                rate.get(CONF_FALLBACK_RATE) == previous
+                and rate.get(CONF_TIMETABLE) == timetable
+            ):
                 rate[CONF_FALLBACK_RATE] = current
 
     @guarded
@@ -1084,22 +1288,26 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Remove a rate that no time period uses."""
         errors: dict[str, str] = {}
-        names = self._rate_names()
+        names = self._rate_ids()
         if not names:
             return await self.async_step_rates_menu()
 
         if user_input is not None:
-            name = str(user_input[CONF_NAME])
+            wanted = str(user_input[CONF_NAME])
+            index = self._rate_index_by_id(wanted)
+            doomed = self._rates()[index] if index is not None else {}
+            scope = doomed.get(CONF_TIMETABLE)
             in_use = any(
-                period.get(CONF_RATE) == name
+                period.get(CONF_RATE) == doomed.get(CONF_NAME)
                 for pattern in self._day_patterns()
+                if scope is None or pattern.get(CONF_NAME) == scope
                 for period in pattern.get(CONF_PERIODS, [])
             )
             if in_use:
                 errors[CONF_NAME] = "rate_in_use"
             else:
                 self.working[CONF_RATES] = [
-                    rate for rate in self._rates() if rate.get(CONF_NAME) != name
+                    rate for rate in self._rates() if rate_id(rate) != wanted
                 ]
                 return await self.async_step_rates_menu()
 
@@ -1164,7 +1372,9 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         """Add a day pattern, or edit the one chosen."""
         errors: dict[str, str] = {}
         index = self._day_pattern_index
-        existing: dict[str, Any] = self._day_patterns()[index] if index is not None else {}
+        existing: dict[str, Any] = (
+            self._day_patterns()[index] if index is not None else {}
+        )
         current_days = list(existing.get(CONF_DAYS) or ALL_DAY_TOKENS)
         same_every_day = set(current_days) == set(ALL_DAY_TOKENS)
 
@@ -1183,9 +1393,12 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 record = {
                     CONF_NAME: name,
                     CONF_DAYS: days,
-                    CONF_SEASON_FROM: str(user_input.get(CONF_SEASON_FROM) or "").strip()
+                    CONF_SEASON_FROM: str(
+                        user_input.get(CONF_SEASON_FROM) or ""
+                    ).strip()
                     or None,
-                    CONF_SEASON_TO: str(user_input.get(CONF_SEASON_TO) or "").strip() or None,
+                    CONF_SEASON_TO: str(user_input.get(CONF_SEASON_TO) or "").strip()
+                    or None,
                     CONF_PERIODS: existing.get(CONF_PERIODS, []),
                     CONF_EXPORT_PERIODS: existing.get(CONF_EXPORT_PERIODS, []),
                     CONF_EXPORT_SAME_ALL_DAY: user_input[CONF_EXPORT_SAME_ALL_DAY],
@@ -1221,7 +1434,8 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                         )
                     ),
                     vol.Required(
-                        CONF_SEASON_FROM, default=str(existing.get(CONF_SEASON_FROM) or "")
+                        CONF_SEASON_FROM,
+                        default=str(existing.get(CONF_SEASON_FROM) or ""),
                     ): selector.TextSelector(),
                     vol.Required(
                         CONF_SEASON_TO, default=str(existing.get(CONF_SEASON_TO) or "")
@@ -1235,7 +1449,10 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                         default=float(existing.get(CONF_EXPORT_FLAT_CENTS) or 0.0),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
                 }
@@ -1285,7 +1502,9 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         if user_input is not None:
             name = str(user_input[CONF_NAME])
             self.working[CONF_DAY_PATTERNS] = [
-                pattern for pattern in self._day_patterns() if pattern.get(CONF_NAME) != name
+                pattern
+                for pattern in self._day_patterns()
+                if pattern.get(CONF_NAME) != name
             ]
             self._day_pattern_index = None
             return await self.async_step_day_patterns_menu()
@@ -1449,7 +1668,9 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     return await self.async_step_periods_menu()
 
         default_start = parse_time(str(existing[CONF_START])) if existing else 0
-        default_end = parse_time(str(existing[CONF_END])) if existing else MINUTES_PER_DAY
+        default_end = (
+            parse_time(str(existing[CONF_END])) if existing else MINUTES_PER_DAY
+        )
         default_rate = str(existing.get(CONF_RATE) or names[0])
         if default_rate not in names:
             default_rate = names[0]
@@ -1464,7 +1685,9 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     vol.Required(
                         CONF_END, default=_minutes_to_selector(default_end)
                     ): selector.TimeSelector(),
-                    vol.Required(CONF_RATE, default=default_rate): selector.SelectSelector(
+                    vol.Required(
+                        CONF_RATE, default=default_rate
+                    ): selector.SelectSelector(
                         selector.SelectSelectorConfig(options=names)
                     ),
                 }
@@ -1507,14 +1730,15 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            self.working[CONF_SUPPLY_CHARGE_CENTS] = user_input[CONF_SUPPLY_CHARGE_CENTS]
+            self.working[CONF_SUPPLY_CHARGE_CENTS] = user_input[
+                CONF_SUPPLY_CHARGE_CENTS
+            ]
             self.working[CONF_PRICES_INCLUDE_GST] = user_input[CONF_PRICES_INCLUDE_GST]
             self.working[CONF_GST_PERCENT] = user_input[CONF_GST_PERCENT]
             self.working[CONF_VALID_FROM] = user_input.get(CONF_VALID_FROM) or None
             self.working[CONF_VALID_TO] = user_input.get(CONF_VALID_TO) or None
-            self.working[CONF_HOLIDAY_SENSOR] = user_input.get(CONF_HOLIDAY_SENSOR) or None
-            self.working[CONF_IMPORT_ENERGY_SENSOR] = (
-                user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
+            self.working[CONF_HOLIDAY_SENSOR] = (
+                user_input.get(CONF_HOLIDAY_SENSOR) or None
             )
             self.working[CONF_DEMAND_RATE] = user_input[CONF_DEMAND_RATE]
             self.working[CONF_MONTHLY_CHARGE] = user_input[CONF_MONTHLY_CHARGE]
@@ -1536,7 +1760,10 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                         default=float(options.get(CONF_SUPPLY_CHARGE_CENTS) or 0.0),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
                     vol.Required(
@@ -1545,10 +1772,15 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     ): selector.BooleanSelector(),
                     vol.Required(
                         CONF_GST_PERCENT,
-                        default=float(options.get(CONF_GST_PERCENT) or DEFAULT_GST_PERCENT),
+                        default=float(
+                            options.get(CONF_GST_PERCENT) or DEFAULT_GST_PERCENT
+                        ),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=100, step=0.1, mode=selector.NumberSelectorMode.BOX
+                            min=0,
+                            max=100,
+                            step=0.1,
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
                     vol.Optional(
@@ -1561,24 +1793,21 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     ): selector.DateSelector(),
                     vol.Optional(
                         CONF_HOLIDAY_SENSOR,
-                        description={"suggested_value": options.get(CONF_HOLIDAY_SENSOR)},
+                        description={
+                            "suggested_value": options.get(CONF_HOLIDAY_SENSOR)
+                        },
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="binary_sensor")
                     ),
-                    vol.Optional(
-                        CONF_IMPORT_ENERGY_SENSOR,
-    CONF_MONTHLY_CHARGE,
-                        description={
-                            "suggested_value": options.get(CONF_IMPORT_ENERGY_SENSOR)
-                        },
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor", device_class="energy")
-                    ),
                     vol.Required(
-                        CONF_DEMAND_RATE, default=float(options.get(CONF_DEMAND_RATE) or 0.0)
+                        CONF_DEMAND_RATE,
+                        default=float(options.get(CONF_DEMAND_RATE) or 0.0),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=1000, step="any", mode=selector.NumberSelectorMode.BOX
+                            min=0,
+                            max=1000,
+                            step="any",
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
                     vol.Required(
@@ -1586,12 +1815,63 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                         default=float(options.get(CONF_MONTHLY_CHARGE) or 0.0),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
                 }
             ),
             errors=errors,
+        )
+
+    # -------------------------------------------------------------- allowance
+
+    @guarded
+    async def async_step_allowance_counting(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Whether to keep a running total against a capped rate.
+
+        Separate from the plan on purpose. The plan declares the cap and what
+        is paid past it whatever this says; this only decides whether the
+        component keeps its own count, which is an estimate.
+        """
+        if user_input is not None:
+            self.working[CONF_COUNT_ALLOWANCE] = bool(user_input[CONF_COUNT_ALLOWANCE])
+            self.working[CONF_IMPORT_ENERGY_SENSOR] = (
+                user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
+            )
+            return self._menu("init")
+
+        options = self.working
+        capped = [
+            str(rate.get(CONF_NAME))
+            for rate in self._rates()
+            if rate.get(CONF_DAILY_ALLOWANCE_KWH)
+        ]
+        return self.async_show_form(
+            step_id="allowance_counting",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_COUNT_ALLOWANCE,
+                        default=bool(options.get(CONF_COUNT_ALLOWANCE, False)),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_IMPORT_ENERGY_SENSOR,
+                        description={
+                            "suggested_value": options.get(CONF_IMPORT_ENERGY_SENSOR)
+                        },
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor", device_class="energy"
+                        )
+                    ),
+                }
+            ),
+            description_placeholders={"capped": ", ".join(capped) or "none"},
         )
 
     # ---------------------------------------------------------------- feed-in
@@ -1648,7 +1928,9 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         """Add a feed-in rate, or edit the one chosen."""
         errors: dict[str, str] = {}
         index = self._export_rate_index
-        existing: dict[str, Any] = self._export_rates()[index] if index is not None else {}
+        existing: dict[str, Any] = (
+            self._export_rates()[index] if index is not None else {}
+        )
 
         if user_input is not None:
             name = str(user_input[CONF_NAME]).strip()
@@ -1662,7 +1944,10 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             elif clash:
                 errors[CONF_NAME] = "rate_exists"
             else:
-                record = {CONF_NAME: name, CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS]}
+                record = {
+                    CONF_NAME: name,
+                    CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS],
+                }
                 if index is None:
                     self._export_rates().append(record)
                 else:
@@ -1688,7 +1973,10 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                         default=float(existing.get(CONF_EXPORT_CENTS) or 0.0),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
                 }
@@ -1802,7 +2090,9 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                         CONF_NAME, default=f"{self.config_entry.title} by rate"
                     ): selector.TextSelector(),
                     vol.Required(CONF_SOURCE_ENERGY_SENSOR): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+                        selector.EntitySelectorConfig(
+                            domain="sensor", device_class="energy"
+                        )
                     ),
                 }
             ),
@@ -1816,7 +2106,9 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         """Nominate which tariff dropdowns to keep pointed at the current rate."""
         if user_input is not None:
-            self.working[CONF_TARIFF_SELECTS] = user_input.get(CONF_TARIFF_SELECTS) or []
+            self.working[CONF_TARIFF_SELECTS] = (
+                user_input.get(CONF_TARIFF_SELECTS) or []
+            )
             self.working[CONF_SUPPLY_CHARGE_ENTITIES] = user_input[
                 CONF_SUPPLY_CHARGE_ENTITIES
             ]
