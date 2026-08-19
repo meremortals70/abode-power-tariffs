@@ -627,3 +627,69 @@ def _optional_date(value: Any) -> date | None:
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value))
+
+
+def scope_rates_to_timetables(options: dict[str, Any]) -> bool:
+    """Give unscoped rates a timetable, stripping it back out of their names.
+
+    A plan written before rates were identified by timetable and name together
+    carries the timetable inside the name — 'Every day Peak' in the 'Every day'
+    timetable, with no timetable field — because prefixing was how setup kept
+    names unique before the pair did it. This puts each such rate where it
+    belongs: ``timetable`` set, ``name`` the part the user actually typed.
+
+    Every reference to the old name moves with it — the periods that name the
+    rate and any fallback that points at it — so the plan reads the same
+    afterwards. A rate whose name does not begin with a timetable's name is
+    left alone: there is nothing to strip and no timetable to infer.
+
+    Returns whether anything changed. Mutates ``options`` in place.
+    """
+    patterns = options.get(CONF_DAY_PATTERNS) or ()
+    rates = options.get(CONF_RATES) or ()
+    if not patterns or not rates:
+        return False
+
+    # Longest first, so 'Summer weekday' wins over 'Summer' on a name that
+    # starts with both.
+    names = sorted(
+        (str(pattern.get(CONF_NAME) or "") for pattern in patterns),
+        key=len,
+        reverse=True,
+    )
+
+    changed = False
+    for rate in rates:
+        if rate.get(CONF_TIMETABLE):
+            continue
+        name = str(rate.get(CONF_NAME) or "")
+        for timetable in names:
+            prefix = f"{timetable} "
+            if not timetable or not name.startswith(prefix):
+                continue
+            stripped = name[len(prefix) :].strip()
+            if not stripped:
+                # The whole name is the timetable. Nothing left to call it by.
+                continue
+            rate[CONF_NAME] = stripped
+            rate[CONF_TIMETABLE] = timetable
+            _repoint(patterns, rates, timetable, name, stripped)
+            changed = True
+            break
+    return changed
+
+
+def _repoint(patterns: Any, rates: Any, timetable: str, old: str, new: str) -> None:
+    """Move every reference to a renamed rate, within its timetable only."""
+    for pattern in patterns:
+        if str(pattern.get(CONF_NAME) or "") != timetable:
+            continue
+        for period in pattern.get(CONF_PERIODS) or ():
+            if period.get(CONF_RATE) == old:
+                period[CONF_RATE] = new
+    for rate in rates:
+        # A fallback only ever names a rate in the same timetable.
+        if rate.get(CONF_FALLBACK_RATE) != old:
+            continue
+        if rate.get(CONF_TIMETABLE) in (timetable, None):
+            rate[CONF_FALLBACK_RATE] = new

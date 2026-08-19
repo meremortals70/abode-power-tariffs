@@ -1237,6 +1237,35 @@ class TestPlanText(unittest.TestCase):
             "rate missing", strip.render_day_pattern(plan, plan.day_patterns[0])
         )
 
+    def test_the_price_column_lines_up_whatever_the_names_are(self) -> None:
+        """A fixed pad bends the column the moment a name outgrows it."""
+        plan = Plan(
+            "P",
+            (
+                Rate("Every day Super Off Peak", 0.0),
+                Rate("Every day EV Charging", 0.08),
+                Rate("Every day Peak", 0.3685),
+            ),
+            (
+                DayPattern(
+                    "Every day",
+                    ALL_DAYS,
+                    (
+                        Period(0, 360, "Every day EV Charging"),
+                        Period(360, 660, "Every day Super Off Peak"),
+                        Period(660, 1440, "Every day Peak"),
+                    ),
+                ),
+            ),
+        )
+        text = strip.render_plan(plan)
+        # Table rows end at the price column. The flat feed-in line is a
+        # sentence ("2.90 c/kWh all day"), not a row, and is not in the table.
+        columns = {
+            line.index("c/kWh") for line in text.splitlines() if line.endswith("c/kWh")
+        }
+        self.assertEqual(len(columns), 1, text)
+
     def test_rates_are_listed_cheapest_first(self) -> None:
         lines = strip.render_legend(sample_plan()).splitlines()
         self.assertIn("free", lines[0])

@@ -17,17 +17,46 @@ from __future__ import annotations
 from .plan import DayPattern, Plan, format_time
 from .validate import validate_periods
 
+# "00:00-06:00" and the two spaces after it. The legend has no time column,
+# so it pads by this much to put its prices in the same place.
+TIME_COLUMN = 13
 
-def render_legend(plan: Plan) -> str:
+
+def name_width(plan: Plan) -> int:
+    """Return the width the name column needs across the whole plan.
+
+    One width for every block, so the price column lands in the same place
+    wherever it appears. A fixed pad silently fails the moment a name is
+    longer than it: the price is pushed right and the column bends around it.
+    """
+    widest = 0
+    for rate in plan.rates:
+        widest = max(widest, len(rate.name), len(rate.qualified_name))
+    for day_pattern in plan.day_patterns:
+        for period in day_pattern.periods:
+            widest = max(widest, len(period.rate))
+        for period in day_pattern.export_periods:
+            widest = max(widest, len(period.rate))
+    for export_rate in plan.export_rates:
+        widest = max(widest, len(export_rate.name))
+    return widest + 2
+
+
+def render_legend(plan: Plan, width: int | None = None) -> str:
     """Return one line per rate, cheapest first, identifier then price."""
+    pad = name_width(plan) if width is None else width
     return "\n".join(
-        f"  {rate.qualified_name:<24}{rate.import_price * 100:>7.2f} c/kWh"
+        f"  {rate.qualified_name:<{pad + TIME_COLUMN}}"
+        f"{rate.import_price * 100:>7.2f} c/kWh"
         for rate in sorted(plan.rates, key=lambda rate: rate.import_price)
     )
 
 
-def render_export_row(plan: Plan, day_pattern: DayPattern) -> str:
+def render_export_row(
+    plan: Plan, day_pattern: DayPattern, width: int | None = None
+) -> str:
     """Return the feed-in side of one timetable as text."""
+    pad = name_width(plan) if width is None else width
     if day_pattern.export_same_all_day:
         return f"  Feed-in: {day_pattern.export_flat_price * 100:.2f} c/kWh all day"
 
@@ -37,13 +66,16 @@ def render_export_row(plan: Plan, day_pattern: DayPattern) -> str:
         price = "rate missing" if rate is None else f"{rate.price * 100:>7.2f} c/kWh"
         lines.append(
             f"    {format_time(period.start)}-{format_time(period.end)}"
-            f"  {period.rate:<20}{price}"
+            f"  {period.rate:<{pad - 2}}{price}"
         )
     return "\n".join(lines)
 
 
-def render_day_pattern(plan: Plan, day_pattern: DayPattern) -> str:
+def render_day_pattern(
+    plan: Plan, day_pattern: DayPattern, width: int | None = None
+) -> str:
     """Render one timetable: its periods, what each costs, and its coverage."""
+    pad = name_width(plan) if width is None else width
     season = ""
     if day_pattern.is_seasonal:
         assert day_pattern.season_from is not None
@@ -61,7 +93,7 @@ def render_day_pattern(plan: Plan, day_pattern: DayPattern) -> str:
         )
         lines.append(
             f"  {format_time(period.start)}-{format_time(period.end)}"
-            f"  {period.rate:<20}{price}"
+            f"  {period.rate:<{pad}}{price}"
         )
 
     problems = validate_periods(day_pattern)
@@ -73,7 +105,7 @@ def render_day_pattern(plan: Plan, day_pattern: DayPattern) -> str:
             "no overlaps."
         )
 
-    lines.append(render_export_row(plan, day_pattern))
+    lines.append(render_export_row(plan, day_pattern, pad))
     return "\n".join(lines)
 
 
@@ -81,11 +113,12 @@ def render_plan(plan: Plan) -> str:
     """Render every timetable in the plan, then the rates."""
     if not plan.rates:
         return "No rates entered yet."
-    legend = "Rates\n" + render_legend(plan)
+    pad = name_width(plan)
+    legend = "Rates\n" + render_legend(plan, pad)
     if not plan.day_patterns:
         return f"No day patterns configured yet.\n\n{legend}"
     body = "\n\n".join(
-        render_day_pattern(plan, day_pattern) for day_pattern in plan.day_patterns
+        render_day_pattern(plan, day_pattern, pad) for day_pattern in plan.day_patterns
     )
     return f"{body}\n\n{legend}"
 

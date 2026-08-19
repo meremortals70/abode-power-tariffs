@@ -406,7 +406,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
     Nothing is created that the user did not enter.
     """
 
-    VERSION = 3
+    VERSION = 4
     MINOR_VERSION = 1
 
     def __init__(self) -> None:
@@ -1018,7 +1018,6 @@ def guarded(func: StepHandler) -> StepHandler:
 
 MENU = [
     "rates_menu",
-    "allowance_counting",
     "day_patterns_menu",
     "periods_pick_day_pattern",
     "export_menu",
@@ -1177,7 +1176,13 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         )
         return self.async_show_menu(
             step_id="rates_menu",
-            menu_options=["rate_add", "rate_pick", "rate_remove", "init"],
+            menu_options=[
+                "rate_add",
+                "rate_pick",
+                "rate_remove",
+                "allowance_counting",
+                "init",
+            ],
             description_placeholders={"rates": listing or "  none yet"},
         )
 
@@ -1842,7 +1847,7 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             self.working[CONF_IMPORT_ENERGY_SENSOR] = (
                 user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
             )
-            return self._menu("init")
+            return await self.async_step_rates_menu()
 
         options = self.working
         capped = [
