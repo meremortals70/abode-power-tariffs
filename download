@@ -1,0 +1,8 @@
+[run]
+branch = True
+source = custom_components/abode_power_tariffs
+
+[report]
+exclude_also =
+    if TYPE_CHECKING:
+    raise NotImplementedError
