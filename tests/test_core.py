@@ -654,7 +654,10 @@ class TestTheMidnightWarning(unittest.TestCase):
         self.assertTrue(is_valid(plan), [str(p) for p in validate_plan(plan)])
         warnings = _pkg.validate.plan_warnings(plan)
         self.assertEqual(len(warnings), 1)
-        self.assertIn("through midnight", warnings[0].message)
+        self.assertIn("either side of", warnings[0].message)
+        # The allowance is the slot's. The old wording said the count reset at
+        # midnight on a 24-hour clock, which P13 removed.
+        self.assertNotIn("24-hour clock", warnings[0].message)
         self.assertEqual(warnings[0].scope, "Night")
 
     def test_it_is_a_warning_and_not_a_refusal(self) -> None:
@@ -1266,10 +1269,52 @@ class TestPlanText(unittest.TestCase):
         }
         self.assertEqual(len(columns), 1, text)
 
-    def test_rates_are_listed_cheapest_first(self) -> None:
-        lines = strip.render_legend(sample_plan()).splitlines()
-        self.assertIn("free", lines[0])
-        self.assertIn("peak", lines[-1])
+    def test_the_plan_is_one_table_with_no_second_listing(self) -> None:
+        """The identifier is a column, not a block underneath restating it."""
+        text = strip.render_plan(sample_plan())
+        self.assertNotIn("Rates\n", text)
+        # Every price appears against the period that charges it, once.
+        peak = [line for line in text.splitlines() if "peak" in line]
+        self.assertTrue(peak)
+        for line in peak:
+            self.assertRegex(line.strip(), r"^\d\d:\d\d-\d\d:\d\d")
+
+    def test_every_row_carries_the_published_identifier(self) -> None:
+        """The second block existed to show this; it is a column now."""
+        plan = Plan(
+            "P",
+            (Rate("Peak", 0.5, timetable="Every day"),),
+            (DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "Peak"),)),),
+        )
+        row = strip.render_day_pattern(plan, plan.day_patterns[0]).splitlines()[1]
+        self.assertIn("00:00-24:00", row)
+        self.assertIn("Peak", row)
+        self.assertIn("every_day.peak", row)
+        self.assertIn("50.00 c/kWh", row)
+
+    def test_the_columns_line_up_across_the_whole_plan(self) -> None:
+        """One width per column, measured once, or the table bends."""
+        plan = Plan(
+            "P",
+            (
+                Rate("Super Off Peak", 0.0, timetable="Every day"),
+                Rate("EV", 0.08, timetable="Every day"),
+            ),
+            (
+                DayPattern(
+                    "Every day",
+                    ALL_DAYS,
+                    (Period(0, 360, "EV"), Period(360, 1440, "Super Off Peak")),
+                ),
+            ),
+        )
+        rows = [
+            line
+            for line in strip.render_plan(plan).splitlines()
+            if line.strip().startswith("0") or line.strip().startswith("1")
+        ]
+        columns = {line.index("c/kWh") for line in rows if "c/kWh" in line}
+        self.assertEqual(len(columns), 1, rows)
 
     def test_nothing_entered_yet(self) -> None:
         self.assertIn("No rates", strip.render_plan(Plan("P")))
@@ -1332,9 +1377,11 @@ class TestPlanText(unittest.TestCase):
         self.assertIn("56.88 c/kWh", weekday)
         self.assertIn("30.00 c/kWh", weekend)
         self.assertNotIn("rate missing", weekday + weekend)
-        legend = strip.render_legend(plan)
-        self.assertIn("weekend.peak", legend)
-        self.assertIn("weekday.peak", legend)
+        # The identifier is on the row, so the two Peaks are told apart in
+        # place rather than in a separate listing.
+        self.assertIn("weekday.peak", weekday)
+        self.assertIn("weekend.peak", weekend)
+        self.assertNotIn("weekend.peak", weekday)
 
     def test_the_card_resolves_every_period(self) -> None:
         plan = Plan(
@@ -1368,3 +1415,45 @@ class TestPlanText(unittest.TestCase):
     def test_the_card_says_when_prices_exclude_tax(self) -> None:
         plan = Plan("P", (Rate("a", 0.1),), prices_include_gst=False)
         self.assertIn("exclude tax", strip.render_rate_plan_card(plan))
+
+
+class TestTheCsvNamesRatesUnambiguously(unittest.TestCase):
+    """A bare rate name is not unique: two timetables can each have a Peak."""
+
+    WEEKDAYS = frozenset(("mon", "tue", "wed", "thu", "fri"))
+    WEEKEND = frozenset(("sat", "sun"))
+
+    def _plan(self) -> Plan:
+        return Plan(
+            "P",
+            (
+                Rate("Peak", 0.5688, timetable="Weekday"),
+                Rate("Peak", 0.30, timetable="Weekend"),
+            ),
+            (
+                DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Peak"),)),
+                DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+            ),
+        )
+
+    def test_the_rates_csv_carries_the_identifier(self) -> None:
+        text = _pkg.serialise.rates_to_csv(self._plan())
+        self.assertIn("rate_id", text.splitlines()[0])
+        self.assertIn("weekday.peak", text)
+        self.assertIn("weekend.peak", text)
+
+    def test_the_periods_csv_carries_the_identifier(self) -> None:
+        text = _pkg.serialise.periods_to_csv(self._plan())
+        self.assertIn("rate_id", text.splitlines()[0])
+        self.assertIn("weekday.peak", text)
+        self.assertIn("weekend.peak", text)
+
+
+class TestTheCardNamesTheBillingDay(unittest.TestCase):
+    def test_the_day_is_stated_when_there_is_one(self) -> None:
+        plan = Plan("P", (Rate("a", 0.1),), billing_cycle_day=12)
+        self.assertIn("day 12", strip.render_rate_plan_card(plan))
+
+    def test_nothing_is_said_when_there_is_none(self) -> None:
+        plan = Plan("P", (Rate("a", 0.1),))
+        self.assertNotIn("Billing cycle", strip.render_rate_plan_card(plan))

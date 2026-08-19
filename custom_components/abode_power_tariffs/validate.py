@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from .const import ALL_DAY_TOKENS, MINUTES_PER_DAY
+from .const import ALL_DAY_TOKENS, MAX_BILLING_CYCLE_DAY, MINUTES_PER_DAY
 from .plan import DayPattern, Plan, Rate, format_time
 
 
@@ -222,7 +222,7 @@ def validate_rates(plan: Plan) -> list[Problem]:
                 problems.append(
                     Problem(
                         rate.name,
-                        "has a daily allowance but no fallback rate for beyond it",
+                        "has an allowance but no fallback rate for beyond it",
                     )
                 )
             else:
@@ -280,6 +280,19 @@ def validate_plan(plan: Plan) -> list[Problem]:
     ):
         problems.append(Problem("", "the plan's validity ends before it starts"))
 
+    # A billing cycle starts on the same day every month, so the day has to be
+    # one that every month has. A retailer does not bill on the 31st.
+    if plan.billing_cycle_day is not None and not (
+        1 <= plan.billing_cycle_day <= MAX_BILLING_CYCLE_DAY
+    ):
+        problems.append(
+            Problem(
+                "",
+                f"the billing cycle starts on day {plan.billing_cycle_day}, which "
+                f"does not exist in every month; use 1 to {MAX_BILLING_CYCLE_DAY}",
+            )
+        )
+
     return problems
 
 
@@ -323,10 +336,10 @@ def plan_warnings(plan: Plan) -> list[Problem]:
         warnings.append(
             Problem(
                 rate.name,
-                "is capped and runs through midnight, where the count resets. "
-                "One unbroken stretch will be given its full allowance twice. "
-                "Check how your retailer counts it — this component works to a "
-                "24-hour clock.",
+                "is capped and is entered as two periods either side of "
+                "midnight. The allowance belongs to the slot, so each of the "
+                "two gets its own — one unbroken stretch will be given its "
+                "full allowance twice. Check how your retailer counts it.",
             )
         )
     return warnings

@@ -28,8 +28,12 @@ async def async_get_config_entry_diagnostics(
         "rate_plan_card": render_rate_plan_card(plan),
         "problems": [str(problem) for problem in validate_plan(plan)],
         "current": {
-            "rate": state.effective_rate.name if state.effective_rate else None,
-            "scheduled_rate": state.resolution.rate.name if state.resolution else None,
+            "rate": (
+                state.effective_rate.qualified_name if state.effective_rate else None
+            ),
+            "scheduled_rate": (
+                state.resolution.rate.qualified_name if state.resolution else None
+            ),
             "day_pattern": state.resolution.day_pattern.name
             if state.resolution
             else None,

@@ -31,6 +31,7 @@ from homeassistant.util import slugify
 
 from .const import (
     ALL_DAY_TOKENS,
+    CONF_BILLING_CYCLE_DAY,
     CONF_COASTING_PERMITTED,
     CONF_CONSTRAINTS,
     CONF_COUNT_ALLOWANCE,
@@ -74,6 +75,7 @@ from .const import (
     DEFAULT_GST_PERCENT,
     DOMAIN,
     KNOWN_CONSTRAINTS,
+    MAX_BILLING_CYCLE_DAY,
     MINUTES_PER_DAY,
     SUBMIT_ADD,
     SUBMIT_CONTINUE,
@@ -181,6 +183,19 @@ def _rules_from(user_input: dict[str, Any], key: str) -> list[str]:
     return seen
 
 
+def _counting_without_meter(user_input: dict[str, Any]) -> bool:
+    """Return whether counting was asked for with no meter to count.
+
+    Nothing on the rate form is required until the box is ticked. Ticking it is
+    a choice the component cannot honour without a sensor, so at that point the
+    sensor becomes required — which is what asking the minimum means here,
+    rather than the field not being offered at all.
+    """
+    if not user_input.get(CONF_COUNT_ALLOWANCE):
+        return False
+    return not user_input.get(CONF_IMPORT_ENERGY_SENSOR)
+
+
 def _rules_in_both_lists(user_input: dict[str, Any]) -> set[str]:
     """Return rules put in both lists, which is a contradiction to resolve."""
     return set(_rules_from(user_input, CONF_INFORMATION_CONSTRAINTS)) & set(
@@ -214,15 +229,20 @@ def _require_name(schema: vol.Schema) -> vol.Schema:
     return vol.Schema(rebuilt)
 
 
-# What the first-run form asks for. Everything else has a sensible default and
-# is set afterwards in Configure. The two rule lists are here because they are
-# the only rate fields that create entities: a plan set up without them gets no
-# constraint sensors at all, and nothing on screen says the feature exists.
+# What the first-run form offers. Asking the minimum means little is required,
+# not that a field is withheld: an allowance declared during setup should not
+# have to be declared again in Configure. The two rule lists are here because
+# they are the only rate fields that create entities, and the allowance fields
+# because a cap is part of what the rate is.
 SETUP_RATE_FIELDS: Final = (
     CONF_NAME,
     CONF_IMPORT_CENTS,
     CONF_INFORMATION_CONSTRAINTS,
     CONF_ENFORCEABLE_CONSTRAINTS,
+    CONF_RATE_ALLOWANCE_KWH,
+    CONF_FALLBACK_RATE,
+    CONF_COUNT_ALLOWANCE,
+    CONF_IMPORT_ENERGY_SENSOR,
 )
 
 
@@ -250,6 +270,8 @@ def _rate_schema(
     fields: tuple[str, ...] | None = None,
     known_constraints: list[str] | None = None,
     timetables: list[str] | None = None,
+    count_allowance: bool = False,
+    energy_sensor: str | None = None,
 ) -> vol.Schema:
     """Return the rate form.
 
@@ -345,6 +367,25 @@ def _rate_schema(
         ] = selector.SelectSelector(
             selector.SelectSelectorConfig(options=fallback_options)
         )
+    # Counting sits with the cap, because it is the same decision: the user
+    # declares an allowance and says in the same breath whether this component
+    # should watch a meter against it and switch to the fallback once it is
+    # spent. It used to be a screen of its own, which is how an allowance came
+    # to be declared in one place and counted in another.
+    #
+    # Both values are the plan's rather than the rate's. There is one grid
+    # import meter, so the sensor is one answer shown wherever a cap is; a
+    # later rate finds it already filled in.
+    schema[vol.Required(CONF_COUNT_ALLOWANCE, default=count_allowance)] = (
+        selector.BooleanSelector()
+    )
+    schema[
+        vol.Optional(
+            CONF_IMPORT_ENERGY_SENSOR, description={"suggested_value": energy_sensor}
+        )
+    ] = selector.EntitySelector(
+        selector.EntitySelectorConfig(domain="sensor", device_class="energy")
+    )
     if fields is not None:
         schema = {
             key: value for key, value in schema.items() if _field_name(key) in fields
@@ -406,9 +447,6 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
     Nothing is created that the user did not enter.
     """
 
-    VERSION = 4
-    MINOR_VERSION = 1
-
     def __init__(self) -> None:
         """Start with nothing."""
         self._name: str = ""
@@ -416,6 +454,10 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._supply_charge: float = 0.0
         self._include_gst: bool = True
         self._gst_percent: float = DEFAULT_GST_PERCENT
+        self._billing_cycle_day: int | None = None
+        # Plan-level, collected on the rate screen beside the cap they belong to.
+        self._count_allowance: bool = False
+        self._energy_sensor: str | None = None
         self._demand_rate: float = 0.0
         self._monthly_charge: float = 0.0
         self._patterns: list[dict[str, Any]] = []
@@ -521,13 +563,22 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Collect the fixed charge and the tax treatment, before any rate."""
+        errors: dict[str, str] = {}
+
         if user_input is not None:
             self._supply_charge = float(user_input[CONF_SUPPLY_CHARGE_CENTS])
             self._include_gst = bool(user_input[CONF_PRICES_INCLUDE_GST])
             self._gst_percent = float(user_input[CONF_GST_PERCENT])
             self._monthly_charge = float(user_input[CONF_MONTHLY_CHARGE])
             self._demand_rate = float(user_input[CONF_DEMAND_RATE])
-            return await self.async_step_days()
+            day = int(user_input.get(CONF_BILLING_CYCLE_DAY) or 0)
+            if day > MAX_BILLING_CYCLE_DAY:
+                # A cycle starts on the same day every month, so the day has to
+                # be one every month has.
+                errors[CONF_BILLING_CYCLE_DAY] = "billing_day_out_of_range"
+            else:
+                self._billing_cycle_day = day or None
+                return await self.async_step_days()
 
         return self.async_show_form(
             step_id="charges",
@@ -550,6 +601,16 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                             min=0,
                             max=1000,
                             step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_BILLING_CYCLE_DAY, default=0
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=31,
+                            step=1,
                             mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
@@ -578,6 +639,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     ),
                 }
             ),
+            errors=errors,
             description_placeholders={"plan": self._name},
         )
 
@@ -611,16 +673,23 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_NAME] = "rate_exists"
             elif _rules_in_both_lists(user_input):
                 errors[CONF_ENFORCEABLE_CONSTRAINTS] = "rule_in_both_lists"
+            elif _counting_without_meter(user_input):
+                errors[CONF_IMPORT_ENERGY_SENSOR] = "energy_sensor_required"
             else:
+                # Plan-level, not the rate's: one grid meter, one answer.
+                self._count_allowance = bool(user_input.get(CONF_COUNT_ALLOWANCE))
+                self._energy_sensor = user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
                 self._rates.append(record)
                 return await self.async_step_rates()
 
         schema = {
             **_rate_schema(
                 {},
-                [],
+                [str(rate.get(CONF_NAME, "")) for rate in self._pattern_rates()],
                 fields=SETUP_RATE_FIELDS,
                 known_constraints=known_constraints(self._rates),
+                count_allowance=self._count_allowance,
+                energy_sensor=self._energy_sensor,
             ).schema,
             **on_submit("submit_rates"),
         }
@@ -978,6 +1047,9 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_SUPPLY_CHARGE_CENTS: self._supply_charge,
                 CONF_PRICES_INCLUDE_GST: self._include_gst,
                 CONF_GST_PERCENT: self._gst_percent,
+                CONF_BILLING_CYCLE_DAY: self._billing_cycle_day,
+                CONF_COUNT_ALLOWANCE: self._count_allowance,
+                CONF_IMPORT_ENERGY_SENSOR: self._energy_sensor,
             },
         )
 
@@ -1180,7 +1252,6 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 "rate_add",
                 "rate_pick",
                 "rate_remove",
-                "allowance_counting",
                 "init",
             ],
             description_placeholders={"rates": listing or "  none yet"},
@@ -1235,7 +1306,15 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 errors[CONF_NAME] = "rate_exists"
             elif _rules_in_both_lists(user_input):
                 errors[CONF_ENFORCEABLE_CONSTRAINTS] = "rule_in_both_lists"
+            elif _counting_without_meter(user_input):
+                errors[CONF_IMPORT_ENERGY_SENSOR] = "energy_sensor_required"
             else:
+                self.working[CONF_COUNT_ALLOWANCE] = bool(
+                    user_input.get(CONF_COUNT_ALLOWANCE)
+                )
+                self.working[CONF_IMPORT_ENERGY_SENSOR] = (
+                    user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
+                )
                 if index is None:
                     self._rates().append(record)
                 else:
@@ -1262,6 +1341,8 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     fallback_options,
                     known_constraints=self._known_constraints(),
                     timetables=self._day_pattern_names(),
+                    count_allowance=bool(self.working.get(CONF_COUNT_ALLOWANCE)),
+                    energy_sensor=self.working.get(CONF_IMPORT_ENERGY_SENSOR),
                 )
             ),
             errors=errors,
@@ -1746,8 +1827,14 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             )
             self.working[CONF_DEMAND_RATE] = user_input[CONF_DEMAND_RATE]
             self.working[CONF_MONTHLY_CHARGE] = user_input[CONF_MONTHLY_CHARGE]
+            day = int(user_input.get(CONF_BILLING_CYCLE_DAY) or 0)
+            self.working[CONF_BILLING_CYCLE_DAY] = day or None
             plan = self._plan()
-            if plan is not None and any(
+            if day > MAX_BILLING_CYCLE_DAY:
+                # The cycle starts on the same day every month, so the day has
+                # to be one that every month has.
+                errors[CONF_BILLING_CYCLE_DAY] = "billing_day_out_of_range"
+            elif plan is not None and any(
                 "validity" in str(problem) for problem in validate_plan(plan)
             ):
                 errors[CONF_VALID_TO] = "validity_backwards"
@@ -1825,57 +1912,20 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                             mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
-                }
-            ),
-            errors=errors,
-        )
-
-    # -------------------------------------------------------------- allowance
-
-    @guarded
-    async def async_step_allowance_counting(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Whether to keep a running total against a capped rate.
-
-        Separate from the plan on purpose. The plan declares the cap and what
-        is paid past it whatever this says; this only decides whether the
-        component keeps its own count, which is an estimate.
-        """
-        if user_input is not None:
-            self.working[CONF_COUNT_ALLOWANCE] = bool(user_input[CONF_COUNT_ALLOWANCE])
-            self.working[CONF_IMPORT_ENERGY_SENSOR] = (
-                user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
-            )
-            return await self.async_step_rates_menu()
-
-        options = self.working
-        capped = [
-            str(rate.get(CONF_NAME))
-            for rate in self._rates()
-            if rate.get(CONF_RATE_ALLOWANCE_KWH)
-        ]
-        return self.async_show_form(
-            step_id="allowance_counting",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_COUNT_ALLOWANCE,
-                        default=bool(options.get(CONF_COUNT_ALLOWANCE, False)),
-                    ): selector.BooleanSelector(),
                     vol.Optional(
-                        CONF_IMPORT_ENERGY_SENSOR,
-                        description={
-                            "suggested_value": options.get(CONF_IMPORT_ENERGY_SENSOR)
-                        },
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="sensor", device_class="energy"
+                        CONF_BILLING_CYCLE_DAY,
+                        default=int(options.get(CONF_BILLING_CYCLE_DAY) or 0),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=31,
+                            step=1,
+                            mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
                 }
             ),
-            description_placeholders={"capped": ", ".join(capped) or "none"},
+            errors=errors,
         )
 
     # ---------------------------------------------------------------- feed-in

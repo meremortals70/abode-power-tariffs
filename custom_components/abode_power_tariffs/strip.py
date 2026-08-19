@@ -10,6 +10,11 @@ So this renders the plan as plain text, which is exact everywhere, and the
 picture is left to Home Assistant. `sensor.<name>_rate` is an enum, so a
 built-in history-graph card draws it as a coloured timeline with a real time
 axis. See the README.
+
+One table. There used to be a second block underneath restating every rate and
+its price with no times against them, which meant every price appeared twice
+and the same rate was called two different things in the two places. The
+identifier the second block existed to show is now a column of the first.
 """
 
 from __future__ import annotations
@@ -17,65 +22,87 @@ from __future__ import annotations
 from .plan import DayPattern, Plan, format_time
 from .validate import validate_periods
 
-# "00:00-06:00" and the two spaces after it. The legend has no time column,
-# so it pads by this much to put its prices in the same place.
-TIME_COLUMN = 13
+# "00:00-24:00".
+TIME_COLUMN = 11
+
+MISSING = "rate missing"
+
+
+def column_widths(plan: Plan) -> tuple[int, int]:
+    """Return the name and identifier column widths for the whole plan.
+
+    Measured once across every timetable, so two tables line up with each other
+    and not merely each with itself. A fixed pad silently fails the moment a
+    name outgrows it: the price is pushed right and the column bends round it.
+    """
+    names = 0
+    identifiers = 0
+    for day_pattern in plan.day_patterns:
+        for period in (*day_pattern.periods, *day_pattern.export_periods):
+            names = max(names, len(period.rate))
+    for rate in plan.rates:
+        names = max(names, len(rate.name))
+        identifiers = max(identifiers, len(rate.qualified_name))
+    for export_rate in plan.export_rates:
+        names = max(names, len(export_rate.name))
+    return names, identifiers
 
 
 def name_width(plan: Plan) -> int:
-    """Return the width the name column needs across the whole plan.
-
-    One width for every block, so the price column lands in the same place
-    wherever it appears. A fixed pad silently fails the moment a name is
-    longer than it: the price is pushed right and the column bends around it.
-    """
-    widest = 0
-    for rate in plan.rates:
-        widest = max(widest, len(rate.name), len(rate.qualified_name))
-    for day_pattern in plan.day_patterns:
-        for period in day_pattern.periods:
-            widest = max(widest, len(period.rate))
-        for period in day_pattern.export_periods:
-            widest = max(widest, len(period.rate))
-    for export_rate in plan.export_rates:
-        widest = max(widest, len(export_rate.name))
-    return widest + 2
+    """Return the name column width on its own."""
+    return column_widths(plan)[0]
 
 
-def render_legend(plan: Plan, width: int | None = None) -> str:
-    """Return one line per rate, cheapest first, identifier then price."""
-    pad = name_width(plan) if width is None else width
-    return "\n".join(
-        f"  {rate.qualified_name:<{pad + TIME_COLUMN}}"
-        f"{rate.import_price * 100:>7.2f} c/kWh"
-        for rate in sorted(plan.rates, key=lambda rate: rate.import_price)
-    )
+def _row(
+    time_cell: str,
+    name: str,
+    identifier: str,
+    price: str,
+    widths: tuple[int, int],
+    indent: str = "  ",
+) -> str:
+    """Return one padded row of the table."""
+    names, identifiers = widths
+    return (
+        f"{indent}{time_cell:<{TIME_COLUMN}}  {name:<{names}}  "
+        f"{identifier:<{identifiers}}  {price}"
+    ).rstrip()
+
+
+def _price(cents: float) -> str:
+    """Return a price cell, right-aligned on the decimal point."""
+    return f"{cents:>7.2f} c/kWh"
 
 
 def render_export_row(
-    plan: Plan, day_pattern: DayPattern, width: int | None = None
+    plan: Plan, day_pattern: DayPattern, widths: tuple[int, int] | None = None
 ) -> str:
-    """Return the feed-in side of one timetable as text."""
-    pad = name_width(plan) if width is None else width
+    """Return the feed-in side of one timetable, in the same columns."""
+    columns = column_widths(plan) if widths is None else widths
     if day_pattern.export_same_all_day:
         return f"  Feed-in: {day_pattern.export_flat_price * 100:.2f} c/kWh all day"
 
     lines = ["  Feed-in:"]
     for period in day_pattern.sorted_export_periods():
         rate = plan.export_rate_by_name(period.rate)
-        price = "rate missing" if rate is None else f"{rate.price * 100:>7.2f} c/kWh"
         lines.append(
-            f"    {format_time(period.start)}-{format_time(period.end)}"
-            f"  {period.rate:<{pad - 2}}{price}"
+            _row(
+                f"{format_time(period.start)}-{format_time(period.end)}",
+                period.rate,
+                "",
+                MISSING if rate is None else _price(rate.price * 100),
+                columns,
+                indent="    ",
+            )
         )
     return "\n".join(lines)
 
 
 def render_day_pattern(
-    plan: Plan, day_pattern: DayPattern, width: int | None = None
+    plan: Plan, day_pattern: DayPattern, widths: tuple[int, int] | None = None
 ) -> str:
-    """Render one timetable: its periods, what each costs, and its coverage."""
-    pad = name_width(plan) if width is None else width
+    """Render one timetable as a table: when, what it is called, its id, its price."""
+    columns = column_widths(plan) if widths is None else widths
     season = ""
     if day_pattern.is_seasonal:
         assert day_pattern.season_from is not None
@@ -88,12 +115,14 @@ def render_day_pattern(
     lines = [f"{day_pattern.name}{season}"]
     for period in day_pattern.sorted_periods():
         rate = plan.rate_by_name(period.rate, day_pattern.name)
-        price = (
-            "rate missing" if rate is None else f"{rate.import_price * 100:>7.2f} c/kWh"
-        )
         lines.append(
-            f"  {format_time(period.start)}-{format_time(period.end)}"
-            f"  {period.rate:<{pad}}{price}"
+            _row(
+                f"{format_time(period.start)}-{format_time(period.end)}",
+                period.rate,
+                "" if rate is None else rate.qualified_name,
+                MISSING if rate is None else _price(rate.import_price * 100),
+                columns,
+            )
         )
 
     problems = validate_periods(day_pattern)
@@ -105,22 +134,60 @@ def render_day_pattern(
             "no overlaps."
         )
 
-    lines.append(render_export_row(plan, day_pattern, pad))
+    lines.append(render_export_row(plan, day_pattern, columns))
     return "\n".join(lines)
 
 
+def render_unscheduled(plan: Plan, widths: tuple[int, int]) -> str:
+    """Return rows for rates no time period names.
+
+    A fallback used only past an allowance has no period of its own, so a table
+    keyed on periods would drop it. It is still part of the plan and still gets
+    published, so it gets a row with the time cell empty.
+    """
+    scheduled = {
+        (day_pattern.name, period.rate)
+        for day_pattern in plan.day_patterns
+        for period in day_pattern.periods
+    }
+    rows = [
+        _row(
+            "", rate.name, rate.qualified_name, _price(rate.import_price * 100), widths
+        )
+        for rate in plan.rates
+        if not any(
+            name == rate.name and (rate.timetable in (timetable, None))
+            for timetable, name in scheduled
+        )
+    ]
+    return "\n".join(rows)
+
+
 def render_plan(plan: Plan) -> str:
-    """Render every timetable in the plan, then the rates."""
+    """Render every timetable in the plan as one table each."""
     if not plan.rates:
         return "No rates entered yet."
-    pad = name_width(plan)
-    legend = "Rates\n" + render_legend(plan, pad)
+    widths = column_widths(plan)
     if not plan.day_patterns:
-        return f"No day patterns configured yet.\n\n{legend}"
+        rows = "\n".join(
+            _row(
+                "",
+                rate.name,
+                rate.qualified_name,
+                _price(rate.import_price * 100),
+                widths,
+            )
+            for rate in plan.rates
+        )
+        return f"No day patterns configured yet.\n{rows}"
     body = "\n\n".join(
-        render_day_pattern(plan, day_pattern, pad) for day_pattern in plan.day_patterns
+        render_day_pattern(plan, day_pattern, widths)
+        for day_pattern in plan.day_patterns
     )
-    return f"{body}\n\n{legend}"
+    unscheduled = render_unscheduled(plan, widths)
+    if unscheduled:
+        return f"{body}\n\nNot on any timetable\n{unscheduled}"
+    return body
 
 
 def render_rate_plan_card(plan: Plan) -> str:
@@ -140,6 +207,10 @@ def render_rate_plan_card(plan: Plan) -> str:
     lines.append(f"Daily supply charge: {plan.daily_supply_charge * 100:.2f} c/day")
     if plan.monthly_charge:
         lines.append(f"Monthly charge: {plan.monthly_charge:.2f} per month")
+    if plan.billing_cycle_day:
+        lines.append(
+            f"Billing cycle starts on day {plan.billing_cycle_day} of the month"
+        )
     lines.append("")
 
     for day_pattern in plan.day_patterns:
@@ -156,12 +227,12 @@ def render_rate_plan_card(plan: Plan) -> str:
             if rate is None:
                 lines.append(
                     f"  {format_time(period.start)}-{format_time(period.end)}"
-                    f"  {period.rate}  (rate missing)"
+                    f"  {period.rate}  ({MISSING})"
                 )
                 continue
             lines.append(
                 f"  {format_time(period.start)}-{format_time(period.end)}"
-                f"  {rate.name:<12}"
+                f"  {rate.qualified_name:<12}"
                 f"  buy {rate.import_price:.4f}/kWh"
             )
         lines.append(f"  {render_export_row(plan, day_pattern).strip()}")

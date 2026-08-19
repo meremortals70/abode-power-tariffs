@@ -1,4 +1,4 @@
-"""Entities, setup, migration, the action and diagnostics.
+"""Entities, setup, the action and diagnostics.
 
     python3 -m unittest tests.test_platform
 
@@ -154,7 +154,6 @@ class FakeEntry:
         self.title = "Test Plan"
         self.entry_id = "entry1"
         self.domain = CONST.DOMAIN
-        self.version = 2
         self.runtime_data: Any = None
         self.unloaded: list[Any] = []
 
@@ -520,136 +519,6 @@ class TestSetupAndUnload(PlatformCase):
         entry = FakeEntry()
         run(PKG.async_setup_entry(self.coordinator.hass, entry))
         self.assertTrue(run(PKG.async_unload_entry(self.coordinator.hass, entry)))
-
-
-class TestMigration(unittest.TestCase):
-    def setUp(self) -> None:
-        self.hass = _ha_stubs.FakeHass()
-
-        class FakeConfigEntries:
-            def async_update_entry(self, entry: Any, **kwargs: Any) -> None:
-                for key, value in kwargs.items():
-                    setattr(entry, key, value)
-
-        self.hass.config_entries = FakeConfigEntries()
-        logging.disable(logging.CRITICAL)
-        self.addCleanup(logging.disable, logging.NOTSET)
-
-    def test_version_one_is_renamed_forward(self) -> None:
-        entry = FakeEntry()
-        entry.version = 1
-        entry.options = {
-            "rates": [{"name": "Peak", "import_cents": 50, "demand_window": True}],
-            "day_sets": [
-                {
-                    "name": "Every day",
-                    "days": list(CONST.ALL_DAY_TOKENS),
-                    "windows": [{"start": "00:00", "end": "24:00", "rate": "Peak"}],
-                }
-            ],
-        }
-        self.assertTrue(run(PKG.async_migrate_entry(self.hass, entry)))
-        self.assertEqual(entry.version, 4)
-        self.assertIn("day_patterns", entry.options)
-        self.assertNotIn("day_sets", entry.options)
-        self.assertIn("periods", entry.options["day_patterns"][0])
-        self.assertTrue(entry.options["rates"][0]["demand_period"])
-        plan = Plan.from_dict({**entry.options, CONST.CONF_NAME: "Migrated"})
-        self.assertEqual(sys.modules[f"{PACKAGE}.validate"].validate_plan(plan), [])
-
-    def test_a_current_entry_is_left_alone(self) -> None:
-        entry = FakeEntry()
-        entry.version = 4
-        self.assertTrue(run(PKG.async_migrate_entry(self.hass, entry)))
-        self.assertEqual(entry.version, 4)
-
-    def test_a_future_entry_is_refused(self) -> None:
-        entry = FakeEntry()
-        entry.version = 5
-        self.assertFalse(run(PKG.async_migrate_entry(self.hass, entry)))
-
-    def test_version_three_scopes_prefixed_rates_to_their_timetable(self) -> None:
-        """A rate is its timetable and its name; the prefix was standing in."""
-        entry = FakeEntry()
-        entry.version = 3
-        entry.options = {
-            "rates": [
-                {"name": "Every day Peak", "import_cents": 36.85},
-                {
-                    "name": "Every day Off Peak",
-                    "import_cents": 35.2,
-                    "rate_allowance_kwh": 5.0,
-                    "fallback_rate": "Every day Peak",
-                },
-            ],
-            "day_patterns": [
-                {
-                    "name": "Every day",
-                    "days": list(CONST.ALL_DAY_TOKENS),
-                    "periods": [
-                        {
-                            "start": "00:00",
-                            "end": "16:00",
-                            "rate": "Every day Off Peak",
-                        },
-                        {"start": "16:00", "end": "24:00", "rate": "Every day Peak"},
-                    ],
-                }
-            ],
-        }
-        self.assertTrue(run(PKG.async_migrate_entry(self.hass, entry)))
-        self.assertEqual(entry.version, 4)
-
-        peak, off_peak = entry.options["rates"]
-        self.assertEqual(peak["name"], "Peak")
-        self.assertEqual(peak["timetable"], "Every day")
-        self.assertEqual(off_peak["name"], "Off Peak")
-        # The fallback moved with the rate it points at.
-        self.assertEqual(off_peak["fallback_rate"], "Peak")
-
-        periods = entry.options["day_patterns"][0]["periods"]
-        self.assertEqual([period["rate"] for period in periods], ["Off Peak", "Peak"])
-
-        plan = Plan.from_dict({**entry.options, CONST.CONF_NAME: "Migrated"})
-        self.assertEqual(sys.modules[f"{PACKAGE}.validate"].validate_plan(plan), [])
-        self.assertEqual(
-            sorted(plan.qualified_rate_names), ["every_day.off_peak", "every_day.peak"]
-        )
-
-    def test_a_rate_that_was_never_prefixed_is_left_alone(self) -> None:
-        entry = FakeEntry()
-        entry.version = 3
-        entry.options = {
-            "rates": [{"name": "Peak", "import_cents": 36.85}],
-            "day_patterns": [
-                {
-                    "name": "Every day",
-                    "days": list(CONST.ALL_DAY_TOKENS),
-                    "periods": [{"start": "00:00", "end": "24:00", "rate": "Peak"}],
-                }
-            ],
-        }
-        self.assertTrue(run(PKG.async_migrate_entry(self.hass, entry)))
-        rate = entry.options["rates"][0]
-        self.assertEqual(rate["name"], "Peak")
-        self.assertIsNone(rate.get("timetable"))
-
-    def test_version_two_renames_the_allowance_and_drops_the_supply_pair(self) -> None:
-        """The allowance is the slot's, not the day's, and the key says so."""
-        entry = FakeEntry()
-        entry.version = 2
-        entry.options = {
-            "rates": [
-                {"name": "Peak", "import_cents": 50, "daily_allowance_kwh": 24.0}
-            ],
-            "supply_charge_entities": True,
-        }
-        self.assertTrue(run(PKG.async_migrate_entry(self.hass, entry)))
-        self.assertEqual(entry.version, 4)
-        rate = entry.options["rates"][0]
-        self.assertEqual(rate["rate_allowance_kwh"], 24.0)
-        self.assertNotIn("daily_allowance_kwh", rate)
-        self.assertNotIn("supply_charge_entities", entry.options)
 
 
 class TestTheAction(PlatformCase):

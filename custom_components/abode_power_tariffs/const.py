@@ -22,6 +22,12 @@ CONF_RATES: Final = "rates"
 CONF_DAY_PATTERNS: Final = "day_patterns"
 CONF_SUPPLY_CHARGE_CENTS: Final = "daily_supply_charge_cents"
 CONF_MONTHLY_CHARGE: Final = "monthly_charge"
+# The day of the month the retailer's billing cycle starts. Declared, never
+# counted from: the component publishes the day and computes nothing out of
+# it. It exists so a plan carrying a monthly charge can say when that charge
+# falls. Days past 28 are refused because they do not exist in every month.
+CONF_BILLING_CYCLE_DAY: Final = "billing_cycle_day"
+MAX_BILLING_CYCLE_DAY: Final = 28
 CONF_PRICES_INCLUDE_GST: Final = "prices_include_gst"
 CONF_GST_PERCENT: Final = "gst_percent"
 CONF_VALID_FROM: Final = "valid_from"

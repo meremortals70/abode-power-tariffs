@@ -21,14 +21,17 @@
           "prices_include_gst": "Prices include tax",
           "gst_percent": "Tax rate (%)",
           "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
-          "monthly_charge": "Monthly charge"
+          "monthly_charge": "Monthly charge",
+          "billing_cycle_day": "Billing cycle starts on day of month (0 for none)"
         },
         "data_description": {
           "daily_supply_charge_cents": "The fixed charge per day. Zero if you do not have one.",
           "prices_include_gst": "Australian bills quote prices with GST included. Most European and US rate sheets quote them without.",
           "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. Mark which time periods it is measured in by ticking 'This is a demand charge period' on the relevant rate under Configure. The monthly amount is not calculated here.",
-          "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one."
-        }
+          "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
+          "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
+        },
+        "error": {}
       },
       "rates": {
         "title": "Rates",
@@ -38,14 +41,18 @@
           "import_cents": "You pay (c/kWh)",
           "information_constraints": "Information only rules",
           "enforceable_constraints": "Enforceable rules",
-          "on_submit": "When I submit"
+          "on_submit": "When I submit",
+          "count_allowance": "Count usage against this allowance",
+          "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
         },
         "data_description": {
           "name": "As it appears on your bill - peak, off peak, shoulder, free. '{pattern}' is put in front automatically.",
           "import_cents": "Cents per kilowatt hour, as the bill quotes it.",
           "information_constraints": "Useful facts about this rate that other systems can look at. Pick from the list, or type your own and press enter. Each one becomes a switch-like sensor your automations can trigger on.",
           "enforceable_constraints": "Rules you are declaring to be part of what this rate means, so another system should treat them as a rule rather than a hint. This integration still enforces nothing — it only says so, and the consuming system decides what to do. A rule belongs in one list or the other, not both.",
-          "on_submit": "Choose 'Continue to the time periods' when this timetable's rates are all in. Every rate you have entered is kept."
+          "on_submit": "Choose 'Continue to the time periods' when this timetable's rates are all in. Every rate you have entered is kept.",
+          "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
+          "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
         }
       },
       "days": {
@@ -133,7 +140,9 @@
       "end_before_start": "The end must be after the start.",
       "bad_time": "That is not a valid time.",
       "period_overlaps": "That overlaps a time period already entered.",
-      "rule_in_both_lists": "A rule cannot be information only and enforceable at once. Choose one list."
+      "rule_in_both_lists": "A rule cannot be information only and enforceable at once. Choose one list.",
+      "energy_sensor_required": "Choose the energy sensor to count, or untick counting.",
+      "billing_day_out_of_range": "A billing cycle starts on the same day every month, so it has to be a day every month has. Enter 1 to 28."
     },
     "abort": {
       "already_configured": "A channel with that name already exists.",
@@ -167,20 +176,7 @@
           "rate_add": "Add a rate",
           "rate_pick": "Edit a rate",
           "rate_remove": "Remove a rate",
-          "allowance_counting": "Allowance counting — keep a running total",
           "init": "Back"
-        }
-      },
-      "allowance_counting": {
-        "title": "Allowance counting",
-        "description": "Some plans give a period free or cheap only up to a daily cap. Your plan already says what the cap is and what you pay past it, and publishes both, whatever you choose here.\n\nThis only decides whether this integration keeps its own running total, so the price sensor switches to the fallback once the cap is spent. That keeps the Energy dashboard honest on these plans.\n\nIt is an estimate. It counts the meter you nominate and resets at local midnight. Your retailer meters and resets on their own terms, so it will not match your bill exactly and is not meant to.\n\nCapped rates in this plan: {capped}",
-        "data": {
-          "count_allowance": "Count my usage against the cap",
-          "import_energy_sensor": "Meter to count"
-        },
-        "data_description": {
-          "count_allowance": "Off by default. With it off the price sensor reports the scheduled rate and says that the cap is not being accounted for.",
-          "import_energy_sensor": "A total grid import energy sensor in kWh. Nothing is counted without one."
         }
       },
       "rate_pick": {
@@ -203,7 +199,9 @@
           "demand_period": "This is a demand charge period",
           "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
           "export_allowance_kwh": "Daily export allowance (kWh)",
-          "fallback_rate": "Rate once the allowance is used up"
+          "fallback_rate": "Rate once the allowance is used up",
+          "count_allowance": "Count usage against this allowance",
+          "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
         },
         "data_description": {
           "timetable": "Rates are identified by their timetable and their name together, so a weekday Peak and a weekend Peak can both be called Peak at different prices. The rate is published as 'weekday.peak'. A rate from an older plan carries no timetable and keeps the name it already has.",
@@ -212,7 +210,9 @@
           "coasting_permitted": "Tells other systems that letting a room drift is acceptable during this rate.",
           "demand_period": "A marker only. The monthly demand charge is not calculated here.",
           "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
-          "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent."
+          "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
+          "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
+          "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
         }
       },
       "rate_remove": {
@@ -323,7 +323,8 @@
           "valid_to": "Plan valid to",
           "holiday_sensor": "Public holiday sensor",
           "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
-          "monthly_charge": "Monthly charge"
+          "monthly_charge": "Monthly charge",
+          "billing_cycle_day": "Billing cycle starts on day of month (0 for none)"
         },
         "data_description": {
           "prices_include_gst": "Australian bills quote prices with GST included. Most European and US rate sheets quote them without.",
@@ -331,8 +332,10 @@
           "valid_to": "Optional. When your retailer reprices, set this and add a new channel for the new plan, so past costs stay correct against the price that was actually in force.",
           "holiday_sensor": "Optional. A Workday sensor from Home Assistant's built-in Workday integration, which is off on a public holiday. Needed only if holidays are priced differently.",
           "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here.",
-          "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one."
-        }
+          "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
+          "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
+        },
+        "error": {}
       },
       "usage_tracking": {
         "title": "Track usage by rate",
@@ -410,7 +413,9 @@
       "bad_time": "That is not a valid time.",
       "validity_backwards": "The plan cannot end before it starts.",
       "meter_not_created": "The Utility Meter helper could not be created. The reason is in the log.",
-      "rule_in_both_lists": "A rule cannot be information only and enforceable at once. Choose one list."
+      "rule_in_both_lists": "A rule cannot be information only and enforceable at once. Choose one list.",
+      "energy_sensor_required": "Choose the energy sensor to count, or untick counting.",
+      "billing_day_out_of_range": "A billing cycle starts on the same day every month, so it has to be a day every month has. Enter 1 to 28."
     }
   },
   "selector": {

@@ -11,7 +11,7 @@ import csv
 import io
 
 from .const import ALL_DAY_TOKENS
-from .plan import Plan, format_time
+from .plan import DayPattern, Plan, format_time
 
 PERIOD_HEADER = (
     "day_pattern",
@@ -21,9 +21,12 @@ PERIOD_HEADER = (
     "start",
     "end",
     "rate",
+    "rate_id",
 )
 RATE_HEADER = (
     "rate",
+    "timetable",
+    "rate_id",
     "import_c_per_kwh",
     "export_c_per_kwh",
     "constraints",
@@ -31,6 +34,16 @@ RATE_HEADER = (
     "rate_allowance_kwh",
     "fallback_rate",
 )
+
+
+def _period_rate_id(plan: Plan, day_pattern: DayPattern, name: str) -> str:
+    """Return the published identifier for the rate a period names.
+
+    The bare name is what the user typed and is not unique across the plan: a
+    weekday Peak and a weekend Peak are two rates both called Peak.
+    """
+    rate = plan.rate_by_name(name, day_pattern.name)
+    return "" if rate is None else rate.qualified_name
 
 
 def periods_to_csv(plan: Plan) -> str:
@@ -60,6 +73,7 @@ def periods_to_csv(plan: Plan) -> str:
                     format_time(period.start),
                     format_time(period.end),
                     period.rate,
+                    _period_rate_id(plan, day_pattern, period.rate),
                 ]
             )
     return buffer.getvalue()
@@ -74,6 +88,8 @@ def rates_to_csv(plan: Plan) -> str:
         writer.writerow(
             [
                 rate.name,
+                rate.timetable or "",
+                rate.qualified_name,
                 f"{rate.import_price * 100:.4f}",
                 f"{rate.export_price * 100:.4f}",
                 " ".join(sorted(rate.constraints)),

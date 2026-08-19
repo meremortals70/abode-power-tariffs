@@ -239,6 +239,20 @@ class SupplyChargeSensor(TariffEntity, SensorEntity):
         return round(self.coordinator.plan.daily_supply_charge, 6)
 
     @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the fixed charges the plan declares.
+
+        Declared figures, published as entered. Nothing here is accumulated and
+        no cycle is computed from the billing day: where a cycle begins and
+        ends, and how much of it is left, is the consumer's arithmetic.
+        """
+        plan = self.coordinator.plan
+        return {
+            "monthly_charge": round(plan.monthly_charge, 6),
+            "billing_cycle_day": plan.billing_cycle_day,
+        }
+
+    @property
     def available(self) -> bool:
         """The supply charge does not depend on a period resolving."""
         return True

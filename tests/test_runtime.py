@@ -1101,8 +1101,29 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
                 CONST.CONF_IMPORT_CENTS,
                 CONST.CONF_INFORMATION_CONSTRAINTS,
                 CONST.CONF_ENFORCEABLE_CONSTRAINTS,
+                CONST.CONF_RATE_ALLOWANCE_KWH,
+                CONST.CONF_COUNT_ALLOWANCE,
+                CONST.CONF_IMPORT_ENERGY_SENSOR,
             ],
         )
+
+    def test_setup_offers_the_allowance_and_its_counting(self) -> None:
+        """Asking the minimum is about what is required, not what is offered.
+
+        An allowance declared during setup should not have to be declared a
+        second time in Configure, and the tickbox belongs beside the cap it
+        counts rather than on a screen of its own.
+        """
+        fields = {
+            getattr(key, "schema", key)
+            for key in PKG.config_flow._rate_schema(
+                {}, ["Other"], fields=PKG.config_flow.SETUP_RATE_FIELDS
+            ).schema
+        }
+        self.assertIn(CONST.CONF_RATE_ALLOWANCE_KWH, fields)
+        self.assertIn(CONST.CONF_FALLBACK_RATE, fields)
+        self.assertIn(CONST.CONF_COUNT_ALLOWANCE, fields)
+        self.assertIn(CONST.CONF_IMPORT_ENERGY_SENSOR, fields)
 
     def test_the_edit_form_is_the_same_form_unfiltered(self) -> None:
         """One definition. The setup form asking for less is the only difference."""
@@ -1122,7 +1143,6 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
             {
                 CONST.CONF_COASTING_PERMITTED,
                 CONST.CONF_DEMAND_PERIOD,
-                CONST.CONF_RATE_ALLOWANCE_KWH,
                 CONST.CONF_EXPORT_ALLOWANCE_KWH,
                 CONST.CONF_FALLBACK_RATE,
             },
@@ -1141,3 +1161,109 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
             record[CONST.CONF_CONSTRAINTS], ["precool_opportunity", "no_grid_import"]
         )
         self.assertEqual(record[CONST.CONF_ENFORCEABLE_CONSTRAINTS], ["no_grid_import"])
+
+
+class TestCountingSitsWithTheCap(unittest.TestCase):
+    """The tickbox and the meter belong on the rate form, beside the allowance.
+
+    They used to be a Configure screen of their own, which meant an allowance
+    was declared in one place and counted in another.
+    """
+
+    def test_the_separate_screen_is_gone(self) -> None:
+        self.assertFalse(
+            hasattr(
+                PKG.config_flow.AbodePowerTariffsOptionsFlow,
+                "async_step_allowance_counting",
+            )
+        )
+
+    def test_the_rate_form_carries_the_tickbox_and_the_meter(self) -> None:
+        fields = {
+            getattr(key, "schema", key)
+            for key in PKG.config_flow._rate_schema({}, ["Other"]).schema
+        }
+        self.assertIn(CONST.CONF_RATE_ALLOWANCE_KWH, fields)
+        self.assertIn(CONST.CONF_COUNT_ALLOWANCE, fields)
+        self.assertIn(CONST.CONF_IMPORT_ENERGY_SENSOR, fields)
+
+    def test_the_meter_defaults_to_the_one_already_chosen(self) -> None:
+        """One grid meter for the plan, so a later capped rate finds it filled."""
+        schema = PKG.config_flow._rate_schema(
+            {}, ["Other"], count_allowance=True, energy_sensor="sensor.grid_import"
+        )
+        marker = next(
+            key
+            for key in schema.schema
+            if getattr(key, "schema", key) == CONST.CONF_IMPORT_ENERGY_SENSOR
+        )
+        self.assertEqual(marker.description, {"suggested_value": "sensor.grid_import"})
+
+    def test_ticking_the_box_makes_the_meter_required(self) -> None:
+        """Nothing is required until the box is ticked; then the meter is."""
+        self.assertFalse(
+            PKG.config_flow._counting_without_meter({CONST.CONF_COUNT_ALLOWANCE: False})
+        )
+        self.assertTrue(
+            PKG.config_flow._counting_without_meter({CONST.CONF_COUNT_ALLOWANCE: True})
+        )
+        self.assertFalse(
+            PKG.config_flow._counting_without_meter(
+                {
+                    CONST.CONF_COUNT_ALLOWANCE: True,
+                    CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
+                }
+            )
+        )
+
+    def test_counting_is_not_stored_on_the_rate(self) -> None:
+        """Both are the plan's. One meter, one answer."""
+        record = PKG.config_flow._rate_record(
+            {
+                CONST.CONF_NAME: "Off Peak",
+                CONST.CONF_IMPORT_CENTS: 22.0,
+                CONST.CONF_COUNT_ALLOWANCE: True,
+                CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
+            }
+        )
+        self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, record)
+        self.assertNotIn(CONST.CONF_IMPORT_ENERGY_SENSOR, record)
+
+
+class TestTheBillingCycleDay(unittest.TestCase):
+    """A declared fact. The day is published; nothing is computed from it."""
+
+    def test_the_day_round_trips_through_storage(self) -> None:
+        plan = PKG.plan.Plan.from_dict({"name": "P", CONST.CONF_BILLING_CYCLE_DAY: 12})
+        self.assertEqual(plan.billing_cycle_day, 12)
+        self.assertEqual(plan.as_dict()[CONST.CONF_BILLING_CYCLE_DAY], 12)
+
+    def test_no_day_entered_is_no_day(self) -> None:
+        self.assertIsNone(PKG.plan.Plan.from_dict({"name": "P"}).billing_cycle_day)
+        self.assertIsNone(
+            PKG.plan.Plan.from_dict(
+                {"name": "P", CONST.CONF_BILLING_CYCLE_DAY: 0}
+            ).billing_cycle_day
+        )
+
+    def test_a_day_no_month_has_is_refused(self) -> None:
+        """A retailer bills on the same day every month, so 29 to 31 cannot be it."""
+        for day in (29, 30, 31):
+            plan = PKG.plan.Plan.from_dict(
+                {"name": "P", CONST.CONF_BILLING_CYCLE_DAY: day}
+            )
+            problems = [str(problem) for problem in PKG.validate.validate_plan(plan)]
+            self.assertTrue(
+                any("does not exist in every month" in problem for problem in problems),
+                problems,
+            )
+
+    def test_one_to_twenty_eight_is_accepted(self) -> None:
+        for day in (1, 15, 28):
+            plan = PKG.plan.Plan.from_dict(
+                {"name": "P", CONST.CONF_BILLING_CYCLE_DAY: day}
+            )
+            problems = [str(problem) for problem in PKG.validate.validate_plan(plan)]
+            self.assertFalse(
+                any("every month" in problem for problem in problems), problems
+            )

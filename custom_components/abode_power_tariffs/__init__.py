@@ -40,7 +40,7 @@ from .const import (
     SERVICE_GET_INTERVALS,
 )
 from .coordinator import TariffCoordinator
-from .plan import Plan, PlanError, scope_rates_to_timetables
+from .plan import Plan, PlanError
 from .validate import validate_plan
 
 _LOGGER = logging.getLogger(__name__)
@@ -100,50 +100,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         schema=GET_INTERVALS_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
-    return True
-
-
-async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Move an older entry forward. A version bump never costs the user a re-entry."""
-    if entry.version > 4:
-        # Downgrade. Nothing sensible to do; refuse rather than corrupt.
-        return False
-
-    if entry.version == 1:
-        options = dict(entry.options)
-        # 0.1.x named these differently.
-        patterns = options.pop("day_sets", [])
-        for pattern in patterns:
-            pattern["periods"] = pattern.pop("windows", [])
-        options["day_patterns"] = patterns
-        for rate in options.get("rates", []):
-            if "demand_window" in rate:
-                rate["demand_period"] = rate.pop("demand_window")
-        options.setdefault("plan_description", "")
-        hass.config_entries.async_update_entry(entry, options=options, version=2)
-        _LOGGER.info("Migrated %s to version 2", entry.title)
-
-    if entry.version == 2:
-        options = dict(entry.options)
-        # The allowance belongs to the slot, not the day, so the key says so.
-        for rate in options.get("rates", []):
-            if "daily_allowance_kwh" in rate:
-                rate["rate_allowance_kwh"] = rate.pop("daily_allowance_kwh")
-        # The supply charge accumulator and its token energy sensor are gone.
-        # The charge is declared, not counted; a total is the consumer's.
-        options.pop("supply_charge_entities", None)
-        hass.config_entries.async_update_entry(entry, options=options, version=3)
-        _LOGGER.info("Migrated %s to version 3", entry.title)
-
-    if entry.version == 3:
-        options = dict(entry.options)
-        # A rate is its timetable and its name together. A plan older than
-        # that carries the timetable inside the name; this puts it where it
-        # belongs and moves every reference with it.
-        scope_rates_to_timetables(options)
-        hass.config_entries.async_update_entry(entry, options=options, version=4)
-        _LOGGER.info("Migrated %s to version 4", entry.title)
-
     return True
 
 
