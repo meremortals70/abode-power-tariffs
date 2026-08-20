@@ -26,6 +26,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers import selector
 from homeassistant.util import slugify
 
@@ -33,7 +34,6 @@ from .const import (
     ALL_DAY_TOKENS,
     CONF_AFTER_ALLOWANCE_CENTS,
     CONF_BILLING_CYCLE_DAY,
-    CONF_COASTING_PERMITTED,
     CONF_CONSTRAINTS,
     CONF_COUNT_ALLOWANCE,
     CONF_DAY_PATTERNS,
@@ -81,6 +81,9 @@ from .const import (
     KNOWN_CONSTRAINTS,
     MAX_BILLING_CYCLE_DAY,
     MINUTES_PER_DAY,
+    SECTION_ALLOWANCE,
+    SECTION_CONSTRAINTS,
+    SECTION_DEMAND,
     SUBMIT_ADD,
     SUBMIT_CONTINUE,
     UM_CONF_ALWAYS_AVAILABLE,
@@ -126,6 +129,14 @@ def _minutes_to_selector(minutes: int) -> str:
     return f"{format_time(minutes)}:00"
 
 
+def _covered_minutes(periods: list[dict[str, Any]]) -> int:
+    """Return how many minutes of the day these periods account for."""
+    return sum(
+        parse_time(str(period[CONF_END])) - parse_time(str(period[CONF_START]))
+        for period in periods
+    )
+
+
 def _rate_record(user_input: dict[str, Any]) -> dict[str, Any]:
     """Build a stored rate from a submitted form.
 
@@ -146,12 +157,9 @@ def _rate_record(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_EXPORT_CENTS: user_input.get(CONF_EXPORT_CENTS, 0.0),
         CONF_CONSTRAINTS: union,
         CONF_ENFORCEABLE_CONSTRAINTS: enforceable,
-        CONF_COASTING_PERMITTED: bool(user_input.get(CONF_COASTING_PERMITTED, True)),
         CONF_DEMAND_PERIOD: bool(user_input.get(CONF_DEMAND_PERIOD, False)),
         CONF_DEMAND_RATE: user_input.get(CONF_DEMAND_RATE) or 0.0,
         CONF_RATE_ALLOWANCE_KWH: user_input.get(CONF_RATE_ALLOWANCE_KWH) or None,
-        CONF_EXPORT_ALLOWANCE_KWH: user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None,
-        CONF_EXPORT_FALLBACK_CENTS: user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None,
         CONF_FALLBACK_RATE: user_input.get(CONF_FALLBACK_RATE) or None,
     }
 
@@ -350,12 +358,6 @@ def _rate_schema(
     }
     schema[
         vol.Required(
-            CONF_COASTING_PERMITTED,
-            default=bool(existing.get(CONF_COASTING_PERMITTED, True)),
-        )
-    ] = selector.BooleanSelector()
-    schema[
-        vol.Required(
             CONF_DEMAND_PERIOD, default=bool(existing.get(CONF_DEMAND_PERIOD, False))
         )
     ] = selector.BooleanSelector()
@@ -379,26 +381,9 @@ def _rate_schema(
             min=0, max=1000, step=0.1, mode=selector.NumberSelectorMode.BOX
         )
     )
-    schema[
-        vol.Required(
-            CONF_EXPORT_ALLOWANCE_KWH,
-            default=float(existing.get(CONF_EXPORT_ALLOWANCE_KWH) or 0.0),
-        )
-    ] = selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=0, max=1000, step=0.1, mode=selector.NumberSelectorMode.BOX
-        )
-    )
-    schema[
-        vol.Optional(
-            CONF_EXPORT_FALLBACK_CENTS,
-            default=float(existing.get(CONF_EXPORT_FALLBACK_CENTS) or 0.0),
-        )
-    ] = selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
-        )
-    )
+    # No export fields here. An export allowance belongs beside the export
+    # price it caps, which is on the feed-in screens; import and export are
+    # separate flows and this is an import rate.
     if fallback_options:
         schema[
             vol.Required(
@@ -431,7 +416,73 @@ def _rate_schema(
         schema = {
             key: value for key, value in schema.items() if _field_name(key) in fields
         }
-    return vol.Schema(schema)
+    return vol.Schema(_in_sections(schema))
+
+
+# Which fields belong in which collapsible group, in the order they appear.
+# Name and price are not in one: they are what every rate has, and the form
+# opens on them.
+RATE_SECTIONS: Final = (
+    (SECTION_DEMAND, (CONF_DEMAND_PERIOD, CONF_DEMAND_RATE)),
+    (
+        SECTION_ALLOWANCE,
+        (
+            CONF_RATE_ALLOWANCE_KWH,
+            CONF_FALLBACK_RATE,
+            CONF_COUNT_ALLOWANCE,
+            CONF_IMPORT_ENERGY_SENSOR,
+        ),
+    ),
+    (
+        SECTION_CONSTRAINTS,
+        (CONF_INFORMATION_CONSTRAINTS, CONF_ENFORCEABLE_CONSTRAINTS),
+    ),
+)
+
+
+def _in_sections(schema: dict[Any, Any]) -> dict[Any, Any]:
+    """Group the rate form's fields into collapsible sections.
+
+    Home Assistant has no conditional field visibility: a form is rendered
+    from a schema handed over once and the frontend does not ask again when a
+    box is ticked. What it does have is a named group that opens closed, and
+    opening one and filling it in is itself the declaration — so a demand
+    charge and an allowance no longer run together in one undivided list with
+    nothing between them.
+
+    Every section starts collapsed. A rate that has none of these things is
+    then a name and a price, which is what most rates are.
+    """
+    grouped: dict[Any, Any] = {}
+    claimed: set[str] = set()
+    for name, members in RATE_SECTIONS:
+        inner = {
+            key: value for key, value in schema.items() if _field_name(key) in members
+        }
+        if not inner:
+            continue
+        claimed |= {_field_name(key) for key in inner}
+        grouped[vol.Required(name)] = section(vol.Schema(inner), {"collapsed": True})
+    loose = {
+        key: value for key, value in schema.items() if _field_name(key) not in claimed
+    }
+    return {**loose, **grouped}
+
+
+def flatten_sections(user_input: dict[str, Any]) -> dict[str, Any]:
+    """Return a sectioned form's payload as one flat mapping.
+
+    A section nests what it holds, so everything that reads the rate form
+    would otherwise have to know which section each field sits in. It does
+    not: a field means the same thing wherever it is shown.
+    """
+    flat: dict[str, Any] = {}
+    for key, value in user_input.items():
+        if isinstance(value, dict):
+            flat.update(value)
+        else:
+            flat[key] = value
+    return flat
 
 
 def on_submit(
@@ -505,6 +556,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._patterns: list[dict[str, Any]] = []
         self._export_same_all_day: bool = True
         self._export_flat: float = 0.0
+        self._export_allowance: float | None = None
+        self._export_fallback: float | None = None
         self._export_rates: list[dict[str, Any]] = []
         self._export_periods: list[dict[str, Any]] = []
         self._rates: list[dict[str, Any]] = []
@@ -550,6 +603,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_EXPORT_PERIODS: self._export_periods,
                 CONF_EXPORT_SAME_ALL_DAY: self._export_same_all_day,
                 CONF_EXPORT_FLAT_CENTS: self._export_flat,
+                CONF_EXPORT_ALLOWANCE_KWH: self._export_allowance,
+                CONF_EXPORT_FALLBACK_CENTS: self._export_fallback,
             }
         )
         self._pattern_name = ""
@@ -558,6 +613,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._export_periods = []
         self._export_same_all_day = True
         self._export_flat = 0.0
+        self._export_allowance = None
+        self._export_fallback = None
 
     # ---------------------------------------------------------------- 1 name
 
@@ -715,14 +772,15 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_IMPORT_CENTS: user_input[CONF_AFTER_ALLOWANCE_CENTS],
             }
             export_flat = 0.0
+            export_allowance: float | None = None
+            export_fallback: float | None = None
             if self._has_export:
                 export_flat = float(user_input.get(CONF_EXPORT_FLAT_CENTS) or 0.0)
-                included[CONF_EXPORT_ALLOWANCE_KWH] = (
-                    user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
-                )
-                included[CONF_EXPORT_FALLBACK_CENTS] = (
-                    user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
-                )
+                # Beside the export price, not on the import rate. A
+                # single-rate plan's feed-in is one price all day, so the
+                # declaration lives on the timetable that carries it.
+                export_allowance = user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
+                export_fallback = user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
             self._rates = [included, additional]
             self._patterns = [
                 {
@@ -738,6 +796,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_EXPORT_PERIODS: [],
                     CONF_EXPORT_SAME_ALL_DAY: True,
                     CONF_EXPORT_FLAT_CENTS: export_flat,
+                    CONF_EXPORT_ALLOWANCE_KWH: export_allowance,
+                    CONF_EXPORT_FALLBACK_CENTS: export_fallback,
                 }
             ]
             return await self.async_step_finish()
@@ -800,8 +860,17 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            user_input = flatten_sections(user_input)
             action = user_input[CONF_ON_SUBMIT]
-            if action == SUBMIT_CONTINUE and self._pattern_rates():
+            # A form has one button, so what it does is a field. Choosing to
+            # move on used to return here and throw away whatever had been
+            # typed on the screen, silently. Now only a blank screen moves on
+            # untouched; anything filled in is checked and kept first.
+            if (
+                action == SUBMIT_CONTINUE
+                and not str(user_input.get(CONF_NAME) or "").strip()
+                and self._pattern_rates()
+            ):
                 return await self.async_step_periods()
             record = _rate_record(user_input)
             typed = record[CONF_NAME]
@@ -829,6 +898,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._count_allowance = bool(user_input.get(CONF_COUNT_ALLOWANCE))
                 self._energy_sensor = user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
                 self._rates.append(record)
+                if action == SUBMIT_CONTINUE:
+                    return await self.async_step_periods()
                 return await self.async_step_rates()
 
         schema = {
@@ -914,14 +985,15 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         """When each rate applies, until the day is covered."""
         errors: dict[str, str] = {}
         names = [rate[CONF_NAME] for rate in self._pattern_rates()]
-        covered = sum(
-            parse_time(period[CONF_END]) - parse_time(period[CONF_START])
-            for period in self._periods
-        )
+        covered = _covered_minutes(self._periods)
 
         if user_input is not None:
             action = user_input[CONF_ON_SUBMIT]
-            if action == SUBMIT_CONTINUE and self._periods:
+            # Moving on is a gate, not a preference. A plan with an uncovered
+            # stretch of day is not a valid plan, and the screen said so; it
+            # just did not refuse. A period cannot be blank, so there is
+            # nothing to move on from except a day already accounted for.
+            if action == SUBMIT_CONTINUE and covered >= MINUTES_PER_DAY:
                 return await self.async_step_feed_in()
             try:
                 start = _time_to_minutes(str(user_input[CONF_START]), is_end=False)
@@ -945,6 +1017,11 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                             CONF_RATE: str(user_input[CONF_RATE]),
                         }
                     )
+                    if (
+                        action == SUBMIT_CONTINUE
+                        and _covered_minutes(self._periods) >= MINUTES_PER_DAY
+                    ):
+                        return await self.async_step_feed_in()
                     return await self.async_step_periods()
 
         ordered = sorted(
@@ -999,9 +1076,11 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             action = user_input[CONF_ON_SUBMIT]
-            if action == SUBMIT_CONTINUE and self._pattern_export_rates():
-                return await self.async_step_export_periods()
             typed = str(user_input.get(CONF_NAME) or "").strip()
+            # Blank screen: move on, nothing entered. Filled in: keep it
+            # first, then move on. The import side reads the same way.
+            if action == SUBMIT_CONTINUE and not typed and self._pattern_export_rates():
+                return await self.async_step_export_periods()
             full = f"{self._pattern_name} {typed}".strip()
             if not typed:
                 errors[CONF_NAME] = "name_required"
@@ -1009,8 +1088,21 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_NAME] = "rate_exists"
             else:
                 self._export_rates.append(
-                    {CONF_NAME: full, CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS]}
+                    {
+                        CONF_NAME: full,
+                        CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS],
+                        # The cap on this feed-in price and what is paid past
+                        # it, declared beside the price they belong to.
+                        CONF_EXPORT_ALLOWANCE_KWH: (
+                            user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
+                        ),
+                        CONF_EXPORT_FALLBACK_CENTS: (
+                            user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
+                        ),
+                    }
                 )
+                if action == SUBMIT_CONTINUE:
+                    return await self.async_step_export_periods()
                 return await self.async_step_export_rates()
 
         return self.async_show_form(
@@ -1020,6 +1112,26 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Optional(CONF_NAME, default=""): selector.TextSelector(),
                     vol.Required(
                         CONF_EXPORT_CENTS, default=0.0
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_EXPORT_ALLOWANCE_KWH, default=0.0
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=1000,
+                            step=0.1,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_EXPORT_FALLBACK_CENTS, default=0.0
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
                             min=0,
@@ -1048,14 +1160,14 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         """When each feed-in rate applies."""
         errors: dict[str, str] = {}
         names = [rate[CONF_NAME] for rate in self._pattern_export_rates()]
-        covered = sum(
-            parse_time(period[CONF_END]) - parse_time(period[CONF_START])
-            for period in self._export_periods
-        )
+        covered = _covered_minutes(self._export_periods)
 
         if user_input is not None:
             action = user_input[CONF_ON_SUBMIT]
-            if action == SUBMIT_CONTINUE and self._export_periods:
+            # The same gate as the import side. This branch is only reached
+            # when the user turned the all-day feed-in price off, so having
+            # chosen periods they have to cover the day with them.
+            if action == SUBMIT_CONTINUE and covered >= MINUTES_PER_DAY:
                 return await self.async_step_timetable_done()
             try:
                 start = _time_to_minutes(str(user_input[CONF_START]), is_end=False)
@@ -1079,6 +1191,11 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                             CONF_RATE: str(user_input[CONF_RATE]),
                         }
                     )
+                    if (
+                        action == SUBMIT_CONTINUE
+                        and _covered_minutes(self._export_periods) >= MINUTES_PER_DAY
+                    ):
+                        return await self.async_step_timetable_done()
                     return await self.async_step_export_periods()
 
         ordered = sorted(
@@ -1132,6 +1249,21 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._export_same_all_day = bool(user_input[CONF_EXPORT_SAME_ALL_DAY])
             self._export_flat = float(user_input[CONF_EXPORT_FLAT_CENTS])
+            # Declared against the flat price, and only meaningful with it.
+            # The all-day tickbox ends the periods branch, not the
+            # declaration: an all-day feed-in can be one price up to an
+            # allowance and another after it, the same shape as a
+            # single-rate import plan.
+            self._export_allowance = (
+                user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
+                if self._export_same_all_day
+                else None
+            )
+            self._export_fallback = (
+                user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
+                if self._export_same_all_day
+                else None
+            )
             if self._export_same_all_day:
                 return await self.async_step_timetable_done()
             return await self.async_step_export_rates()
@@ -1145,6 +1277,26 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     ): selector.BooleanSelector(),
                     vol.Required(
                         CONF_EXPORT_FLAT_CENTS, default=0.0
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_EXPORT_ALLOWANCE_KWH, default=0.0
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=1000,
+                            step=0.1,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_EXPORT_FALLBACK_CENTS, default=0.0
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
                             min=0,
@@ -1309,6 +1461,29 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
     def _rate_names(self) -> list[str]:
         return [str(rate.get(CONF_NAME, "")) for rate in self._rates()]
 
+    def _timetable_rates(self) -> list[dict[str, Any]]:
+        """Return the rates allocatable in the timetable being edited.
+
+        Only this timetable's own. A rate is its timetable plus its name, so
+        weekday.peak is not weekend.peak and must not be offered under the
+        weekend. A rate with no timetable at all belongs to none and resolves
+        in any, which is what a plan stored before the scoping existed
+        consists of entirely, so those stay allocatable.
+        """
+        timetable = str(self._current_day_pattern().get(CONF_NAME, ""))
+        return [
+            rate
+            for rate in self._rates()
+            if rate.get(CONF_TIMETABLE) in (timetable, None)
+        ]
+
+    def _rate_name_by_id(self, wanted: str) -> str:
+        """Return the name a period stores, given the identifier shown."""
+        for rate in self._rates():
+            if rate_id(rate) == wanted:
+                return str(rate.get(CONF_NAME, ""))
+        return wanted
+
     def _rate_ids(self) -> list[str]:
         """Return what each rate will be published as, which is unique."""
         return [rate_id(rate) for rate in self._rates()]
@@ -1438,6 +1613,7 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         existing: dict[str, Any] = self._rates()[index] if index is not None else {}
 
         if user_input is not None:
+            user_input = flatten_sections(user_input)
             record = _rate_record(user_input)
             name = record[CONF_NAME]
             # Identified by the pair, so the same name under a different
@@ -1516,6 +1692,24 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 and rate.get(CONF_TIMETABLE) == timetable
             ):
                 rate[CONF_FALLBACK_RATE] = current
+
+    def _rename_timetable(self, previous: str, current: str) -> None:
+        """Follow a timetable rename into the rates that belong to it.
+
+        A rate belongs to a timetable and holds that timetable's name to say
+        so. Renaming the timetable and leaving the rates behind orphans every
+        one of them: the periods on the renamed timetable then name rates
+        that, as far as the plan is concerned, do not exist. Renaming is only
+        a rename — which days the timetable covers has no bearing on which
+        rates belong to it.
+
+        A rate with no timetable is left alone. It belongs to none and
+        resolves in any, and pulling it into this one would change what it
+        means.
+        """
+        for rate in self._rates():
+            if rate.get(CONF_TIMETABLE) == previous:
+                rate[CONF_TIMETABLE] = current
 
     @guarded
     async def async_step_rate_remove(
@@ -1642,7 +1836,10 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 if index is None:
                     self._day_patterns().append(record)
                 else:
+                    previous = str(existing.get(CONF_NAME, ""))
                     self._day_patterns()[index] = record
+                    if previous and previous != name:
+                        self._rename_timetable(previous, name)
                 self._day_pattern_index = None
                 return await self.async_step_day_patterns_menu()
 
@@ -1799,7 +1996,16 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         return periods
 
     def _period_rate_names(self) -> list[str]:
-        return self._export_rate_names() if self._editing_export else self._rate_names()
+        """Return what the time period screen offers, in the form it shows it.
+
+        Import rates are offered as published identifiers — weekday.peak, not
+        Peak — the way every other screen that shows a rate to a human does,
+        and scoped to the timetable being edited. Export rates are not scoped
+        to a timetable at all, so they are offered as they always were.
+        """
+        if self._editing_export:
+            return self._export_rate_names()
+        return [rate_id(rate) for rate in self._timetable_rates()]
 
     def _export_rates(self) -> list[dict[str, Any]]:
         rates: list[dict[str, Any]] = self.working.setdefault(CONF_EXPORT_RATES, [])
@@ -1890,10 +2096,17 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 if end <= start:
                     errors[CONF_END] = "end_before_start"
                 else:
+                    chosen = str(user_input[CONF_RATE])
                     record = {
                         CONF_START: format_time(start),
                         CONF_END: format_time(end),
-                        CONF_RATE: str(user_input[CONF_RATE]),
+                        # The import screen shows identifiers; a period
+                        # stores the name, which is what it is resolved by.
+                        CONF_RATE: (
+                            chosen
+                            if self._editing_export
+                            else self._rate_name_by_id(chosen)
+                        ),
                     }
                     if index is None:
                         self._periods().append(record)
@@ -1906,7 +2119,14 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         default_end = (
             parse_time(str(existing[CONF_END])) if existing else MINUTES_PER_DAY
         )
-        default_rate = str(existing.get(CONF_RATE) or names[0])
+        # Stored as a name, shown as an identifier on the import screen.
+        stored_rate = str(existing.get(CONF_RATE) or "")
+        default_rate = stored_rate
+        if stored_rate and not self._editing_export:
+            for rate in self._timetable_rates():
+                if str(rate.get(CONF_NAME, "")) == stored_rate:
+                    default_rate = rate_id(rate)
+                    break
         if default_rate not in names:
             default_rate = names[0]
 
@@ -2139,6 +2359,12 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 record = {
                     CONF_NAME: name,
                     CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS],
+                    CONF_EXPORT_ALLOWANCE_KWH: (
+                        user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
+                    ),
+                    CONF_EXPORT_FALLBACK_CENTS: (
+                        user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
+                    ),
                 }
                 if index is None:
                     self._export_rates().append(record)
@@ -2163,6 +2389,28 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     vol.Required(
                         CONF_EXPORT_CENTS,
                         default=float(existing.get(CONF_EXPORT_CENTS) or 0.0),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_EXPORT_ALLOWANCE_KWH,
+                        default=float(existing.get(CONF_EXPORT_ALLOWANCE_KWH) or 0.0),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=1000,
+                            step=0.1,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_EXPORT_FALLBACK_CENTS,
+                        default=float(existing.get(CONF_EXPORT_FALLBACK_CENTS) or 0.0),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
                             min=0,

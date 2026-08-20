@@ -61,28 +61,54 @@
         "data": {
           "name": "Rate name",
           "import_cents": "You pay (c/kWh)",
-          "information_constraints": "Information only rules",
-          "enforceable_constraints": "Enforceable rules",
-          "demand_period": "This is a demand charge period",
-          "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
-          "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
-          "fallback_rate": "Rate once the allowance is used up",
-          "on_submit": "When I submit",
-          "count_allowance": "Count usage against this allowance",
-          "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
+          "on_submit": "When I submit"
         },
         "data_description": {
           "name": "As it appears on your bill - peak, off peak, shoulder, free. '{pattern}' is put in front automatically.",
           "import_cents": "Cents per kilowatt hour, as the bill quotes it.",
-          "information_constraints": "Useful facts about this rate that other systems can look at. Pick from the list, or type your own and press enter. Each one becomes a switch-like sensor your automations can trigger on.",
-          "enforceable_constraints": "Rules you are declaring to be part of what this rate means, so another system should treat them as a rule rather than a hint. This integration still enforces nothing — it only says so, and the consuming system decides what to do. A rule belongs in one list or the other, not both.",
-          "demand_period": "A marker only. The monthly demand charge is not calculated here.",
-          "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here.",
-          "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
-          "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
-          "on_submit": "Choose 'Continue to the time periods' when this timetable's rates are all in. Every rate you have entered is kept.",
-          "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
-          "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
+          "on_submit": "Choose 'Continue to the time periods' when this timetable's rates are all in. Every rate you have entered is kept."
+        },
+        "sections": {
+          "demand": {
+            "name": "Demand charging",
+            "description": "Whether a demand charge applies while this rate is in force, and what it is. Declared only — the monthly amount is not calculated here.",
+            "data": {
+              "demand_period": "This is a demand charge period",
+              "demand_rate_per_kw_month": "Demand charge ($/kW/month)"
+            },
+            "data_description": {
+              "demand_period": "A marker only. The monthly demand charge is not calculated here.",
+              "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here."
+            }
+          },
+          "allowance": {
+            "name": "Allowance",
+            "description": "Whether this rate is capped, and what energy costs once the cap is spent.",
+            "data": {
+              "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
+              "fallback_rate": "Rate once the allowance is used up",
+              "count_allowance": "Count usage against this allowance (not yet implemented)",
+              "import_energy_sensor": "Energy sensor to count (whole-of-plan) (not yet implemented)"
+            },
+            "data_description": {
+              "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
+              "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
+              "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
+              "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
+            }
+          },
+          "constraints_section": {
+            "name": "Constraints",
+            "description": "What you are declaring this rate means. Nothing here is enforced by this component.",
+            "data": {
+              "information_constraints": "Information only rules",
+              "enforceable_constraints": "Enforceable rules"
+            },
+            "data_description": {
+              "information_constraints": "Useful facts about this rate that other systems can look at. Pick from the list, or type your own and press enter. Each one becomes a switch-like sensor your automations can trigger on.",
+              "enforceable_constraints": "Rules you are declaring to be part of what this rate means, so another system should treat them as a rule rather than a hint. This integration still enforces nothing — it only says so, and the consuming system decides what to do. A rule belongs in one list or the other, not both."
+            }
+          }
         }
       },
       "days": {
@@ -224,28 +250,52 @@
           "timetable": "Timetable this rate belongs to",
           "import_cents": "You pay (c/kWh)",
           "export_cents": "You are paid (c/kWh)",
-          "information_constraints": "Information only rules",
-          "enforceable_constraints": "Enforceable rules",
-          "coasting_permitted": "Good time to stop drawing power",
-          "demand_period": "This is a demand charge period",
-          "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
           "export_allowance_kwh": "Daily export allowance (kWh)",
-          "export_fallback_cents": "Export price once the export allowance is used up (c/kWh)",
-          "fallback_rate": "Rate once the allowance is used up",
-          "count_allowance": "Count usage against this allowance",
-          "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
+          "export_fallback_cents": "Export price once the export allowance is used up (c/kWh)"
         },
         "data_description": {
           "timetable": "Rates are identified by their timetable and their name together, so a weekday Peak and a weekend Peak can both be called Peak at different prices. The rate is published as 'weekday.peak'. A rate from an older plan carries no timetable and keeps the name it already has.",
-          "information_constraints": "Useful facts about this rate that other systems can look at. Pick from the list, or type your own and press enter. Each one becomes a switch-like sensor your automations can trigger on.",
-          "enforceable_constraints": "Rules you are declaring to be part of what this rate means, so another system should treat them as a rule rather than a hint. This integration still enforces nothing — it only says so, and the consuming system decides what to do. A rule belongs in one list or the other, not both.",
-          "coasting_permitted": "Tells other systems that letting a room drift is acceptable during this rate.",
-          "demand_period": "A marker only. The monthly demand charge is not calculated here.",
-          "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
-          "export_fallback_cents": "Only used when there is an export allowance: what export is paid once it is spent. Declared only — nothing is counted against it yet.",
-          "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
-          "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
-          "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
+          "export_fallback_cents": "Only used when there is an export allowance: what export is paid once it is spent. Declared only — nothing is counted against it yet."
+        },
+        "sections": {
+          "demand": {
+            "name": "Demand charging",
+            "description": "Whether a demand charge applies while this rate is in force, and what it is. Declared only — the monthly amount is not calculated here.",
+            "data": {
+              "demand_period": "This is a demand charge period"
+            },
+            "data_description": {
+              "demand_period": "A marker only. The monthly demand charge is not calculated here."
+            }
+          },
+          "allowance": {
+            "name": "Allowance",
+            "description": "Whether this rate is capped, and what energy costs once the cap is spent.",
+            "data": {
+              "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
+              "fallback_rate": "Rate once the allowance is used up",
+              "count_allowance": "Count usage against this allowance (not yet implemented)",
+              "import_energy_sensor": "Energy sensor to count (whole-of-plan) (not yet implemented)"
+            },
+            "data_description": {
+              "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
+              "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
+              "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
+              "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
+            }
+          },
+          "constraints_section": {
+            "name": "Constraints",
+            "description": "What you are declaring this rate means. Nothing here is enforced by this component.",
+            "data": {
+              "information_constraints": "Information only rules",
+              "enforceable_constraints": "Enforceable rules"
+            },
+            "data_description": {
+              "information_constraints": "Useful facts about this rate that other systems can look at. Pick from the list, or type your own and press enter. Each one becomes a switch-like sensor your automations can trigger on.",
+              "enforceable_constraints": "Rules you are declaring to be part of what this rate means, so another system should treat them as a rule rather than a hint. This integration still enforces nothing — it only says so, and the consuming system decides what to do. A rule belongs in one list or the other, not both."
+            }
+          }
         }
       },
       "rate_remove": {

@@ -83,7 +83,7 @@ Four things, and the order matters:
 |---|---|
 | **The plan** | One meter or one circuit. Its name, and the charges that apply no matter what you use — daily supply charge, monthly fee, tax |
 | **A timetable** | A set of days that share the same prices. "Every day", or "Weekday" and "Weekend" and "Public holidays" |
-| **A rate** | A named price, belonging to a timetable. The timetable's name is put in front of it automatically, so **Weekday Peak** and **Weekend Peak** are two rates at two prices |
+| **A rate** | A named price, belonging to a timetable. It is identified by the pair, so a Peak on the Weekday timetable and a Peak on the Weekend one are two rates at two prices, published as `weekday.peak` and `weekend.peak` |
 | **A time period** | A span of the day, priced at one of that timetable's rates. Together they must cover the day exactly once |
 
 Feed-in works the same way, per timetable: either one price all day, or its own
@@ -101,10 +101,11 @@ Settings → Devices & services → Add integration → Abode Power Tariffs.
 **1. Plan name**, an optional description, and two questions that decide the
 shape of everything that follows:
 
-- **This plan has no timetable** — for a plan with no clock in it at all: an
-  amount for the first part of your usage, then a different price for the
-  rest of the billing period. Tick this and setup skips straight to step 3
-  below; there are no timetables, rates or time periods to enter.
+- **Is this power plan based on a single rate?** — for a plan with no clock
+  in it at all: an amount for the first part of your usage, then a different
+  price for the rest of the billing period. Tick this and setup skips
+  straight to step 3 below; there are no timetables, rates or time periods
+  to enter.
 - **You export power to the grid** — turns the feed-in screens on. Leave it
   off and nothing about export is asked, on this plan or any timetable in it.
 
@@ -115,8 +116,8 @@ setup runs as before.
 include tax and at what rate, and the day of the month your billing cycle
 starts.
 
-**If "This plan has no timetable" was ticked**, this is followed by one more
-screen instead of the timetable loop below:
+**If "Is this power plan based on a single rate?" was ticked**, this is
+followed by one more screen instead of the timetable loop below:
 
 **3. Prices** — the price for the first part of your usage, the allowance in
 kWh, and the price for the rest. If export was also switched on, the same
@@ -133,23 +134,47 @@ same" on unless weekends or public holidays are priced differently.
 **4. Rates** — the prices on this timetable, and any rules that apply during
 them. Call it `Peak` and it stays `Peak`: it belongs to the timetable you are
 entering, so a weekday Peak and a weekend Peak can both be called Peak at
-different prices. It is published as `weekday.peak`. Allowances, fallback
-rates and demand charges are asked for here, on the rate itself, alongside
-the price — almost none of it is required, and it defaults sensibly if left
-alone. Enter one and the screen returns for the next; choose **Continue to
-the time periods** when they are all in.
+different prices. It is published as `weekday.peak`.
 
-**5. Time periods** — start, end, and which rate. The start is included and the
-end is not, so one period can end at 16:00 and the next begin at 16:00. A period
-running to midnight ends at 00:00. Choose **Continue to feed-in** when the day
-is covered.
+The screen opens on the two things every rate has — its name and its price.
+Everything else is in a section you open only if it applies:
+
+- **Demand charging** — whether a demand charge applies while this rate is in
+  force, and what it is
+- **Allowance** — whether the rate is capped, and what energy costs past the
+  cap
+- **Constraints** — the rules you are declaring about this rate
+
+All three start closed, so a rate with none of these things is a name and a
+price. Nothing inside them is required.
+
+Enter a rate and the screen returns for the next. Choose **Continue to the
+time periods** when they are all in — anything filled in on the screen is
+checked and kept on the way out, so a rate typed in and then continued from
+is not lost. Continue from a blank screen and nothing is added.
+
+**5. Time periods** — start, end, and which rate. Only the rates belonging to
+this timetable are offered, shown by their published identifier, so
+`weekday.peak` cannot be allocated on the weekend. If the timetable has no
+rates yet the rate screen opens first.
+
+The start is included and the end is not, so one period can end at 16:00 and
+the next begin at 16:00. A period running to midnight ends at 00:00.
+
+**Continue to feed-in** is a gate, not a preference: it moves on only once
+every minute of the day is accounted for. Until then the screen says how much
+is still uncovered and stays where it is. A plan with a gap in it is not a
+valid plan.
 
 **6. Feed-in** — shown only if "You export power to the grid" was ticked on
 step 1. One price all day, or not. Leave the switch on and enter the price,
-and this timetable is done. Turn it off and you get:
+the export allowance if there is one, and what you are paid past it; this
+timetable is then done. Turn it off and you get:
 
-- **6a. Feed-in rates** — same as step 4
-- **6b. Feed-in time periods** — same as step 5, independent of the import ones
+- **6a. Feed-in rates** — a name and a price, and the same two questions: the
+  allowance on that feed-in price and what is paid once it is spent
+- **6b. Feed-in time periods** — same as step 5, independent of the import
+  ones, and gated the same way
 
 **7. Timetable complete** — two buttons. **Add a timetable for other days**
 takes you back to step 3 for the next one. **Finish and create the plan** ends
@@ -162,9 +187,9 @@ A plan where weekends are cheaper and the weekend feed-in is better:
 | Screen | Weekday pass | Weekend pass |
 |---|---|---|
 | Timetable | `Weekday`, Mon–Fri | `Weekend`, Sat, Sun, public holidays |
-| Rates | Off Peak, Shoulder, Peak → `Weekday Off Peak`, `Weekday Shoulder`, `Weekday Peak` | Off Peak, Peak → `Weekend Off Peak`, `Weekend Peak` |
+| Rates | Off Peak, Shoulder, Peak → `weekday.off_peak`, `weekday.shoulder`, `weekday.peak` | Off Peak, Peak → `weekend.off_peak`, `weekend.peak` |
 | Time periods | 00:00–06:00 Off Peak, 06:00–16:00 Shoulder, 16:00–21:00 Peak, 21:00–00:00 Shoulder | 00:00–16:00 Off Peak, 16:00–00:00 Peak |
-| Feed-in | One price all day, 2.7 c | Switch off → `Weekend Daytime` 2.7 c, `Weekend Evening` 12 c → 00:00–16:00 Daytime, 16:00–00:00 Evening |
+| Feed-in | One price all day, 2.7 c | Switch off → `Weekend Daytime` 2.7 c, `Weekend Evening` 12 c → 00:00–16:00 Daytime, 16:00–00:00 Evening. Feed-in rates are not scoped to a timetable; they carry its name in front |
 | Timetable complete | Add a timetable for other days | Finish |
 
 Five rates, two timetables, one plan.
@@ -176,53 +201,67 @@ Five rates, two timetables, one plan.
 Settings → Devices & services → Abode Power Tariffs → **Configure**. Everything
 entered at setup can be changed there; nothing requires deleting the plan.
 
-The 24-hour strip is shown before you choose anything and again on every screen
-that touches time periods, so a gap or an overlap is visible the moment you make
-one. It is coloured by price, cheapest green through dearest red, with a legend
-naming each colour:
+The plan is shown before you choose anything and again on every screen that
+touches time periods, so a gap or an overlap is visible the moment you make
+one. It is one table per timetable — the time span, the name as you typed it,
+the identifier it is published under, and the price:
 
 ```
 Weekday
-0           3           6           9           12          15          18          21  24
-🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟨🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟨🟨🟨🟨🟨🟨
-
+  00:00-06:00  Off Peak  weekday.off_peak    19.80 c/kWh
+  06:00-16:00  Shoulder  weekday.shoulder    32.10 c/kWh
+  16:00-21:00  Peak      weekday.peak        56.88 c/kWh
+  21:00-24:00  Shoulder  weekday.shoulder    32.10 c/kWh
   Coverage: complete. 4 periods, no gaps, no overlaps.
-
-Export: 2.70 c/kWh all day
-
-🟩 Weekday Off Peak — 19.80 c/kWh
-🟨 Weekday Shoulder — 32.10 c/kWh
-🟥 Weekday Peak — 56.88 c/kWh
+  Feed-in: 2.70 c/kWh all day
 ```
+
+There is no chart and no colour bar. A configuration dialog renders markdown,
+and a bar drawn from characters cannot be made to line up with a clock across
+every font and platform. The picture is a **history-graph** card on the rate
+sensor — see below.
 
 The Configure menu:
 
 | | |
 |---|---|
 | **Rates** | Add, edit, remove. Renaming follows through into every time period that uses it |
-| **Day patterns** | The timetables. Add, edit, duplicate or remove one, including its feed-in mode and its season dates |
-| **Time periods** | Per timetable |
-| **Feed-in** | Feed-in rates, and their time periods per timetable |
+| **Day patterns** | The timetables. Add, edit, duplicate or remove one, including its feed-in mode and its season dates. Renaming a timetable takes its rates with it — a rename is only a rename |
+| **Time periods** | Per timetable, and offering only that timetable's rates |
+| **Feed-in** | Feed-in rates with their allowances, and their time periods per timetable |
 | **Supply charge, tax, plan dates, sensors** | The plan-wide settings |
 | **Track usage by rate** | Utility meters — see below |
 | **Rate plan card** | The plan laid out for transcribing into an inverter |
 
 ### The rate fields in full
 
-Beyond the name and the price, a rate carries:
+Beyond the name and the price, a rate carries the following. Everything here
+sits in one of the three sections on the rate screen, all of which start
+closed:
 
-| Field | Notes |
-|---|---|
-| Timetable | Which timetable the rate belongs to. Rates are identified by the pair, so two timetables can each have a Peak |
-| Information only rules | Your own words. Each becomes a binary sensor. See below |
-| Enforceable rules | The same, but declared as part of what the rate means. See below |
-| Coasting permitted | Tells other systems a room may drift during this rate |
-| Demand charge period | Marks this rate as carrying a demand charge, and turns on `binary_sensor.<name>_demand_period_active` while it is in force |
-| Demand charge ($/kW/month) | Declared alongside the flag. Published on every interval; the monthly amount is not calculated |
-| Energy allowance for this rate | Some plans give a period free only up to a cap. Zero for none. The allowance belongs to the time slot, not the day |
-| Rate beyond the allowance | Required when there is an allowance |
-| Daily export allowance | The same idea, for feed-in. Zero for none |
-| Export price beyond the allowance | Required when there is an export allowance |
+| Field | Section | Notes |
+|---|---|---|
+| Timetable | — | Which timetable the rate belongs to. Rates are identified by the pair, so two timetables can each have a Peak |
+| Demand charge period | Demand charging | Marks this rate as carrying a demand charge, and turns on `binary_sensor.<name>_demand_period_active` while it is in force |
+| Demand charge ($/kW/month) | Demand charging | Declared alongside the flag. Published on every interval; the monthly amount is not calculated |
+| Energy allowance for this rate | Allowance | Some plans give a period free only up to a cap. Zero for none. The allowance belongs to the time slot, not the day |
+| Rate beyond the allowance | Allowance | Required when there is an allowance |
+| Count usage against this allowance | Allowance | Marked *not yet implemented* — see Known limitations |
+| Energy sensor to count | Allowance | Marked *not yet implemented* |
+| Information only rules | Constraints | Your own words. Each becomes a binary sensor. See below |
+| Enforceable rules | Constraints | The same, but declared as part of what the rate means. See below |
+
+**Coasting permitted is a rule, not a field of its own.** It says the same
+kind of thing the other rules say — something another system may act on while
+this rate is in force — so it is declared in the two rule lists like any
+other, and `coasting_permitted` is published as true only where you declared
+it.
+
+**The export allowance is not on an import rate.** Import and export are
+separate flows with separate rates and separate periods, so the cap on a
+feed-in price and what is paid past it are declared beside that feed-in
+price: on the feed-in rate where export is priced by period, and on the
+timetable where it is one price all day.
 
 ### Rate names
 
@@ -313,7 +352,9 @@ default, and it writes only to selects you nominated.
 ## evcc
 
 Both price sensors carry a `forecast` attribute holding the next 24 hours as
-`{start, end, value}` with UTC timestamps, which is the shape evcc reads:
+`{start, end, value}`, which is the shape evcc reads. The timestamps are local
+with the offset, like everything else this integration publishes — the offset
+is what makes an instant unambiguous on the morning the clocks go back:
 
 ```yaml
 tariffs:
@@ -407,7 +448,7 @@ intervals:
     per_kwh: 0.584
     export_per_kwh: 0.043
     rate: weekday.peak
-    constraints: [no_grid_import, precool_opportunity]
+    constraints: [coasting_permitted, no_grid_import, precool_opportunity]
     enforceable_constraints: [no_grid_import]
     coasting_permitted: true
     allowance_kwh: null
@@ -430,14 +471,18 @@ real length of the interval.
 
 `rate` is the identifier — the timetable and the name. `constraints` is every
 rule as it always was; `enforceable_constraints` is the subset declared as part
-of what the rate means.
+of what the rate means. `coasting_permitted` is one of those rules, published
+as its own field for the consumers that already read it, and true only where
+you declared it.
 
 `demand_period` and `demand_rate_per_kw_month` are declared, not applied —
 `per_kwh` is always just the energy rate. A consumer wanting the real cost of
 drawing power in this interval applies its own assumption about kW draw to
 the demand rate itself. `export_allowance_kwh` and `export_fallback_price` are
 the same idea for feed-in: declared facts about an allowance and what follows
-it, never blended into `export_per_kwh`.
+it, never blended into `export_per_kwh`. They follow the feed-in price in
+force at that moment, not the import rate running alongside it, so on a
+timetable with feed-in periods they change when the feed-in rate changes.
 
 `allowance_kwh`, `fallback_rate` and `fallback_per_kwh` are the cap and what is
 paid past it, published whether or not this integration is counting, so a
@@ -571,15 +616,16 @@ select actually offers.
 under the general settings. Without one the day option is not offered, and
 holidays follow the calendar weekday.
 
-**Nothing is counting my allowance.** Counting is off by default and separate
-from the plan. Open Configure, then **Allowance counting**, switch it on and
-nominate a meter. Your plan declares the cap and the fallback either way, and
-publishes both, so a consuming system can apply the rule itself.
+**Nothing is counting my allowance.** Counting is marked *not yet
+implemented* on the rate screen while how an allowance should accumulate is
+still being decided. The cap and the fallback are declared and published
+either way, on the rate and on every interval, so a consuming system can
+apply the rule itself.
 
 **The count does not match my bill.** It will not. It counts the meter you
-nominated and resets at local midnight; your retailer meters and resets on their
-own terms. It exists so the Energy dashboard stays roughly honest on capped
-plans, not to reconcile a bill.
+nominated, and the count belongs to the time slot — each occurrence of a
+capped period has its own, and nothing carries between slots, days or billing
+cycles. Your retailer meters and resets on their own terms.
 
 **A capped rate runs through midnight.** Configure will say so. A period cannot
 cross midnight here, so a capped stretch from 22:00 to 02:00 is two periods
@@ -600,14 +646,15 @@ is resolved right now with a trace of why, and the next 24 hours.
 ## Known limitations
 
 - **Tiered and block rates are supported only without a timetable.** A plan
-  with "This plan has no timetable" ticked gets a price for the first part of
-  usage and a different price for the rest, on both import and export. A
-  timetabled rate does not yet support a second tier.
-- **Nothing is counted against a demand charge, a no-timetable allowance, or a
-  no-timetable export allowance yet.** All three are declared and published —
-  the demand rate, the amount, and the price after it — but nothing switches
-  automatically once they are spent. `perosb/power_max_tracker` already
-  tracks a monthly maximum for demand.
+  with "Is this power plan based on a single rate?" ticked gets a price for
+  the first part of usage and a different price for the rest, on both import
+  and export. A timetabled rate does not yet support a second tier.
+- **Nothing is counted against an allowance or a demand charge.** Every one of
+  them is declared and published — the cap, the price past it and the demand
+  rate — but nothing switches automatically once one is spent, and the two
+  counting fields on the rate screen are labelled *not yet implemented* while
+  how an allowance should accumulate is decided. `perosb/power_max_tracker`
+  already tracks a monthly maximum for demand.
 - **Dynamic tariffs are not connected yet.** The interface is shaped for it —
   the action's response matches Amber's — but no adapter is written. A static
   plan is the only price source today.
@@ -632,8 +679,9 @@ Anything expressible as named rates over non-overlapping time periods:
 - Time of use, any number of rates
 - Weekday, weekend and public holiday variation, as separate timetables in one plan
 - Seasonal variation, including ranges wrapping the new year
-- Free or discounted time periods, with or without a daily energy cap
-- Separate import and feed-in prices, each with their own timetable and periods
+- Free or discounted time periods, with or without an energy cap on the slot
+- Separate import and feed-in prices, each with their own timetable and
+  periods, and each with their own cap and price past it
 - A no-timetable plan: one price for the first part of usage, another for the
   rest of the billing period, for import and export alike
 - Controlled load and second circuits, as additional channels

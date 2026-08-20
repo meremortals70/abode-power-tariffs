@@ -10,6 +10,7 @@ import unittest
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -26,6 +27,7 @@ DayPattern = _pkg.plan.DayPattern
 Plan = _pkg.plan.Plan
 PlanError = _pkg.plan.PlanError
 Rate = _pkg.plan.Rate
+ExportRate = _pkg.plan.ExportRate
 Period = _pkg.plan.Period
 day_token = _pkg.plan.day_token
 format_time = _pkg.plan.format_time
@@ -54,7 +56,6 @@ def sample_plan() -> Plan:
             "cheap",
             0.198,
             constraints=frozenset({"grid_charge_battery"}),
-            coasting_permitted=False,
         ),
         Rate("standard", 0.321),
         Rate("free", 0.0, constraints=frozenset({"precool_opportunity"})),
@@ -692,52 +693,95 @@ class TestTheIntervalCarriesTheDemandCharge(unittest.TestCase):
 
 
 class TestTheIntervalCarriesTheExportAllowance(unittest.TestCase):
-    """P28: export gets the same declaration import already has.
+    """P32: the export allowance sits with the export price it caps.
 
-    The allowance and the price after it, published, never blended into
-    export_price. No counting exists for this yet — the same as import
-    always was before a rate could opt into counting.
+    Published, never blended into export_price, and never counted. It used
+    to be declared on the import rate, which is a different flow with its
+    own periods, so the cap could not say which export price it capped.
     """
 
-    def _plan(self) -> Plan:
+    def _timed(self) -> Plan:
+        """Feed-in priced by period: the declaration is on the export rate."""
         return Plan(
             "P",
+            (Rate("Peak", 0.30),),
             (
-                Rate(
-                    "Included",
-                    0.30,
-                    rate_allowance_kwh=20.0,
-                    fallback_rate="Additional",
+                DayPattern(
+                    "D",
+                    ALL_DAYS,
+                    (Period(0, 1440, "Peak"),),
+                    export_periods=(
+                        Period(0, 720, "Morning"),
+                        Period(720, 1440, "Afternoon"),
+                    ),
+                    export_same_all_day=False,
+                ),
+            ),
+            export_rates=(
+                ExportRate("Morning", 0.08, allowance_kwh=10.0, fallback_price=0.02),
+                ExportRate("Afternoon", 0.05),
+            ),
+        )
+
+    def _all_day(self) -> Plan:
+        """One feed-in price all day: the declaration is on the timetable."""
+        return Plan(
+            "P",
+            (Rate("Peak", 0.30),),
+            (
+                DayPattern(
+                    "D",
+                    ALL_DAYS,
+                    (Period(0, 1440, "Peak"),),
+                    export_flat_price=0.08,
                     export_allowance_kwh=10.0,
                     export_fallback_price=0.02,
                 ),
-                Rate("Additional", 0.45),
             ),
-            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "Included"),)),),
         )
 
-    def test_the_export_allowance_and_price_after_are_declared(self) -> None:
-        plan = self._plan()
+    def _payload(self, plan: Plan, hour: int) -> dict[str, Any]:
+        start = datetime(2026, 8, 14, hour, 0, tzinfo=BRISBANE)
+        result: dict[str, Any] = intervals.generate(
+            plan, start, BRISBANE, never_holiday, hours=1
+        )[0].as_dict()
+        return result
+
+    def test_a_timed_export_rate_carries_its_own_cap(self) -> None:
+        plan = self._timed()
         self.assertTrue(is_valid(plan), [str(p) for p in validate_plan(plan)])
-        start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
-        payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
-            0
-        ].as_dict()
+        payload = self._payload(plan, 10)
         self.assertEqual(payload["export_allowance_kwh"], 10.0)
         self.assertAlmostEqual(payload["export_fallback_price"], 0.02)
 
-    def test_a_rate_with_no_export_allowance_declares_none(self) -> None:
+    def test_the_cap_belongs_to_that_export_rate_and_not_the_next(self) -> None:
+        """The import rate is the same all day; only the export rate changes."""
+        payload = self._payload(self._timed(), 14)
+        self.assertIsNone(payload["export_allowance_kwh"])
+        self.assertIsNone(payload["export_fallback_price"])
+
+    def test_an_all_day_export_price_can_be_capped(self) -> None:
+        plan = self._all_day()
+        self.assertTrue(is_valid(plan), [str(p) for p in validate_plan(plan)])
+        payload = self._payload(plan, 10)
+        self.assertAlmostEqual(payload["export_per_kwh"], 0.08)
+        self.assertEqual(payload["export_allowance_kwh"], 10.0)
+        self.assertAlmostEqual(payload["export_fallback_price"], 0.02)
+
+    def test_an_uncapped_export_declares_none(self) -> None:
         plan = Plan(
             "P",
             (Rate("Peak", 0.5688),),
             (DayPattern("D", ALL_DAYS, (Period(0, 1440, "Peak"),)),),
         )
-        start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
-        payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
-            0
-        ].as_dict()
+        payload = self._payload(plan, 10)
         self.assertIsNone(payload["export_allowance_kwh"])
         self.assertIsNone(payload["export_fallback_price"])
+
+    def test_the_import_rate_no_longer_carries_an_export_cap(self) -> None:
+        """Import and export are separate flows; neither reaches into the other."""
+        self.assertNotIn("export_allowance_kwh", Rate.__dataclass_fields__)
+        self.assertNotIn("export_fallback_price", Rate.__dataclass_fields__)
 
 
 class TestTheMidnightWarning(unittest.TestCase):
@@ -1326,27 +1370,52 @@ class TestExportSide(unittest.TestCase):
         )
         self.assertEqual(rebuilt.rates[0].demand_rate_per_kw_month, 0.0)
 
-    def test_export_fallback_price_round_trips(self) -> None:
-        plan = Plan("P", (Rate("a", 0.1, export_fallback_price=0.02),))
-        rebuilt = Plan.from_dict(
+    def _round_trip(self, plan: Plan) -> Plan:
+        return Plan.from_dict(
             {
                 **plan.as_dict(),
                 "rates": [rate.as_dict() for rate in plan.rates],
-                "day_patterns": [],
+                "export_rates": [rate.as_dict() for rate in plan.export_rates],
+                "day_patterns": [pattern.as_dict() for pattern in plan.day_patterns],
             }
         )
-        self.assertAlmostEqual(rebuilt.rates[0].export_fallback_price, 0.02)
 
-    def test_no_export_fallback_price_round_trips_as_none(self) -> None:
-        plan = Plan("P", (Rate("a", 0.1),))
-        rebuilt = Plan.from_dict(
-            {
-                **plan.as_dict(),
-                "rates": [rate.as_dict() for rate in plan.rates],
-                "day_patterns": [],
-            }
+    def test_an_export_rates_cap_round_trips(self) -> None:
+        plan = Plan(
+            "P",
+            (Rate("a", 0.1),),
+            export_rates=(
+                ExportRate("Morning", 0.08, allowance_kwh=10.0, fallback_price=0.02),
+            ),
         )
-        self.assertIsNone(rebuilt.rates[0].export_fallback_price)
+        rebuilt = self._round_trip(plan)
+        self.assertEqual(rebuilt.export_rates[0].allowance_kwh, 10.0)
+        self.assertAlmostEqual(rebuilt.export_rates[0].fallback_price, 0.02)
+
+    def test_no_export_cap_round_trips_as_none(self) -> None:
+        plan = Plan("P", (Rate("a", 0.1),), export_rates=(ExportRate("M", 0.08),))
+        rebuilt = self._round_trip(plan)
+        self.assertIsNone(rebuilt.export_rates[0].allowance_kwh)
+        self.assertIsNone(rebuilt.export_rates[0].fallback_price)
+
+    def test_an_all_day_cap_round_trips_on_the_timetable(self) -> None:
+        plan = Plan(
+            "P",
+            (Rate("a", 0.1),),
+            (
+                DayPattern(
+                    "D",
+                    ALL_DAYS,
+                    (Period(0, 1440, "a"),),
+                    export_flat_price=0.08,
+                    export_allowance_kwh=10.0,
+                    export_fallback_price=0.02,
+                ),
+            ),
+        )
+        rebuilt = self._round_trip(plan)
+        self.assertEqual(rebuilt.day_patterns[0].export_allowance_kwh, 10.0)
+        self.assertAlmostEqual(rebuilt.day_patterns[0].export_fallback_price, 0.02)
 
 
 class TestPlanText(unittest.TestCase):
@@ -1615,3 +1684,50 @@ class TestTheCardNamesTheBillingDay(unittest.TestCase):
     def test_nothing_is_said_when_there_is_none(self) -> None:
         plan = Plan("P", (Rate("a", 0.1),))
         self.assertNotIn("Billing cycle", strip.render_rate_plan_card(plan))
+
+
+class TestTheFallbackIsAskedOfTheRate(unittest.TestCase):
+    """P31 change three: a rate says which timetable it belongs to.
+
+    ``validate_rates`` and ``allowance.apply`` both look a fallback up in the
+    rate's own timetable. ``intervals.generate`` used the day set it happened
+    to resolve through, which is a different question, so the published series
+    could name a fallback validation never approved.
+
+    A rate stored before rates were scoped belongs to no timetable and
+    resolves in any. Its fallback belongs to no timetable either, so it is the
+    unscoped rate of that name — not whichever scoped one shares it.
+    """
+
+    def _plan(self) -> Plan:
+        return Plan(
+            "P",
+            (
+                # Unscoped: what a plan written before the scoping looks like.
+                Rate("Capped", 0.0, rate_allowance_kwh=24.0, fallback_rate="Cheap"),
+                Rate("Cheap", 0.10),
+                # Same name, but belonging to the day set being resolved.
+                Rate("Cheap", 0.99, timetable="Weekday"),
+            ),
+            (DayPattern("Weekday", ALL_DAYS, (Period(0, 1440, "Capped"),)),),
+        )
+
+    def test_the_series_names_the_fallback_validation_approved(self) -> None:
+        plan = self._plan()
+        approved = plan.rate_by_name("Cheap", plan.rates[0].timetable)
+        assert approved is not None
+        start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
+        payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
+            0
+        ].as_dict()
+        self.assertAlmostEqual(payload["fallback_per_kwh"], approved.import_price)
+        self.assertAlmostEqual(payload["fallback_per_kwh"], 0.10)
+
+    def test_the_allowance_module_agrees_with_the_series(self) -> None:
+        plan = self._plan()
+        spent = allowance.apply(plan, plan.rates[0], 30.0)
+        start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
+        payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
+            0
+        ].as_dict()
+        self.assertAlmostEqual(payload["fallback_per_kwh"], spent.rate.import_price)

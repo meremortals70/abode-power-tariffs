@@ -15,7 +15,6 @@ from typing import Any
 from .const import (
     ALL_DAY_TOKENS,
     CONF_BILLING_CYCLE_DAY,
-    CONF_COASTING_PERMITTED,
     CONF_COMPONENTS,
     CONF_CONSTRAINTS,
     CONF_DAY_PATTERNS,
@@ -49,6 +48,7 @@ from .const import (
     CONF_TIMETABLE,
     CONF_VALID_FROM,
     CONF_VALID_TO,
+    CONSTRAINT_COASTING_PERMITTED,
     DAY_HOLIDAY,
     MINUTES_PER_DAY,
     WEEKDAY_TOKENS,
@@ -140,15 +140,8 @@ class Rate:
     # as a rule rather than a hint. A declaration about the meaning of the
     # rate, not an instruction: this component still enforces nothing.
     enforceable_constraints: frozenset[str] = field(default_factory=frozenset)
-    coasting_permitted: bool = True
     rate_allowance_kwh: float | None = None
-    export_allowance_kwh: float | None = None
     fallback_rate: str | None = None
-    # The export price once the export allowance is spent. No second named
-    # export rate to point at the way import's fallback_rate does, so this is
-    # a bare price. Declared, never applied to export_price_at() — the same
-    # treatment as everything else under an allowance.
-    export_fallback_price: float | None = None
     demand_period: bool = False
     # Dollars per kW per month. Belongs to the rate, not the plan: a demand
     # charge is what makes drawing power during this rate's window expensive,
@@ -157,6 +150,16 @@ class Rate:
     # cost, the same way it already does with an allowance.
     demand_rate_per_kw_month: float = 0.0
     components: tuple[tuple[str, float], ...] = ()
+
+    @property
+    def coasting_permitted(self) -> bool:
+        """Return whether the user declared coasting acceptable in this rate.
+
+        A rule like any other rule, not a field of its own. It says the same
+        kind of thing the rest of them say — something another system may act
+        on while this rate is in force — and it is declared the same way.
+        """
+        return CONSTRAINT_COASTING_PERMITTED in self.constraints
 
     @property
     def has_allowance(self) -> bool:
@@ -195,15 +198,8 @@ class Rate:
             CONF_EXPORT_CENTS: round(self.export_price * 100, 4),
             CONF_CONSTRAINTS: sorted(self.constraints),
             CONF_ENFORCEABLE_CONSTRAINTS: sorted(self.enforceable_constraints),
-            CONF_COASTING_PERMITTED: self.coasting_permitted,
             CONF_RATE_ALLOWANCE_KWH: self.rate_allowance_kwh,
-            CONF_EXPORT_ALLOWANCE_KWH: self.export_allowance_kwh,
             CONF_FALLBACK_RATE: self.fallback_rate,
-            CONF_EXPORT_FALLBACK_CENTS: (
-                None
-                if self.export_fallback_price is None
-                else round(self.export_fallback_price * 100, 4)
-            ),
             CONF_DEMAND_PERIOD: self.demand_period,
             CONF_DEMAND_RATE: self.demand_rate_per_kw_month,
             CONF_COMPONENTS: dict(self.components),
@@ -237,16 +233,9 @@ class Rate:
                 for item in raw.get(CONF_ENFORCEABLE_CONSTRAINTS) or ()
                 if str(item).strip()
             ),
-            coasting_permitted=bool(raw.get(CONF_COASTING_PERMITTED, True)),
             rate_allowance_kwh=_optional_float(raw.get(CONF_RATE_ALLOWANCE_KWH)),
-            export_allowance_kwh=_optional_float(raw.get(CONF_EXPORT_ALLOWANCE_KWH)),
             fallback_rate=(
                 str(raw[CONF_FALLBACK_RATE]) if raw.get(CONF_FALLBACK_RATE) else None
-            ),
-            export_fallback_price=(
-                _cents_to_dollars(raw[CONF_EXPORT_FALLBACK_CENTS])
-                if raw.get(CONF_EXPORT_FALLBACK_CENTS)
-                else None
             ),
             demand_period=bool(raw.get(CONF_DEMAND_PERIOD, False)),
             demand_rate_per_kw_month=float(raw.get(CONF_DEMAND_RATE) or 0.0),
@@ -276,14 +265,34 @@ def _optional_int(value: Any) -> int | None:
 
 @dataclass(frozen=True, slots=True)
 class ExportRate:
-    """A named feed-in price, in dollars per kWh."""
+    """A named feed-in price, in dollars per kWh.
+
+    The cap and what is paid past it sit here, beside the price they belong
+    to, exactly as the import allowance and fallback sit on the import rate.
+    They used to live on the import rate, which is a different flow with its
+    own periods and could say nothing about which export price a cap applied
+    to. Declared only: nothing is counted against an export allowance.
+    """
 
     name: str
     price: float
+    allowance_kwh: float | None = None
+    # A bare price rather than the name of another export rate: there is no
+    # second export rate to point at the way import's fallback_rate does.
+    fallback_price: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the export rate as a plain dictionary."""
-        return {CONF_NAME: self.name, CONF_EXPORT_CENTS: round(self.price * 100, 4)}
+        return {
+            CONF_NAME: self.name,
+            CONF_EXPORT_CENTS: round(self.price * 100, 4),
+            CONF_EXPORT_ALLOWANCE_KWH: self.allowance_kwh,
+            CONF_EXPORT_FALLBACK_CENTS: (
+                None
+                if self.fallback_price is None
+                else round(self.fallback_price * 100, 4)
+            ),
+        }
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> ExportRate:
@@ -291,7 +300,16 @@ class ExportRate:
         name = str(raw.get(CONF_NAME, "")).strip()
         if not name:
             raise PlanError("An export rate must have a name")
-        return cls(name=name, price=_cents_to_dollars(raw.get(CONF_EXPORT_CENTS)))
+        return cls(
+            name=name,
+            price=_cents_to_dollars(raw.get(CONF_EXPORT_CENTS)),
+            allowance_kwh=_optional_float(raw.get(CONF_EXPORT_ALLOWANCE_KWH)),
+            fallback_price=(
+                _cents_to_dollars(raw[CONF_EXPORT_FALLBACK_CENTS])
+                if raw.get(CONF_EXPORT_FALLBACK_CENTS)
+                else None
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,6 +357,12 @@ class DayPattern:
     export_periods: tuple[Period, ...] = ()
     export_same_all_day: bool = True
     export_flat_price: float = 0.0
+    # The cap on the all-day feed-in price and what is paid past it. The
+    # all-day tickbox ends the periods branch, not the declaration: an
+    # all-day export can be one price up to an allowance and another after,
+    # the same shape as the single-rate import plan.
+    export_allowance_kwh: float | None = None
+    export_fallback_price: float | None = None
 
     @property
     def is_seasonal(self) -> bool:
@@ -402,6 +426,12 @@ class DayPattern:
             ],
             CONF_EXPORT_SAME_ALL_DAY: self.export_same_all_day,
             CONF_EXPORT_FLAT_CENTS: round(self.export_flat_price * 100, 4),
+            CONF_EXPORT_ALLOWANCE_KWH: self.export_allowance_kwh,
+            CONF_EXPORT_FALLBACK_CENTS: (
+                None
+                if self.export_fallback_price is None
+                else round(self.export_fallback_price * 100, 4)
+            ),
         }
 
     @classmethod
@@ -429,9 +459,28 @@ class DayPattern:
             ),
             export_same_all_day=bool(raw.get(CONF_EXPORT_SAME_ALL_DAY, True)),
             export_flat_price=_cents_to_dollars(raw.get(CONF_EXPORT_FLAT_CENTS)),
+            export_allowance_kwh=_optional_float(raw.get(CONF_EXPORT_ALLOWANCE_KWH)),
+            export_fallback_price=(
+                _cents_to_dollars(raw[CONF_EXPORT_FALLBACK_CENTS])
+                if raw.get(CONF_EXPORT_FALLBACK_CENTS)
+                else None
+            ),
             season_from=parse_month_day(str(season_from)) if season_from else None,
             season_to=parse_month_day(str(season_to)) if season_to else None,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ExportPricing:
+    """The feed-in declaration in force at one moment.
+
+    Kept apart from the import Resolution because import and export are
+    separate flows with separate rates and separate periods.
+    """
+
+    price: float
+    allowance_kwh: float | None
+    fallback_price: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,22 +589,34 @@ class Plan:
         """Return every export rate name, in configured order."""
         return tuple(rate.name for rate in self.export_rates)
 
-    def export_price_at(self, day: date, minutes: int, is_holiday: bool) -> float:
-        """Return the feed-in price in force, in dollars per kWh.
+    def export_at(self, day: date, minutes: int, is_holiday: bool) -> ExportPricing:
+        """Return the whole feed-in declaration in force at a moment.
 
-        The mode is a property of the timetable: one may be flat while another
-        has periods.
+        The price, the cap on it, and what is paid past that cap — read from
+        wherever the feed-in price is declared. The mode is a property of the
+        timetable: one may be flat while another has periods, and the
+        declaration follows the price either way.
         """
         pattern = self.day_pattern_for(day, is_holiday)
         if pattern is None:
-            return 0.0
+            return ExportPricing(0.0, None, None)
         if pattern.export_same_all_day:
-            return pattern.export_flat_price
+            return ExportPricing(
+                pattern.export_flat_price,
+                pattern.export_allowance_kwh,
+                pattern.export_fallback_price,
+            )
         period = pattern.export_period_at(minutes)
         if period is None:
-            return 0.0
+            return ExportPricing(0.0, None, None)
         rate = self.export_rate_by_name(period.rate)
-        return 0.0 if rate is None else rate.price
+        if rate is None:
+            return ExportPricing(0.0, None, None)
+        return ExportPricing(rate.price, rate.allowance_kwh, rate.fallback_price)
+
+    def export_price_at(self, day: date, minutes: int, is_holiday: bool) -> float:
+        """Return the feed-in price in force, in dollars per kWh."""
+        return self.export_at(day, minutes, is_holiday).price
 
     def is_active_on(self, day: date) -> bool:
         """Return whether the plan's validity range contains this date."""

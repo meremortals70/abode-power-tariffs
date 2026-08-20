@@ -68,13 +68,24 @@ CONF_INFORMATION_CONSTRAINTS: Final = "information_constraints"
 CONSTRAINT_NO_GRID_IMPORT: Final = "no_grid_import"
 CONSTRAINT_PRECOOL_OPPORTUNITY: Final = "precool_opportunity"
 CONSTRAINT_GRID_CHARGE_BATTERY: Final = "grid_charge_battery"
+# Was a tickbox of its own on the rate form. It says the same kind of thing
+# the other rules say — something a consumer may act on during this rate —
+# so it is one of them.
+CONSTRAINT_COASTING_PERMITTED: Final = "coasting_permitted"
 
 KNOWN_CONSTRAINTS: Final = (
+    CONSTRAINT_COASTING_PERMITTED,
     CONSTRAINT_GRID_CHARGE_BATTERY,
     CONSTRAINT_NO_GRID_IMPORT,
     CONSTRAINT_PRECOOL_OPPORTUNITY,
 )
 CONF_COASTING_PERMITTED: Final = "coasting_permitted"
+
+# The rate form's collapsible groups. Two unrelated declarations used to run
+# together in one undivided list of fields; each now opens on its own.
+SECTION_DEMAND: Final = "demand"
+SECTION_ALLOWANCE: Final = "allowance"
+SECTION_CONSTRAINTS: Final = "constraints_section"
 CONF_RATE_ALLOWANCE_KWH: Final = "rate_allowance_kwh"
 CONF_EXPORT_ALLOWANCE_KWH: Final = "export_allowance_kwh"
 CONF_FALLBACK_RATE: Final = "fallback_rate"

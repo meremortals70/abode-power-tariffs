@@ -251,23 +251,31 @@ def generate(
         nxt = cursor + step
         resolution = resolve_at(plan, cursor, zone, is_holiday)
         if resolution is not None:
+            # Asked of the rate, not of the day set it was resolved through.
+            # A rate belongs to a timetable and says so itself; validation and
+            # allowance.apply both look a fallback up that way, and a third
+            # answer here means the series can name a fallback validation
+            # never approved.
             fallback = (
                 plan.rate_by_name(
-                    resolution.rate.fallback_rate, resolution.day_pattern.name
+                    resolution.rate.fallback_rate, resolution.rate.timetable
                 )
                 if resolution.rate.fallback_rate
                 else None
             )
+            # Read once, from the export side's own resolution. The price, the
+            # cap on it and what is paid past that cap are one declaration and
+            # belong to the feed-in price in force — not to whichever import
+            # rate happens to be running alongside it.
+            export_day, export_minutes = local_minutes(cursor, zone)
+            export = plan.export_at(export_day, export_minutes, is_holiday(export_day))
             intervals.append(
                 Interval(
                     start=cursor.astimezone(zone),
                     end=nxt.astimezone(zone),
                     rate=resolution.rate.qualified_name,
                     import_price=resolution.rate.import_price,
-                    export_price=plan.export_price_at(
-                        *local_minutes(cursor, zone),
-                        is_holiday(local_minutes(cursor, zone)[0]),
-                    ),
+                    export_price=export.price,
                     constraints=tuple(sorted(resolution.rate.constraints)),
                     enforceable_constraints=tuple(
                         sorted(resolution.rate.enforceable_constraints)
@@ -281,8 +289,8 @@ def generate(
                     day_pattern=resolution.day_pattern.name,
                     demand_period=resolution.rate.demand_period,
                     demand_rate_per_kw_month=resolution.rate.demand_rate_per_kw_month,
-                    export_allowance_kwh=resolution.rate.export_allowance_kwh,
-                    export_fallback_price=resolution.rate.export_fallback_price,
+                    export_allowance_kwh=export.allowance_kwh,
+                    export_fallback_price=export.fallback_price,
                 )
             )
         cursor = nxt

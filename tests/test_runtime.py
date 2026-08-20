@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import logging
 import sys
 import types
@@ -1000,10 +1001,7 @@ class TestRuleLists(unittest.TestCase):
     """
 
     def _field(self, driver: OptionsDriver, key: str) -> Any:
-        for marker in driver.result["data_schema"].schema:
-            if getattr(marker, "schema", marker) == key:
-                return marker, driver.result["data_schema"].schema[marker]
-        raise AssertionError(f"no {key} field on {driver.step}")
+        return _ha_stubs.field_for(driver.result, key)
 
     def _at_rate_form(self) -> OptionsDriver:
         driver = OptionsDriver()
@@ -1133,27 +1131,69 @@ class TestRuleLists(unittest.TestCase):
 class TestTheSetupFormCanSetRules(unittest.TestCase):
     """The bug: the setup form never asked, and wrote an empty list anyway."""
 
-    def test_the_setup_rate_form_offers_both_lists(self) -> None:
-        fields = [
-            getattr(key, "schema", key)
-            for key in PKG.config_flow._rate_schema(
-                {}, [], fields=PKG.config_flow.SETUP_RATE_FIELDS
-            ).schema
-        ]
+    def test_the_setup_rate_form_opens_on_a_name_and_a_price(self) -> None:
+        """P29: what every rate has is loose; the rest is in a section."""
+        schema = PKG.config_flow._rate_schema(
+            {}, [], fields=PKG.config_flow.SETUP_RATE_FIELDS
+        )
+        top = [getattr(key, "schema", key) for key in schema.schema]
         self.assertEqual(
-            fields,
+            top,
             [
                 CONST.CONF_NAME,
                 CONST.CONF_IMPORT_CENTS,
-                CONST.CONF_INFORMATION_CONSTRAINTS,
-                CONST.CONF_ENFORCEABLE_CONSTRAINTS,
-                CONST.CONF_DEMAND_PERIOD,
-                CONST.CONF_DEMAND_RATE,
-                CONST.CONF_RATE_ALLOWANCE_KWH,
-                CONST.CONF_COUNT_ALLOWANCE,
-                CONST.CONF_IMPORT_ENERGY_SENSOR,
+                CONST.SECTION_DEMAND,
+                CONST.SECTION_ALLOWANCE,
+                CONST.SECTION_CONSTRAINTS,
             ],
         )
+
+    def test_every_section_starts_collapsed(self) -> None:
+        schema = PKG.config_flow._rate_schema({}, ["Other"])
+        sections = [
+            value
+            for value in schema.schema.values()
+            if isinstance(value, _ha_stubs.Section)
+        ]
+        self.assertEqual(len(sections), 3)
+        for group in sections:
+            self.assertTrue(group.options["collapsed"])
+
+    def test_each_section_holds_its_own_fields(self) -> None:
+        schema = PKG.config_flow._rate_schema({}, ["Other"])
+        grouped = {
+            getattr(key, "schema", key): _ha_stubs.field_names(value.schema)
+            for key, value in schema.schema.items()
+            if isinstance(value, _ha_stubs.Section)
+        }
+        self.assertEqual(
+            grouped[CONST.SECTION_DEMAND],
+            {CONST.CONF_DEMAND_PERIOD, CONST.CONF_DEMAND_RATE},
+        )
+        self.assertEqual(
+            grouped[CONST.SECTION_ALLOWANCE],
+            {
+                CONST.CONF_RATE_ALLOWANCE_KWH,
+                CONST.CONF_FALLBACK_RATE,
+                CONST.CONF_COUNT_ALLOWANCE,
+                CONST.CONF_IMPORT_ENERGY_SENSOR,
+            },
+        )
+        self.assertEqual(
+            grouped[CONST.SECTION_CONSTRAINTS],
+            {
+                CONST.CONF_INFORMATION_CONSTRAINTS,
+                CONST.CONF_ENFORCEABLE_CONSTRAINTS,
+            },
+        )
+
+    def test_coasting_is_a_rule_and_not_a_field(self) -> None:
+        """P29: it says what the other rules say, so it is declared like them."""
+        self.assertNotIn(
+            CONST.CONF_COASTING_PERMITTED,
+            _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"])),
+        )
+        self.assertIn(CONST.CONSTRAINT_COASTING_PERMITTED, CONST.KNOWN_CONSTRAINTS)
 
     def test_setup_offers_the_allowance_and_its_counting(self) -> None:
         """Asking the minimum is about what is required, not what is offered.
@@ -1162,12 +1202,11 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
         second time in Configure, and the tickbox belongs beside the cap it
         counts rather than on a screen of its own.
         """
-        fields = {
-            getattr(key, "schema", key)
-            for key in PKG.config_flow._rate_schema(
+        fields = _ha_stubs.field_names(
+            PKG.config_flow._rate_schema(
                 {}, ["Other"], fields=PKG.config_flow.SETUP_RATE_FIELDS
-            ).schema
-        }
+            )
+        )
         self.assertIn(CONST.CONF_RATE_ALLOWANCE_KWH, fields)
         self.assertIn(CONST.CONF_FALLBACK_RATE, fields)
         self.assertIn(CONST.CONF_COUNT_ALLOWANCE, fields)
@@ -1175,26 +1214,23 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
 
     def test_the_edit_form_is_the_same_form_unfiltered(self) -> None:
         """One definition. The setup form asking for less is the only difference."""
-        setup = {
-            getattr(key, "schema", key)
-            for key in PKG.config_flow._rate_schema(
+        setup = _ha_stubs.field_names(
+            PKG.config_flow._rate_schema(
                 {}, [], fields=PKG.config_flow.SETUP_RATE_FIELDS
-            ).schema
-        }
-        full = {
-            getattr(key, "schema", key)
-            for key in PKG.config_flow._rate_schema({}, ["Other"]).schema
-        }
+            )
+        )
+        full = _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"]))
         self.assertTrue(setup < full)
         self.assertEqual(
             full - setup,
-            {
-                CONST.CONF_COASTING_PERMITTED,
-                CONST.CONF_EXPORT_ALLOWANCE_KWH,
-                CONST.CONF_EXPORT_FALLBACK_CENTS,
-                CONST.CONF_FALLBACK_RATE,
-            },
+            {CONST.CONF_FALLBACK_RATE},
         )
+
+    def test_no_export_field_is_on_an_import_rate_form(self) -> None:
+        """P32: import and export are separate flows on the forms as well."""
+        full = _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"]))
+        self.assertNotIn(CONST.CONF_EXPORT_ALLOWANCE_KWH, full)
+        self.assertNotIn(CONST.CONF_EXPORT_FALLBACK_CENTS, full)
 
     def test_rules_entered_at_setup_reach_the_stored_rate(self) -> None:
         record = PKG.config_flow._rate_record(
@@ -1227,10 +1263,7 @@ class TestCountingSitsWithTheCap(unittest.TestCase):
         )
 
     def test_the_rate_form_carries_the_tickbox_and_the_meter(self) -> None:
-        fields = {
-            getattr(key, "schema", key)
-            for key in PKG.config_flow._rate_schema({}, ["Other"]).schema
-        }
+        fields = _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"]))
         self.assertIn(CONST.CONF_RATE_ALLOWANCE_KWH, fields)
         self.assertIn(CONST.CONF_COUNT_ALLOWANCE, fields)
         self.assertIn(CONST.CONF_IMPORT_ENERGY_SENSOR, fields)
@@ -1240,11 +1273,7 @@ class TestCountingSitsWithTheCap(unittest.TestCase):
         schema = PKG.config_flow._rate_schema(
             {}, ["Other"], count_allowance=True, energy_sensor="sensor.grid_import"
         )
-        marker = next(
-            key
-            for key in schema.schema
-            if getattr(key, "schema", key) == CONST.CONF_IMPORT_ENERGY_SENSOR
-        )
+        marker, _selector = _ha_stubs.field_for(schema, CONST.CONF_IMPORT_ENERGY_SENSOR)
         self.assertEqual(marker.description, {"suggested_value": "sensor.grid_import"})
 
     def test_ticking_the_box_makes_the_meter_required(self) -> None:
@@ -1288,7 +1317,7 @@ class TestTheDemandRateSitsOnTheRate(unittest.TestCase):
     def test_the_charges_screen_no_longer_asks_for_it(self) -> None:
         flow = PKG.config_flow.AbodePowerTariffsConfigFlow()
         result = run(flow.async_step_charges())
-        fields = {getattr(key, "schema", key) for key in result["data_schema"].schema}
+        fields = _ha_stubs.field_names(result["data_schema"])
         self.assertNotIn(CONST.CONF_DEMAND_RATE, fields)
 
     def test_a_demand_period_with_no_rate_is_refused(self) -> None:
@@ -1371,12 +1400,11 @@ class TestTheDemandRateSitsOnTheRate(unittest.TestCase):
 
     def test_demand_period_and_rate_are_on_the_setup_form(self) -> None:
         """Rule 6, and P27 item 4: appears at setup, not just Configure."""
-        fields = {
-            getattr(key, "schema", key)
-            for key in PKG.config_flow._rate_schema(
+        fields = _ha_stubs.field_names(
+            PKG.config_flow._rate_schema(
                 {}, [], fields=PKG.config_flow.SETUP_RATE_FIELDS
-            ).schema
-        }
+            )
+        )
         self.assertIn(CONST.CONF_DEMAND_PERIOD, fields)
         self.assertIn(CONST.CONF_DEMAND_RATE, fields)
 
@@ -1418,3 +1446,257 @@ class TestTheBillingCycleDay(unittest.TestCase):
             self.assertFalse(
                 any("every month" in problem for problem in problems), problems
             )
+
+
+def scoped_options() -> dict[str, Any]:
+    """Two timetables, each with its own rates, scoped the way P4 scopes them.
+
+    ``sample_options`` predates the scoping and its rates carry no timetable,
+    so it cannot show what happens to a rate that belongs to one.
+    """
+    return {
+        CONST.CONF_RATES: [
+            {
+                CONST.CONF_NAME: "Off Peak",
+                CONST.CONF_TIMETABLE: "Weekday",
+                CONST.CONF_IMPORT_CENTS: 19.8,
+            },
+            {
+                CONST.CONF_NAME: "Peak",
+                CONST.CONF_TIMETABLE: "Weekday",
+                CONST.CONF_IMPORT_CENTS: 56.88,
+            },
+            {
+                CONST.CONF_NAME: "Peak",
+                CONST.CONF_TIMETABLE: "Weekend",
+                CONST.CONF_IMPORT_CENTS: 30.0,
+            },
+        ],
+        CONST.CONF_DAY_PATTERNS: [
+            {
+                CONST.CONF_NAME: "Weekday",
+                CONST.CONF_DAYS: ["mon", "tue", "wed", "thu", "fri", "holiday"],
+                CONST.CONF_PERIODS: [
+                    {
+                        CONST.CONF_START: "00:00",
+                        CONST.CONF_END: "16:00",
+                        CONST.CONF_RATE: "Off Peak",
+                    },
+                    {
+                        CONST.CONF_START: "16:00",
+                        CONST.CONF_END: "24:00",
+                        CONST.CONF_RATE: "Peak",
+                    },
+                ],
+                CONST.CONF_EXPORT_SAME_ALL_DAY: True,
+                CONST.CONF_EXPORT_FLAT_CENTS: 2.7,
+            },
+            {
+                CONST.CONF_NAME: "Weekend",
+                CONST.CONF_DAYS: ["sat", "sun"],
+                CONST.CONF_PERIODS: [
+                    {
+                        CONST.CONF_START: "00:00",
+                        CONST.CONF_END: "24:00",
+                        CONST.CONF_RATE: "Peak",
+                    }
+                ],
+                CONST.CONF_EXPORT_SAME_ALL_DAY: True,
+                CONST.CONF_EXPORT_FLAT_CENTS: 2.7,
+            },
+        ],
+        CONST.CONF_SUPPLY_CHARGE_CENTS: 116.6,
+    }
+
+
+class TestATimetableRenameTakesItsRates(unittest.TestCase):
+    """P31 change one. Renaming is only a rename; the rates go with it."""
+
+    def _rename(self, previous: str, current: str) -> Any:
+        driver = OptionsDriver(scoped_options())
+        driver.start()
+        driver.choose("day_patterns_menu")
+        driver.choose("day_pattern_pick")
+        driver.submit(name=previous)
+        driver.submit(name=current)
+        return driver
+
+    def test_the_rates_follow_the_new_name(self) -> None:
+        driver = self._rename("Weekday", "Week day")
+        scoped = {
+            rate[CONST.CONF_NAME]: rate.get(CONST.CONF_TIMETABLE)
+            for rate in driver.flow.working[CONST.CONF_RATES]
+            if rate.get(CONST.CONF_TIMETABLE) != "Weekend"
+        }
+        self.assertEqual(scoped, {"Off Peak": "Week day", "Peak": "Week day"})
+
+    def test_the_renamed_plan_still_validates(self) -> None:
+        driver = self._rename("Weekday", "Week day")
+        plan = Plan.from_dict({**driver.flow.working, CONST.CONF_NAME: "Test Plan"})
+        self.assertEqual(PKG.validate.validate_plan(plan), [])
+
+    def test_the_renamed_plan_still_resolves(self) -> None:
+        driver = self._rename("Weekday", "Week day")
+        plan = Plan.from_dict({**driver.flow.working, CONST.CONF_NAME: "Test Plan"})
+        resolution = plan.resolve(date(2026, 8, 20), 18 * 60, False)
+        self.assertIsNotNone(resolution)
+        assert resolution is not None
+        self.assertEqual(resolution.rate.qualified_name, "week_day.peak")
+
+    def test_the_other_timetables_rates_are_left_alone(self) -> None:
+        driver = self._rename("Weekday", "Week day")
+        weekend = [
+            rate
+            for rate in driver.flow.working[CONST.CONF_RATES]
+            if rate.get(CONST.CONF_TIMETABLE) == "Weekend"
+        ]
+        self.assertEqual(len(weekend), 1)
+
+    def test_an_unscoped_rate_is_not_pulled_into_the_timetable(self) -> None:
+        """A rate stored before the scoping belongs to none and resolves in any."""
+        options = sample_options()
+        driver = OptionsDriver(options)
+        driver.start()
+        driver.choose("day_patterns_menu")
+        driver.choose("day_pattern_pick")
+        driver.submit(name="Every day")
+        driver.submit(name="All week")
+        self.assertEqual(
+            [
+                rate.get(CONST.CONF_TIMETABLE)
+                for rate in driver.flow.working[CONST.CONF_RATES]
+            ],
+            [None, None],
+        )
+
+
+class TestThePeriodScreenIsScopedToItsTimetable(unittest.TestCase):
+    """P31 change two. weekday.peak is not visible under the weekend."""
+
+    def _period_form(self, timetable: str, options: Any = None) -> Any:
+        driver = OptionsDriver(options or scoped_options())
+        driver.start()
+        driver.choose("periods_pick_day_pattern")
+        driver.submit(name=timetable)
+        driver.choose("period_add")
+        return driver
+
+    def _offered(self, driver: Any) -> list[str]:
+        return _ha_stubs.options_for(driver.result, CONST.CONF_RATE)
+
+    def test_the_weekend_is_offered_only_its_own_rate(self) -> None:
+        driver = self._period_form("Weekend")
+        self.assertEqual(self._offered(driver), ["weekend.peak"])
+
+    def test_the_weekday_is_offered_only_its_own_rates(self) -> None:
+        driver = self._period_form("Weekday")
+        self.assertEqual(
+            sorted(self._offered(driver)), ["weekday.off_peak", "weekday.peak"]
+        )
+
+    def test_a_chosen_identifier_is_stored_as_the_rate_name(self) -> None:
+        driver = self._period_form("Weekend")
+        driver.submit(start="00:00:00", end="12:00:00", rate="weekend.peak")
+        weekend = driver.flow.working[CONST.CONF_DAY_PATTERNS][1]
+        self.assertEqual(
+            [period[CONST.CONF_RATE] for period in weekend[CONST.CONF_PERIODS]],
+            ["Peak", "Peak"],
+        )
+
+    def test_a_timetable_with_no_rates_opens_the_rate_form(self) -> None:
+        options = scoped_options()
+        options[CONST.CONF_DAY_PATTERNS].append(
+            {
+                CONST.CONF_NAME: "Summer",
+                CONST.CONF_DAYS: ["sat", "sun"],
+                CONST.CONF_PERIODS: [],
+                CONST.CONF_EXPORT_SAME_ALL_DAY: True,
+                CONST.CONF_EXPORT_FLAT_CENTS: 0.0,
+            }
+        )
+        driver = self._period_form("Summer", options)
+        self.assertEqual(driver.step, "rate_add")
+
+
+class TestTheRateFormIsSectioned(unittest.TestCase):
+    """P29: two unrelated declarations no longer run together in one list."""
+
+    def _at_rate_form(self) -> OptionsDriver:
+        driver = OptionsDriver()
+        driver.start()
+        driver.choose("rates_menu")
+        driver.choose("rate_add")
+        return driver
+
+    def test_a_sectioned_form_still_round_trips_its_defaults(self) -> None:
+        driver = self._at_rate_form()
+        driver.submit(name="Shoulder", import_cents=32.1)
+        self.assertEqual(driver.step, "rates_menu")
+        stored = driver.flow.working[CONST.CONF_RATES][-1]
+        self.assertEqual(stored[CONST.CONF_NAME], "Shoulder")
+
+    def test_the_payload_arrives_nested_and_is_read_anyway(self) -> None:
+        """The handler is given sections; a field means the same wherever shown."""
+        record = PKG.config_flow._rate_record(
+            PKG.config_flow.flatten_sections(
+                {
+                    CONST.CONF_NAME: "Peak",
+                    CONST.CONF_IMPORT_CENTS: 56.88,
+                    CONST.SECTION_DEMAND: {
+                        CONST.CONF_DEMAND_PERIOD: True,
+                        CONST.CONF_DEMAND_RATE: 12.5,
+                    },
+                    CONST.SECTION_CONSTRAINTS: {
+                        CONST.CONF_INFORMATION_CONSTRAINTS: ["precool_opportunity"],
+                        CONST.CONF_ENFORCEABLE_CONSTRAINTS: ["no_grid_import"],
+                    },
+                }
+            )
+        )
+        self.assertTrue(record[CONST.CONF_DEMAND_PERIOD])
+        self.assertEqual(record[CONST.CONF_DEMAND_RATE], 12.5)
+        self.assertEqual(
+            sorted(record[CONST.CONF_CONSTRAINTS]),
+            ["no_grid_import", "precool_opportunity"],
+        )
+
+    def test_the_accumulation_fields_say_they_are_not_implemented(self) -> None:
+        strings = json.loads(
+            (Path(PKG.config_flow.__file__).parent / "strings.json").read_text()
+        )
+        for root, step in (("config", "rates"), ("options", "rate_add")):
+            labels = strings[root]["step"][step]["sections"][CONST.SECTION_ALLOWANCE][
+                "data"
+            ]
+            for field in (
+                CONST.CONF_COUNT_ALLOWANCE,
+                CONST.CONF_IMPORT_ENERGY_SENSOR,
+            ):
+                self.assertIn("(not yet implemented)", labels[field], (root, field))
+            for field in (CONST.CONF_RATE_ALLOWANCE_KWH, CONST.CONF_FALLBACK_RATE):
+                self.assertNotIn("(not yet implemented)", labels[field], (root, field))
+
+    def test_coasting_declared_as_a_rule_reaches_the_published_rate(self) -> None:
+        driver = self._at_rate_form()
+        driver.submit(
+            name="Drift",
+            import_cents=10.0,
+            **{
+                CONST.SECTION_CONSTRAINTS: {
+                    CONST.CONF_INFORMATION_CONSTRAINTS: [
+                        CONST.CONSTRAINT_COASTING_PERMITTED
+                    ],
+                    CONST.CONF_ENFORCEABLE_CONSTRAINTS: [],
+                }
+            },
+        )
+        plan = Plan.from_dict({**driver.flow.working, CONST.CONF_NAME: "Test Plan"})
+        rate = plan.rate_by_name("Drift", "Every day")
+        assert rate is not None
+        self.assertTrue(rate.coasting_permitted)
+
+    def test_a_rate_without_the_rule_does_not_permit_coasting(self) -> None:
+        plan = Plan.from_dict({**sample_options(), CONST.CONF_NAME: "Test Plan"})
+        rate = plan.rate_by_name("Every day Peak")
+        assert rate is not None
+        self.assertFalse(rate.coasting_permitted)

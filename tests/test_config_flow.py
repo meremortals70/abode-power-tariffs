@@ -288,14 +288,13 @@ class TestSingleRatePlan(unittest.TestCase):
         self.assertAlmostEqual(additional.import_price, 0.45)
 
     def test_the_export_side_is_declared_the_same_way(self) -> None:
+        """P32: beside the export price, which for this shape is the timetable."""
         result = self._finish()
         plan = Plan.from_dict({**result["options"], "name": result["title"]})
-        included = plan.rate_by_name("Included", "Every day")
-        assert included is not None
-        self.assertAlmostEqual(included.export_allowance_kwh, 10.0)
-        self.assertAlmostEqual(included.export_fallback_price, 0.02)
-        # The real, active export price, not the allowance-declared one.
-        self.assertAlmostEqual(plan.day_patterns[0].export_flat_price, 0.08)
+        pattern = plan.day_patterns[0]
+        self.assertAlmostEqual(pattern.export_flat_price, 0.08)
+        self.assertAlmostEqual(pattern.export_allowance_kwh, 10.0)
+        self.assertAlmostEqual(pattern.export_fallback_price, 0.02)
 
     def test_nothing_counts_yet(self) -> None:
         """No accumulation at this stage: counting is off by default."""
@@ -329,11 +328,10 @@ class TestSingleRatePlanWithNoExport(unittest.TestCase):
         plan = Plan.from_dict(
             {**self.driver.result["options"], "name": self.driver.result["title"]}
         )
-        self.assertAlmostEqual(plan.day_patterns[0].export_flat_price, 0.0)
-        included = plan.rate_by_name("Included", "Every day")
-        assert included is not None
-        self.assertIsNone(included.export_allowance_kwh)
-        self.assertIsNone(included.export_fallback_price)
+        pattern = plan.day_patterns[0]
+        self.assertAlmostEqual(pattern.export_flat_price, 0.0)
+        self.assertIsNone(pattern.export_allowance_kwh)
+        self.assertIsNone(pattern.export_fallback_price)
 
 
 class TestTwoTimetables(unittest.TestCase):
@@ -450,13 +448,64 @@ class TestEscapingTheLoops(unittest.TestCase):
         driver.submit(name="Peak", import_cents=10.0, on_submit=CONST.SUBMIT_ADD)
         self.assertEqual(driver.errors.get("name"), "rate_exists")
 
-    def test_continue_from_periods_needs_a_period(self) -> None:
+    def test_continue_from_rates_keeps_the_rate_on_the_screen(self) -> None:
+        """P30: a filled-in screen is checked and kept, then moved on from."""
+        driver = self._to_rates()
+        driver.submit(name="Peak", import_cents=50.0, on_submit=CONST.SUBMIT_CONTINUE)
+        self.assertEqual(driver.step, "periods")
+        self.assertEqual([rate["name"] for rate in driver.flow._rates], ["Peak"])
+
+    def test_continue_from_rates_still_checks_what_was_entered(self) -> None:
+        """A bad entry is refused rather than silently dropped on the way out."""
+        driver = self._to_rates()
+        driver.submit(name="Peak", import_cents=50.0, on_submit=CONST.SUBMIT_ADD)
+        driver.submit(name="Peak", import_cents=10.0, on_submit=CONST.SUBMIT_CONTINUE)
+        self.assertEqual(driver.step, "rates")
+        self.assertEqual(driver.errors.get("name"), "rate_exists")
+        self.assertEqual(len(driver.flow._rates), 1)
+
+    def test_continue_from_periods_is_refused_until_the_day_is_covered(self) -> None:
+        """P30: moving on is a gate. An uncovered day is not a valid plan."""
         driver = self._to_rates()
         driver.submit(name="Peak", import_cents=50.0, on_submit=CONST.SUBMIT_ADD)
         driver.submit(on_submit=CONST.SUBMIT_CONTINUE)
         self.assertEqual(driver.step, "periods")
-        driver.submit(on_submit=CONST.SUBMIT_CONTINUE)
+        driver.submit(
+            start="00:00:00",
+            end="06:00:00",
+            rate="Peak",
+            on_submit=CONST.SUBMIT_ADD,
+        )
+        # A period is already stored, which used to be enough to leave on.
+        driver.submit(
+            start="06:00:00",
+            end="07:00:00",
+            rate="Peak",
+            on_submit=CONST.SUBMIT_CONTINUE,
+        )
         self.assertEqual(driver.step, "periods")
+        self.assertIn(
+            "still uncovered", driver.result["description_placeholders"]["remaining"]
+        )
+
+    def test_continue_from_periods_moves_on_once_it_is_covered(self) -> None:
+        driver = self._to_rates()
+        driver.submit(name="Peak", import_cents=50.0, on_submit=CONST.SUBMIT_ADD)
+        driver.submit(on_submit=CONST.SUBMIT_CONTINUE)
+        driver.submit(
+            start="00:00:00",
+            end="06:00:00",
+            rate="Peak",
+            on_submit=CONST.SUBMIT_ADD,
+        )
+        driver.submit(
+            start="06:00:00",
+            end="24:00:00",
+            rate="Peak",
+            on_submit=CONST.SUBMIT_CONTINUE,
+        )
+        self.assertEqual(driver.step, "feed_in")
+        self.assertEqual(len(driver.flow._periods), 2)
 
 
 class TestPeriodValidation(unittest.TestCase):

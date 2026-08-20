@@ -46,6 +46,17 @@ class _Config:
             setattr(self, key, value)
 
 
+class Section:
+    """A collapsible group of fields, as data_entry_flow.section builds one."""
+
+    def __init__(self, schema: Any, options: Any = None) -> None:
+        self.schema = schema
+        self.options = options or {}
+
+    def __call__(self, value: Any) -> Any:
+        return value
+
+
 class _Mode:
     BOX = "box"
     SLIDER = "slider"
@@ -246,6 +257,7 @@ def install() -> None:
 
     data_entry_flow = _module("homeassistant.data_entry_flow")
     data_entry_flow.FlowResultType = FlowResultType
+    data_entry_flow.section = Section
 
     const = _module("homeassistant.const")
     const.STATE_ON = "on"
@@ -422,10 +434,16 @@ def defaults(result: dict[str, Any]) -> dict[str, Any]:
     Every field on every screen carries a default, so this is the 'press Submit'
     case and it must always be valid.
     """
-    schema: vol.Schema = result["data_schema"]
+    return _defaults_for(result["data_schema"])
+
+
+def _defaults_for(schema: vol.Schema) -> dict[str, Any]:
     submitted: dict[str, Any] = {}
-    for key in schema.schema:
+    for key, value in schema.schema.items():
         name = getattr(key, "schema", key)
+        if isinstance(value, Section):
+            submitted[name] = _defaults_for(value.schema)
+            continue
         default = getattr(key, "default", None)
         if default is not None and default is not vol.UNDEFINED:
             try:
@@ -433,3 +451,62 @@ def defaults(result: dict[str, Any]) -> dict[str, Any]:
             except TypeError:
                 submitted[name] = default
     return submitted
+
+
+def options_for(result: dict[str, Any], field: str) -> list[str]:
+    """Return the choices a select field offers on a form, sections included."""
+    found = _options_in(result["data_schema"], field)
+    if found is None:
+        raise AssertionError(f"no field {field!r} on this form")
+    return found
+
+
+def _options_in(schema: vol.Schema, field: str) -> list[str] | None:
+    for key, value in schema.schema.items():
+        if isinstance(value, Section):
+            nested = _options_in(value.schema, field)
+            if nested is not None:
+                return nested
+            continue
+        if getattr(key, "schema", key) != field:
+            continue
+        config = getattr(value, "config", None)
+        return [str(option) for option in getattr(config, "options", [])]
+    return None
+
+
+def field_names(form: Any) -> set[str]:
+    """Return every field on a form or schema, flattened out of its sections."""
+    schema = form["data_schema"] if isinstance(form, dict) else form
+    return _field_names_in(schema)
+
+
+def field_for(form: Any, field: str) -> Any:
+    """Return the marker and selector for one field, sections included."""
+    schema = form["data_schema"] if isinstance(form, dict) else form
+    found = _field_in(schema, field)
+    if found is None:
+        raise AssertionError(f"no field {field!r} on this form")
+    return found
+
+
+def _field_in(schema: vol.Schema, field: str) -> Any:
+    for key, value in schema.schema.items():
+        if isinstance(value, Section):
+            nested = _field_in(value.schema, field)
+            if nested is not None:
+                return nested
+            continue
+        if getattr(key, "schema", key) == field:
+            return key, value
+    return None
+
+
+def _field_names_in(schema: vol.Schema) -> set[str]:
+    names: set[str] = set()
+    for key, value in schema.schema.items():
+        if isinstance(value, Section):
+            names |= _field_names_in(value.schema)
+            continue
+        names.add(str(getattr(key, "schema", key)))
+    return names
