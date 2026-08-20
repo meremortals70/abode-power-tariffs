@@ -26,6 +26,7 @@ from .const import (
     CONF_ENFORCEABLE_CONSTRAINTS,
     CONF_EXPORT_ALLOWANCE_KWH,
     CONF_EXPORT_CENTS,
+    CONF_EXPORT_FALLBACK_CENTS,
     CONF_EXPORT_FLAT_CENTS,
     CONF_EXPORT_PERIODS,
     CONF_EXPORT_RATES,
@@ -143,7 +144,18 @@ class Rate:
     rate_allowance_kwh: float | None = None
     export_allowance_kwh: float | None = None
     fallback_rate: str | None = None
+    # The export price once the export allowance is spent. No second named
+    # export rate to point at the way import's fallback_rate does, so this is
+    # a bare price. Declared, never applied to export_price_at() — the same
+    # treatment as everything else under an allowance.
+    export_fallback_price: float | None = None
     demand_period: bool = False
+    # Dollars per kW per month. Belongs to the rate, not the plan: a demand
+    # charge is what makes drawing power during this rate's window expensive,
+    # not a plan-wide fact. Declared, never blended into import_price — a
+    # consumer applies its own assumption about draw to work out the real
+    # cost, the same way it already does with an allowance.
+    demand_rate_per_kw_month: float = 0.0
     components: tuple[tuple[str, float], ...] = ()
 
     @property
@@ -187,7 +199,13 @@ class Rate:
             CONF_RATE_ALLOWANCE_KWH: self.rate_allowance_kwh,
             CONF_EXPORT_ALLOWANCE_KWH: self.export_allowance_kwh,
             CONF_FALLBACK_RATE: self.fallback_rate,
+            CONF_EXPORT_FALLBACK_CENTS: (
+                None
+                if self.export_fallback_price is None
+                else round(self.export_fallback_price * 100, 4)
+            ),
             CONF_DEMAND_PERIOD: self.demand_period,
+            CONF_DEMAND_RATE: self.demand_rate_per_kw_month,
             CONF_COMPONENTS: dict(self.components),
         }
 
@@ -225,7 +243,13 @@ class Rate:
             fallback_rate=(
                 str(raw[CONF_FALLBACK_RATE]) if raw.get(CONF_FALLBACK_RATE) else None
             ),
+            export_fallback_price=(
+                _cents_to_dollars(raw[CONF_EXPORT_FALLBACK_CENTS])
+                if raw.get(CONF_EXPORT_FALLBACK_CENTS)
+                else None
+            ),
             demand_period=bool(raw.get(CONF_DEMAND_PERIOD, False)),
+            demand_rate_per_kw_month=float(raw.get(CONF_DEMAND_RATE) or 0.0),
             components=tuple(
                 (str(key), float(value)) for key, value in sorted(components.items())
             ),
@@ -433,7 +457,6 @@ class Plan:
     valid_to: date | None = None
     description: str = ""
     export_rates: tuple[ExportRate, ...] = ()
-    demand_rate_per_kw_month: float = 0.0
     monthly_charge: float = 0.0
     # The day of the month the billing cycle starts. Declared and published;
     # nothing is derived from it here. Working out where a cycle begins and
@@ -597,7 +620,6 @@ class Plan:
             CONF_PLAN_DESCRIPTION: self.description,
             CONF_RATES: [rate.as_dict() for rate in self.rates],
             CONF_EXPORT_RATES: [rate.as_dict() for rate in self.export_rates],
-            CONF_DEMAND_RATE: self.demand_rate_per_kw_month,
             CONF_MONTHLY_CHARGE: self.monthly_charge,
             CONF_BILLING_CYCLE_DAY: self.billing_cycle_day,
             CONF_DAY_PATTERNS: [
@@ -626,7 +648,11 @@ class Plan:
             export_rates=tuple(
                 ExportRate.from_dict(item) for item in raw.get(CONF_EXPORT_RATES) or ()
             ),
-            demand_rate_per_kw_month=float(raw.get(CONF_DEMAND_RATE) or 0.0),
+            # A plan stored before demand moved onto the rate (pre-release
+            # only, no migration) may still carry CONF_DEMAND_RATE here. It is
+            # not read: the value belongs to whichever rate has demand_period
+            # set now, and there is no way to know which rate that was meant
+            # for from a single plan-wide number.
             monthly_charge=float(raw.get(CONF_MONTHLY_CHARGE) or 0.0),
             billing_cycle_day=_optional_int(raw.get(CONF_BILLING_CYCLE_DAY)),
             valid_from=_optional_date(raw.get(CONF_VALID_FROM)),

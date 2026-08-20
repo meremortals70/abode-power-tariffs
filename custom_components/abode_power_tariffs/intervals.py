@@ -39,6 +39,16 @@ class Interval:
     fallback_rate: str | None
     fallback_per_kwh: float | None
     day_pattern: str
+    # Declared, not blended into import_price. A consumer that wants the real
+    # cost of drawing power in this interval applies its own assumption about
+    # kW draw to demand_rate_per_kw_month, the same way it already applies
+    # its own arithmetic to the allowance.
+    demand_period: bool
+    demand_rate_per_kw_month: float
+    # The export side of the same declaration import already makes: the
+    # allowance and what is paid past it, never blended into export_price.
+    export_allowance_kwh: float | None
+    export_fallback_price: float | None
 
     @property
     def duration_minutes(self) -> int:
@@ -76,6 +86,14 @@ class Interval:
             "fallback_rate": self.fallback_rate,
             "fallback_per_kwh": self.fallback_per_kwh,
             "day_pattern": self.day_pattern,
+            "demand_period": self.demand_period,
+            "demand_rate_per_kw_month": self.demand_rate_per_kw_month,
+            "export_allowance_kwh": self.export_allowance_kwh,
+            "export_fallback_price": (
+                None
+                if self.export_fallback_price is None
+                else round(self.export_fallback_price, 6)
+            ),
             "forecast": False,
         }
 
@@ -210,10 +228,20 @@ def generate(
     local_start = start.astimezone(zone)
     minute_of_day = local_start.hour * 60 + local_start.minute
     aligned_minute = (minute_of_day // resolution_minutes) * resolution_minutes
-    cursor = (
-        datetime.combine(local_start.date(), datetime.min.time(), tzinfo=zone)
-        + timedelta(minutes=aligned_minute)
-    ).astimezone(UTC)
+    # The aligned wall-clock minute names one real instant ordinarily, but two
+    # on the morning the clocks go back. Combining a naive datetime with a
+    # timedelta and attaching tzinfo afterwards always lands on fold=0 — the
+    # first pass — which silently pulls a second-pass start an hour into the
+    # past. Build every real instant the aligned minute names and take the
+    # latest one that is not after ``start`` itself, so the chosen instant
+    # falls in the same pass ``start`` does.
+    reference = start.astimezone(UTC)
+    candidates = [
+        candidate.astimezone(UTC)
+        for candidate in instants_at(local_start.date(), aligned_minute, zone)
+    ]
+    eligible = [candidate for candidate in candidates if candidate <= reference]
+    cursor = eligible[-1] if eligible else candidates[0]
     # The horizon is wall clock. Twenty-four hours from 18:00 is 18:00
     # tomorrow, which is 23 or 25 real hours across a transition.
     finish = (local_start + timedelta(hours=hours)).astimezone(UTC)
@@ -251,6 +279,10 @@ def generate(
                     if fallback is None
                     else round(fallback.import_price, 6),
                     day_pattern=resolution.day_pattern.name,
+                    demand_period=resolution.rate.demand_period,
+                    demand_rate_per_kw_month=resolution.rate.demand_rate_per_kw_month,
+                    export_allowance_kwh=resolution.rate.export_allowance_kwh,
+                    export_fallback_price=resolution.rate.export_fallback_price,
                 )
             )
         cursor = nxt

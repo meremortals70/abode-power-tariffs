@@ -234,6 +234,108 @@ class TestOneTimetable(unittest.TestCase):
         self.assertAlmostEqual(pattern.export_flat_price, 0.027)
 
 
+class TestSingleRatePlan(unittest.TestCase):
+    """P28: a plan with no clock, just an amount and what follows it.
+
+    The front page's two tickboxes decide the shape before any rate is
+    entered. This is the single-rate path with export also switched on.
+    """
+
+    def setUp(self) -> None:
+        self.driver = FlowDriver()
+        self.driver.start()
+        self.driver.submit(plan_name="Prepay", single_rate_plan=True, has_export=True)
+        self.driver.submit(
+            daily_supply_charge_cents=0.0, monthly_charge=0.0, billing_cycle_day=0
+        )
+
+    def _finish(self) -> dict[str, Any]:
+        self.assertEqual(self.driver.step, "single_rate")
+        self.driver.submit(
+            import_cents=30.0,
+            rate_allowance_kwh=20.0,
+            after_allowance_cents=45.0,
+            export_flat_cents=8.0,
+            export_allowance_kwh=10.0,
+            export_fallback_cents=2.0,
+        )
+        self.assertEqual(self.driver.result["type"], CREATE)
+        return self.driver.result
+
+    def test_no_timetable_screens_are_visited(self) -> None:
+        """The whole point: skip straight from charges to the created entry."""
+        result = self._finish()
+        self.assertEqual(result["type"], CREATE)
+
+    def test_the_plan_has_one_timetable_covering_the_whole_day(self) -> None:
+        result = self._finish()
+        plan = Plan.from_dict({**result["options"], "name": result["title"]})
+        self.assertEqual(len(plan.day_patterns), 1)
+        pattern = plan.day_patterns[0]
+        self.assertEqual(len(pattern.periods), 1)
+        self.assertEqual((pattern.periods[0].start, pattern.periods[0].end), (0, 1440))
+
+    def test_the_declared_cap_and_fallback_are_real_rate_fields(self) -> None:
+        result = self._finish()
+        plan = Plan.from_dict({**result["options"], "name": result["title"]})
+        included = plan.rate_by_name("Included", "Every day")
+        assert included is not None
+        self.assertAlmostEqual(included.import_price, 0.30)
+        self.assertAlmostEqual(included.rate_allowance_kwh, 20.0)
+        self.assertEqual(included.fallback_rate, "Additional")
+        additional = plan.rate_by_name("Additional", "Every day")
+        assert additional is not None
+        self.assertAlmostEqual(additional.import_price, 0.45)
+
+    def test_the_export_side_is_declared_the_same_way(self) -> None:
+        result = self._finish()
+        plan = Plan.from_dict({**result["options"], "name": result["title"]})
+        included = plan.rate_by_name("Included", "Every day")
+        assert included is not None
+        self.assertAlmostEqual(included.export_allowance_kwh, 10.0)
+        self.assertAlmostEqual(included.export_fallback_price, 0.02)
+        # The real, active export price, not the allowance-declared one.
+        self.assertAlmostEqual(plan.day_patterns[0].export_flat_price, 0.08)
+
+    def test_nothing_counts_yet(self) -> None:
+        """No accumulation at this stage: counting is off by default."""
+        result = self._finish()
+        self.assertFalse(result["options"][CONST.CONF_COUNT_ALLOWANCE])
+
+
+class TestSingleRatePlanWithNoExport(unittest.TestCase):
+    """The export tickbox left off: the export fields never appear."""
+
+    def setUp(self) -> None:
+        self.driver = FlowDriver()
+        self.driver.start()
+        self.driver.submit(plan_name="Prepay", single_rate_plan=True)
+        self.driver.submit()
+
+    def test_the_export_fields_are_not_on_the_form(self) -> None:
+        self.assertEqual(self.driver.step, "single_rate")
+        fields = {
+            getattr(key, "schema", key)
+            for key in self.driver.result["data_schema"].schema
+        }
+        self.assertNotIn(CONST.CONF_EXPORT_FLAT_CENTS, fields)
+        self.assertNotIn(CONST.CONF_EXPORT_ALLOWANCE_KWH, fields)
+        self.assertNotIn(CONST.CONF_EXPORT_FALLBACK_CENTS, fields)
+
+    def test_export_is_zero_on_the_created_plan(self) -> None:
+        self.driver.submit(
+            import_cents=30.0, rate_allowance_kwh=20.0, after_allowance_cents=45.0
+        )
+        plan = Plan.from_dict(
+            {**self.driver.result["options"], "name": self.driver.result["title"]}
+        )
+        self.assertAlmostEqual(plan.day_patterns[0].export_flat_price, 0.0)
+        included = plan.rate_by_name("Included", "Every day")
+        assert included is not None
+        self.assertIsNone(included.export_allowance_kwh)
+        self.assertIsNone(included.export_fallback_price)
+
+
 class TestTwoTimetables(unittest.TestCase):
     """The case the whole design turns on: weekends inside the same plan."""
 
@@ -430,6 +532,7 @@ class TestEveryStepIsReachable(unittest.TestCase):
         expected = {
             "user",
             "charges",
+            "single_rate",
             "days",
             "rates",
             "periods",

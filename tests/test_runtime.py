@@ -16,7 +16,7 @@ import logging
 import sys
 import types
 import unittest
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
@@ -72,6 +72,7 @@ TariffCoordinator = PKG.coordinator.TariffCoordinator
 OptionsFlow = PKG.config_flow.AbodePowerTariffsOptionsFlow
 
 BRISBANE = ZoneInfo("Australia/Brisbane")
+SYDNEY = ZoneInfo("Australia/Sydney")
 ALL_DAYS = frozenset({"mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday"})
 FORM = _ha_stubs.FlowResultType.FORM
 MENU = _ha_stubs.FlowResultType.MENU
@@ -452,6 +453,53 @@ class TestForwardSeriesIsHeld(CoordinatorCase):
         first = coordinator.forward_intervals(24, 30)
         coordinator.apply_plan(coordinator.plan, coordinator.options)
         self.assertIsNot(first, coordinator.forward_intervals(24, 30))
+
+
+class TestForwardSeriesAcrossTheFallBack(CoordinatorCase):
+    """P26: the cache key must tell the two passes of a repeated hour apart.
+
+    P25 fixed ``intervals.generate`` itself. This is the coupled defect one
+    level up: the cache key that decides whether to call it again is entirely
+    wall clock, so a series built during the first 2am on the fall-back
+    morning is handed back unchanged during the second 2am, because nothing
+    in the key differs.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._real_zone = PKG.coordinator.dt_util.DEFAULT_ZONE
+        PKG.coordinator.dt_util.DEFAULT_ZONE = SYDNEY
+
+    def tearDown(self) -> None:
+        PKG.coordinator.dt_util.DEFAULT_ZONE = self._real_zone
+        super().tearDown()
+
+    def test_the_second_pass_forces_a_rebuild(self) -> None:
+        coordinator = a_coordinator()
+        PKG.coordinator.dt_util.NOW = datetime(2026, 4, 5, 2, 15, tzinfo=SYDNEY, fold=0)
+        first = coordinator.forward_intervals(24, 30)
+        PKG.coordinator.dt_util.NOW = datetime(2026, 4, 5, 2, 15, tzinfo=SYDNEY, fold=1)
+        second = coordinator.forward_intervals(24, 30)
+        self.assertIsNot(first, second)
+
+    def test_the_rebuilt_series_starts_an_hour_later_in_real_time(self) -> None:
+        """Not just a different object — the correct, later instant."""
+        coordinator = a_coordinator()
+        PKG.coordinator.dt_util.NOW = datetime(2026, 4, 5, 2, 15, tzinfo=SYDNEY, fold=0)
+        first = coordinator.forward_intervals(24, 30)
+        PKG.coordinator.dt_util.NOW = datetime(2026, 4, 5, 2, 15, tzinfo=SYDNEY, fold=1)
+        second = coordinator.forward_intervals(24, 30)
+        self.assertEqual(
+            second[0].start.astimezone(UTC) - first[0].start.astimezone(UTC),
+            timedelta(hours=1),
+        )
+
+    def test_the_first_pass_alone_is_unaffected(self) -> None:
+        """Asking twice inside the first pass must still reuse the series."""
+        coordinator = a_coordinator()
+        PKG.coordinator.dt_util.NOW = datetime(2026, 4, 5, 2, 15, tzinfo=SYDNEY, fold=0)
+        first = coordinator.forward_intervals(24, 30)
+        self.assertIs(first, coordinator.forward_intervals(24, 30))
 
 
 class TestTheTraceHoldsStill(CoordinatorCase):
@@ -914,11 +962,9 @@ class TestOptionsFlowBranches(unittest.TestCase):
         driver.choose("general")
         driver.submit(
             daily_supply_charge_cents=99.0,
-            demand_rate_per_kw_month=12.5,
             monthly_charge=19.0,
         )
         self.assertEqual(driver.step, "init")
-        self.assertEqual(driver.flow.working[CONST.CONF_DEMAND_RATE], 12.5)
         self.assertEqual(driver.flow.working[CONST.CONF_MONTHLY_CHARGE], 19.0)
 
     def test_backwards_validity_is_refused(self) -> None:
@@ -1101,6 +1147,8 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
                 CONST.CONF_IMPORT_CENTS,
                 CONST.CONF_INFORMATION_CONSTRAINTS,
                 CONST.CONF_ENFORCEABLE_CONSTRAINTS,
+                CONST.CONF_DEMAND_PERIOD,
+                CONST.CONF_DEMAND_RATE,
                 CONST.CONF_RATE_ALLOWANCE_KWH,
                 CONST.CONF_COUNT_ALLOWANCE,
                 CONST.CONF_IMPORT_ENERGY_SENSOR,
@@ -1142,8 +1190,8 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
             full - setup,
             {
                 CONST.CONF_COASTING_PERMITTED,
-                CONST.CONF_DEMAND_PERIOD,
                 CONST.CONF_EXPORT_ALLOWANCE_KWH,
+                CONST.CONF_EXPORT_FALLBACK_CENTS,
                 CONST.CONF_FALLBACK_RATE,
             },
         )
@@ -1228,6 +1276,109 @@ class TestCountingSitsWithTheCap(unittest.TestCase):
         )
         self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, record)
         self.assertNotIn(CONST.CONF_IMPORT_ENERGY_SENSOR, record)
+
+
+class TestTheDemandRateSitsOnTheRate(unittest.TestCase):
+    """P27: the demand rate is declared on the rate it belongs to.
+
+    Not on the plan-wide charges screen, and not silently required until the
+    demand period box is actually ticked.
+    """
+
+    def test_the_charges_screen_no_longer_asks_for_it(self) -> None:
+        flow = PKG.config_flow.AbodePowerTariffsConfigFlow()
+        result = run(flow.async_step_charges())
+        fields = {getattr(key, "schema", key) for key in result["data_schema"].schema}
+        self.assertNotIn(CONST.CONF_DEMAND_RATE, fields)
+
+    def test_a_demand_period_with_no_rate_is_refused(self) -> None:
+        self.assertTrue(
+            PKG.config_flow._demand_without_rate(
+                {CONST.CONF_DEMAND_PERIOD: True, CONST.CONF_DEMAND_RATE: 0.0}
+            )
+        )
+        self.assertTrue(
+            PKG.config_flow._demand_without_rate({CONST.CONF_DEMAND_PERIOD: True})
+        )
+
+    def test_unticked_or_answered_is_not_refused(self) -> None:
+        self.assertFalse(
+            PKG.config_flow._demand_without_rate({CONST.CONF_DEMAND_PERIOD: False})
+        )
+        self.assertFalse(
+            PKG.config_flow._demand_without_rate(
+                {CONST.CONF_DEMAND_PERIOD: True, CONST.CONF_DEMAND_RATE: 18.4}
+            )
+        )
+
+    def test_a_demand_period_with_no_rate_is_refused_on_the_rates_step(self) -> None:
+        flow = PKG.config_flow.AbodePowerTariffsConfigFlow()
+        flow._name = "P"
+        result = run(
+            flow.async_step_rates(
+                {
+                    CONST.CONF_NAME: "Peak",
+                    CONST.CONF_IMPORT_CENTS: 50.0,
+                    CONST.CONF_DEMAND_PERIOD: True,
+                    CONST.CONF_DEMAND_RATE: 0.0,
+                    CONST.CONF_ON_SUBMIT: "submit_add",
+                }
+            )
+        )
+        self.assertEqual(
+            result["errors"], {CONST.CONF_DEMAND_RATE: "demand_rate_required"}
+        )
+
+    def test_a_demand_rate_declared_at_setup_reaches_the_stored_rate(self) -> None:
+        flow = PKG.config_flow.AbodePowerTariffsConfigFlow()
+        flow._name = "P"
+        run(
+            flow.async_step_rates(
+                {
+                    CONST.CONF_NAME: "Peak",
+                    CONST.CONF_IMPORT_CENTS: 50.0,
+                    CONST.CONF_DEMAND_PERIOD: True,
+                    CONST.CONF_DEMAND_RATE: 18.4,
+                    CONST.CONF_ON_SUBMIT: "submit_add",
+                }
+            )
+        )
+        stored = flow._rates[0]
+        self.assertTrue(stored[CONST.CONF_DEMAND_PERIOD])
+        self.assertAlmostEqual(stored[CONST.CONF_DEMAND_RATE], 18.4)
+
+    def test_two_rates_can_carry_two_different_demand_rates(self) -> None:
+        """The point of moving it off the plan: it no longer has to be shared."""
+        rate_a = PKG.config_flow._rate_record(
+            {
+                CONST.CONF_NAME: "Summer Peak",
+                CONST.CONF_IMPORT_CENTS: 50.0,
+                CONST.CONF_DEMAND_PERIOD: True,
+                CONST.CONF_DEMAND_RATE: 18.4,
+            }
+        )
+        rate_b = PKG.config_flow._rate_record(
+            {
+                CONST.CONF_NAME: "Winter Peak",
+                CONST.CONF_IMPORT_CENTS: 55.0,
+                CONST.CONF_DEMAND_PERIOD: True,
+                CONST.CONF_DEMAND_RATE: 9.2,
+            }
+        )
+        self.assertNotEqual(
+            rate_a[CONST.CONF_DEMAND_RATE], rate_b[CONST.CONF_DEMAND_RATE]
+        )
+
+    def test_demand_period_and_rate_are_on_the_setup_form(self) -> None:
+        """Rule 6, and P27 item 4: appears at setup, not just Configure."""
+        fields = {
+            getattr(key, "schema", key)
+            for key in PKG.config_flow._rate_schema(
+                {}, [], fields=PKG.config_flow.SETUP_RATE_FIELDS
+            ).schema
+        }
+        self.assertIn(CONST.CONF_DEMAND_PERIOD, fields)
+        self.assertIn(CONST.CONF_DEMAND_RATE, fields)
 
 
 class TestTheBillingCycleDay(unittest.TestCase):

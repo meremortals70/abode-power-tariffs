@@ -455,6 +455,39 @@ class TestBinarySensorPlatform(PlatformCase):
         self.assertEqual(charge._attr_name, "Grid charge battery")
         self.assertIsNone(charge._attr_translation_key)
 
+    def test_the_demand_sensor_is_absent_when_no_rate_has_one(self) -> None:
+        """A plan with no demand charge gets no entity that is permanently off."""
+        keys = {entity._key for entity in self._added().entities}
+        self.assertNotIn("demand_period_active", keys)
+
+    def test_the_demand_sensor_appears_when_a_rate_has_one(self) -> None:
+        data = options()
+        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
+        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 18.4
+        self.coordinator = a_coordinator(data)
+        self.entry.runtime_data = self.coordinator
+        keys = {entity._key for entity in self._added().entities}
+        self.assertIn("demand_period_active", keys)
+
+    def test_the_demand_sensor_is_on_only_while_its_rate_is_in_force(self) -> None:
+        data = options()
+        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
+        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 18.4
+        self.coordinator = a_coordinator(data)
+        self.entry.runtime_data = self.coordinator
+        demand = self._added().by_key("demand_period_active")
+
+        # "Every day Off Peak" is in force at setup (COORD.dt_util.NOW default).
+        self.assertFalse(demand.is_on)
+        self.assertIsNone(demand.extra_state_attributes["demand_rate_per_kw_month"])
+
+        COORD.dt_util.NOW = datetime(2026, 8, 14, 17, 0, tzinfo=BRISBANE)
+        self.coordinator.async_refresh()
+        self.assertTrue(demand.is_on)
+        self.assertAlmostEqual(
+            demand.extra_state_attributes["demand_rate_per_kw_month"], 18.4
+        )
+
 
 class TestSetupAndUnload(PlatformCase):
     def setUp(self) -> None:

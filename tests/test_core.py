@@ -483,6 +483,26 @@ class TestDaylightSaving(unittest.TestCase):
         assert resolved is not None
         self.assertEqual(resolved.rate.name, "peak")
 
+    def test_the_second_pass_is_not_silently_taken_as_the_first(self) -> None:
+        """P25: the series must start at the instant asked for, not an hour before it.
+
+        The first cursor is built by combining a naive datetime with a
+        timedelta and only then attaching ``tzinfo``, which always resolves
+        ``fold=0`` — the first pass through the repeated hour. A call placed
+        in the second pass got a cursor an hour into the past, and the whole
+        series shifted with it. This is the same defect P9 fixed in
+        ``next_boundary``; ``instants_at`` was never wired into ``generate``.
+        """
+        start = datetime(2026, 4, 5, 2, 30, tzinfo=SYDNEY, fold=1)
+        series = self._series(start)
+        self.assertEqual(series[0].start.astimezone(UTC), start.astimezone(UTC))
+
+    def test_the_first_pass_is_unaffected_by_the_fix(self) -> None:
+        """The companion case: fold=0 at the same wall-clock time must still work."""
+        start = datetime(2026, 4, 5, 2, 30, tzinfo=SYDNEY, fold=0)
+        series = self._series(start)
+        self.assertEqual(series[0].start.astimezone(UTC), start.astimezone(UTC))
+
 
 class TestBoundaries(unittest.TestCase):
     def setUp(self) -> None:
@@ -618,6 +638,106 @@ class TestTheCapIsDeclaredEvenWhenNothingCountsIt(unittest.TestCase):
         self.assertIsNone(payload["allowance_kwh"])
         self.assertIsNone(payload["fallback_rate"])
         self.assertIsNone(payload["fallback_per_kwh"])
+
+
+class TestTheIntervalCarriesTheDemandCharge(unittest.TestCase):
+    """P27: the real cost of a demand-priced rate is declared, not hidden.
+
+    The demand rate belongs to whichever rate it is attached to, not the
+    plan, so two different rates can carry two different demand rates — or
+    none at all.
+    """
+
+    def _plan(self) -> Plan:
+        return Plan(
+            "P",
+            (
+                Rate(
+                    "Peak",
+                    0.5688,
+                    demand_period=True,
+                    demand_rate_per_kw_month=18.40,
+                ),
+                Rate("Off Peak", 0.198),
+            ),
+            (
+                DayPattern(
+                    "D",
+                    ALL_DAYS,
+                    (Period(0, 960, "Off Peak"), Period(960, 1440, "Peak")),
+                ),
+            ),
+        )
+
+    def test_a_demand_priced_interval_declares_it(self) -> None:
+        plan = self._plan()
+        self.assertTrue(is_valid(plan), [str(p) for p in validate_plan(plan)])
+        start = datetime(2026, 8, 14, 17, 0, tzinfo=BRISBANE)
+        payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
+            0
+        ].as_dict()
+        self.assertEqual(payload["rate"], "Peak")
+        self.assertTrue(payload["demand_period"])
+        self.assertAlmostEqual(payload["demand_rate_per_kw_month"], 18.40)
+
+    def test_a_rate_with_no_demand_charge_declares_none(self) -> None:
+        plan = self._plan()
+        start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
+        payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
+            0
+        ].as_dict()
+        self.assertEqual(payload["rate"], "Off Peak")
+        self.assertFalse(payload["demand_period"])
+        self.assertEqual(payload["demand_rate_per_kw_month"], 0.0)
+
+
+class TestTheIntervalCarriesTheExportAllowance(unittest.TestCase):
+    """P28: export gets the same declaration import already has.
+
+    The allowance and the price after it, published, never blended into
+    export_price. No counting exists for this yet — the same as import
+    always was before a rate could opt into counting.
+    """
+
+    def _plan(self) -> Plan:
+        return Plan(
+            "P",
+            (
+                Rate(
+                    "Included",
+                    0.30,
+                    rate_allowance_kwh=20.0,
+                    fallback_rate="Additional",
+                    export_allowance_kwh=10.0,
+                    export_fallback_price=0.02,
+                ),
+                Rate("Additional", 0.45),
+            ),
+            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "Included"),)),),
+        )
+
+    def test_the_export_allowance_and_price_after_are_declared(self) -> None:
+        plan = self._plan()
+        self.assertTrue(is_valid(plan), [str(p) for p in validate_plan(plan)])
+        start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
+        payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
+            0
+        ].as_dict()
+        self.assertEqual(payload["export_allowance_kwh"], 10.0)
+        self.assertAlmostEqual(payload["export_fallback_price"], 0.02)
+
+    def test_a_rate_with_no_export_allowance_declares_none(self) -> None:
+        plan = Plan(
+            "P",
+            (Rate("Peak", 0.5688),),
+            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "Peak"),)),),
+        )
+        start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
+        payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
+            0
+        ].as_dict()
+        self.assertIsNone(payload["export_allowance_kwh"])
+        self.assertIsNone(payload["export_fallback_price"])
 
 
 class TestTheMidnightWarning(unittest.TestCase):
@@ -1180,7 +1300,10 @@ class TestExportSide(unittest.TestCase):
         self.assertFalse(is_valid(broken))
 
     def test_demand_rate_round_trips(self) -> None:
-        plan = Plan("P", (Rate("a", 0.1),), demand_rate_per_kw_month=12.5)
+        """P27: the demand rate belongs to the rate, not the plan."""
+        plan = Plan(
+            "P", (Rate("a", 0.1, demand_period=True, demand_rate_per_kw_month=12.5),)
+        )
         rebuilt = Plan.from_dict(
             {
                 **plan.as_dict(),
@@ -1188,7 +1311,42 @@ class TestExportSide(unittest.TestCase):
                 "day_patterns": [],
             }
         )
-        self.assertAlmostEqual(rebuilt.demand_rate_per_kw_month, 12.5)
+        self.assertAlmostEqual(rebuilt.rates[0].demand_rate_per_kw_month, 12.5)
+        self.assertTrue(rebuilt.rates[0].demand_period)
+
+    def test_an_old_plan_wide_demand_rate_is_not_read(self) -> None:
+        """No migration, pre-release: the old key is silently ignored on load."""
+        rebuilt = Plan.from_dict(
+            {
+                "name": "P",
+                "rates": [Rate("a", 0.1).as_dict()],
+                "day_patterns": [],
+                "demand_rate_per_kw_month": 12.5,
+            }
+        )
+        self.assertEqual(rebuilt.rates[0].demand_rate_per_kw_month, 0.0)
+
+    def test_export_fallback_price_round_trips(self) -> None:
+        plan = Plan("P", (Rate("a", 0.1, export_fallback_price=0.02),))
+        rebuilt = Plan.from_dict(
+            {
+                **plan.as_dict(),
+                "rates": [rate.as_dict() for rate in plan.rates],
+                "day_patterns": [],
+            }
+        )
+        self.assertAlmostEqual(rebuilt.rates[0].export_fallback_price, 0.02)
+
+    def test_no_export_fallback_price_round_trips_as_none(self) -> None:
+        plan = Plan("P", (Rate("a", 0.1),))
+        rebuilt = Plan.from_dict(
+            {
+                **plan.as_dict(),
+                "rates": [rate.as_dict() for rate in plan.rates],
+                "day_patterns": [],
+            }
+        )
+        self.assertIsNone(rebuilt.rates[0].export_fallback_price)
 
 
 class TestPlanText(unittest.TestCase):

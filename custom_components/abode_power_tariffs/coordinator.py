@@ -399,7 +399,19 @@ class TariffCoordinator:
         aligned = (
             (now.hour * 60 + now.minute) // resolution_minutes
         ) * resolution_minutes
-        key = (today, aligned, hours, resolution_minutes, self.is_holiday(today))
+        # ``today``/``aligned`` are wall clock, and a wall-clock minute names
+        # two real instants an hour apart on the morning the clocks go back.
+        # ``now.fold`` tells them apart the same way ``instants_at`` does, so
+        # the second pass forces a rebuild instead of being served the first
+        # pass's series.
+        key = (
+            today,
+            aligned,
+            hours,
+            resolution_minutes,
+            self.is_holiday(today),
+            now.fold,
+        )
         if key != self._forward_key:
             self._forward_series = intervals_module.generate(
                 self.plan,

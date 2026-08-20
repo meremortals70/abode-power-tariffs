@@ -6,11 +6,15 @@
         "description": "A plan is the set of prices for one meter or one circuit. A controlled load or off-peak hot water circuit on a separate price is added later as its own plan.",
         "data": {
           "plan_name": "Plan name",
-          "plan_description": "Description"
+          "plan_description": "Description",
+          "single_rate_plan": "This plan has no timetable",
+          "has_export": "You export power to the grid"
         },
         "data_description": {
           "plan_name": "Your retailer's plan name is a good choice. Shown on the device and used as the prefix on every entity.",
-          "plan_description": "Optional, your own words. Anything worth remembering about this plan."
+          "plan_description": "Optional, your own words. Anything worth remembering about this plan.",
+          "single_rate_plan": "An amount for the first part of your usage, then a different price for the rest of the billing period, rather than prices that change at particular times of day.",
+          "has_export": "Turns on the feed-in screens. Left off, nothing about export is asked."
         }
       },
       "charges": {
@@ -20,27 +24,49 @@
           "daily_supply_charge_cents": "Daily supply charge (c/day)",
           "prices_include_gst": "Prices include tax",
           "gst_percent": "Tax rate (%)",
-          "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
           "monthly_charge": "Monthly charge",
           "billing_cycle_day": "Billing cycle starts on day of month (0 for none)"
         },
         "data_description": {
           "daily_supply_charge_cents": "The fixed charge per day. Zero if you do not have one.",
           "prices_include_gst": "Australian bills quote prices with GST included. Most European and US rate sheets quote them without.",
-          "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. Mark which time periods it is measured in by ticking 'This is a demand charge period' on the relevant rate under Configure. The monthly amount is not calculated here.",
           "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
           "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
         },
         "error": {}
       },
+      "single_rate": {
+        "title": "Prices",
+        "description": "{plan} has no timetable. An amount for the first part of your usage, then a price for the rest of the billing period.\n\nDeclared as a fact for now — nothing is counted against the allowance yet.",
+        "data": {
+          "import_cents": "Price for the first part (c/kWh)",
+          "rate_allowance_kwh": "Allowance before the price changes (kWh)",
+          "after_allowance_cents": "Price after the allowance (c/kWh)",
+          "export_flat_cents": "Export price (c/kWh)",
+          "export_allowance_kwh": "Export allowance before the price changes (kWh)",
+          "export_fallback_cents": "Export price after the allowance (c/kWh)"
+        },
+        "data_description": {
+          "import_cents": "What you pay per kilowatt hour, up to the allowance.",
+          "rate_allowance_kwh": "Zero for none. The allowance for the whole billing period, not reset daily.",
+          "after_allowance_cents": "What you pay per kilowatt hour once the allowance is spent.",
+          "export_flat_cents": "What you are paid per kilowatt hour exported, up to the export allowance.",
+          "export_allowance_kwh": "Zero for none.",
+          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent."
+        }
+      },
       "rates": {
         "title": "Rates",
-        "description": "The prices that apply on {pattern}. Each one is stored as '{pattern}' followed by the name you type.\n\nAllowances, fallback rates and demand periods are set afterwards in Configure.\n\nEntered so far: {so_far}",
+        "description": "The prices that apply on {pattern}. Each one is stored as '{pattern}' followed by the name you type.\n\nEntered so far: {so_far}",
         "data": {
           "name": "Rate name",
           "import_cents": "You pay (c/kWh)",
           "information_constraints": "Information only rules",
           "enforceable_constraints": "Enforceable rules",
+          "demand_period": "This is a demand charge period",
+          "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
+          "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
+          "fallback_rate": "Rate once the allowance is used up",
           "on_submit": "When I submit",
           "count_allowance": "Count usage against this allowance",
           "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
@@ -50,6 +76,10 @@
           "import_cents": "Cents per kilowatt hour, as the bill quotes it.",
           "information_constraints": "Useful facts about this rate that other systems can look at. Pick from the list, or type your own and press enter. Each one becomes a switch-like sensor your automations can trigger on.",
           "enforceable_constraints": "Rules you are declaring to be part of what this rate means, so another system should treat them as a rule rather than a hint. This integration still enforces nothing — it only says so, and the consuming system decides what to do. A rule belongs in one list or the other, not both.",
+          "demand_period": "A marker only. The monthly demand charge is not calculated here.",
+          "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here.",
+          "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
+          "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
           "on_submit": "Choose 'Continue to the time periods' when this timetable's rates are all in. Every rate you have entered is kept.",
           "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
           "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
@@ -142,6 +172,7 @@
       "period_overlaps": "That overlaps a time period already entered.",
       "rule_in_both_lists": "A rule cannot be information only and enforceable at once. Choose one list.",
       "energy_sensor_required": "Choose the energy sensor to count, or untick counting.",
+      "demand_rate_required": "Enter a demand rate, or untick the demand period box.",
       "billing_day_out_of_range": "A billing cycle starts on the same day every month, so it has to be a day every month has. Enter 1 to 28."
     },
     "abort": {
@@ -199,6 +230,7 @@
           "demand_period": "This is a demand charge period",
           "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
           "export_allowance_kwh": "Daily export allowance (kWh)",
+          "export_fallback_cents": "Export price once the export allowance is used up (c/kWh)",
           "fallback_rate": "Rate once the allowance is used up",
           "count_allowance": "Count usage against this allowance",
           "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
@@ -210,6 +242,7 @@
           "coasting_permitted": "Tells other systems that letting a room drift is acceptable during this rate.",
           "demand_period": "A marker only. The monthly demand charge is not calculated here.",
           "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
+          "export_fallback_cents": "Only used when there is an export allowance: what export is paid once it is spent. Declared only — nothing is counted against it yet.",
           "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
           "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
           "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
@@ -415,6 +448,7 @@
       "meter_not_created": "The Utility Meter helper could not be created. The reason is in the log.",
       "rule_in_both_lists": "A rule cannot be information only and enforceable at once. Choose one list.",
       "energy_sensor_required": "Choose the energy sensor to count, or untick counting.",
+      "demand_rate_required": "Enter a demand rate, or untick the demand period box.",
       "billing_day_out_of_range": "A billing cycle starts on the same day every month, so it has to be a day every month has. Enter 1 to 28."
     }
   },
@@ -484,6 +518,11 @@
       },
       "supply_charge_energy": {
         "name": "Supply charge energy"
+      }
+    },
+    "binary_sensor": {
+      "demand_period_active": {
+        "name": "Demand period active"
       }
     }
   },

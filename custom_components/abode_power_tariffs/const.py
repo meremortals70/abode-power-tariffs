@@ -78,8 +78,18 @@ CONF_COASTING_PERMITTED: Final = "coasting_permitted"
 CONF_RATE_ALLOWANCE_KWH: Final = "rate_allowance_kwh"
 CONF_EXPORT_ALLOWANCE_KWH: Final = "export_allowance_kwh"
 CONF_FALLBACK_RATE: Final = "fallback_rate"
+# The export-side equivalent of fallback_rate. Export has no second named rate
+# to point at the way import does, so this is a bare price rather than a
+# lookup: the export price once the export allowance is spent. Declared, like
+# everything else about an allowance, not applied to export_price_at().
+CONF_EXPORT_FALLBACK_CENTS: Final = "export_fallback_cents"
 CONF_DEMAND_PERIOD: Final = "demand_period"
 CONF_COMPONENTS: Final = "price_components"
+
+# Front-page setup shortcuts. Both are asked once, before any rate.
+CONF_SINGLE_RATE: Final = "single_rate_plan"
+CONF_HAS_EXPORT: Final = "has_export"
+CONF_AFTER_ALLOWANCE_CENTS: Final = "after_allowance_cents"
 
 # Day set keys
 CONF_DAYS: Final = "days"

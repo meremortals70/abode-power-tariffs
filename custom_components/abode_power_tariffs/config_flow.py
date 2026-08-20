@@ -31,6 +31,7 @@ from homeassistant.util import slugify
 
 from .const import (
     ALL_DAY_TOKENS,
+    CONF_AFTER_ALLOWANCE_CENTS,
     CONF_BILLING_CYCLE_DAY,
     CONF_COASTING_PERMITTED,
     CONF_CONSTRAINTS,
@@ -43,12 +44,14 @@ from .const import (
     CONF_ENFORCEABLE_CONSTRAINTS,
     CONF_EXPORT_ALLOWANCE_KWH,
     CONF_EXPORT_CENTS,
+    CONF_EXPORT_FALLBACK_CENTS,
     CONF_EXPORT_FLAT_CENTS,
     CONF_EXPORT_PERIODS,
     CONF_EXPORT_RATES,
     CONF_EXPORT_SAME_ALL_DAY,
     CONF_FALLBACK_RATE,
     CONF_GST_PERCENT,
+    CONF_HAS_EXPORT,
     CONF_HOLIDAY_SENSOR,
     CONF_IMPORT_CENTS,
     CONF_IMPORT_ENERGY_SENSOR,
@@ -65,6 +68,7 @@ from .const import (
     CONF_RATES,
     CONF_SEASON_FROM,
     CONF_SEASON_TO,
+    CONF_SINGLE_RATE,
     CONF_SOURCE_ENERGY_SENSOR,
     CONF_START,
     CONF_SUPPLY_CHARGE_CENTS,
@@ -144,8 +148,10 @@ def _rate_record(user_input: dict[str, Any]) -> dict[str, Any]:
         CONF_ENFORCEABLE_CONSTRAINTS: enforceable,
         CONF_COASTING_PERMITTED: bool(user_input.get(CONF_COASTING_PERMITTED, True)),
         CONF_DEMAND_PERIOD: bool(user_input.get(CONF_DEMAND_PERIOD, False)),
+        CONF_DEMAND_RATE: user_input.get(CONF_DEMAND_RATE) or 0.0,
         CONF_RATE_ALLOWANCE_KWH: user_input.get(CONF_RATE_ALLOWANCE_KWH) or None,
         CONF_EXPORT_ALLOWANCE_KWH: user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None,
+        CONF_EXPORT_FALLBACK_CENTS: user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None,
         CONF_FALLBACK_RATE: user_input.get(CONF_FALLBACK_RATE) or None,
     }
 
@@ -196,6 +202,19 @@ def _counting_without_meter(user_input: dict[str, Any]) -> bool:
     return not user_input.get(CONF_IMPORT_ENERGY_SENSOR)
 
 
+def _demand_without_rate(user_input: dict[str, Any]) -> bool:
+    """Return whether a demand period was declared with no rate attached.
+
+    The same shape as counting without a meter: nothing about the demand rate
+    is required until the demand period box is ticked, and ticking it is a
+    choice this component cannot honour without a number to publish, so at
+    that point the rate becomes required.
+    """
+    if not user_input.get(CONF_DEMAND_PERIOD):
+        return False
+    return not user_input.get(CONF_DEMAND_RATE)
+
+
 def _rules_in_both_lists(user_input: dict[str, Any]) -> set[str]:
     """Return rules put in both lists, which is a contradiction to resolve."""
     return set(_rules_from(user_input, CONF_INFORMATION_CONSTRAINTS)) & set(
@@ -239,6 +258,8 @@ SETUP_RATE_FIELDS: Final = (
     CONF_IMPORT_CENTS,
     CONF_INFORMATION_CONSTRAINTS,
     CONF_ENFORCEABLE_CONSTRAINTS,
+    CONF_DEMAND_PERIOD,
+    CONF_DEMAND_RATE,
     CONF_RATE_ALLOWANCE_KWH,
     CONF_FALLBACK_RATE,
     CONF_COUNT_ALLOWANCE,
@@ -339,6 +360,16 @@ def _rate_schema(
         )
     ] = selector.BooleanSelector()
     schema[
+        vol.Optional(
+            CONF_DEMAND_RATE,
+            default=float(existing.get(CONF_DEMAND_RATE) or 0.0),
+        )
+    ] = selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=0, max=1000, step="any", mode=selector.NumberSelectorMode.BOX
+        )
+    )
+    schema[
         vol.Required(
             CONF_RATE_ALLOWANCE_KWH,
             default=float(existing.get(CONF_RATE_ALLOWANCE_KWH) or 0.0),
@@ -356,6 +387,16 @@ def _rate_schema(
     ] = selector.NumberSelector(
         selector.NumberSelectorConfig(
             min=0, max=1000, step=0.1, mode=selector.NumberSelectorMode.BOX
+        )
+    )
+    schema[
+        vol.Optional(
+            CONF_EXPORT_FALLBACK_CENTS,
+            default=float(existing.get(CONF_EXPORT_FALLBACK_CENTS) or 0.0),
+        )
+    ] = selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
         )
     )
     if fallback_options:
@@ -455,10 +496,11 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._include_gst: bool = True
         self._gst_percent: float = DEFAULT_GST_PERCENT
         self._billing_cycle_day: int | None = None
+        self._single_rate: bool = False
+        self._has_export: bool = False
         # Plan-level, collected on the rate screen beside the cap they belong to.
         self._count_allowance: bool = False
         self._energy_sensor: str | None = None
-        self._demand_rate: float = 0.0
         self._monthly_charge: float = 0.0
         self._patterns: list[dict[str, Any]] = []
         self._export_same_all_day: bool = True
@@ -523,7 +565,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Name the plan."""
+        """Name the plan, and choose its shape before anything else."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -537,6 +579,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._description = str(
                     user_input.get(CONF_PLAN_DESCRIPTION) or ""
                 ).strip()
+                self._single_rate = bool(user_input.get(CONF_SINGLE_RATE))
+                self._has_export = bool(user_input.get(CONF_HAS_EXPORT))
                 return await self.async_step_charges()
 
         return self.async_show_form(
@@ -551,6 +595,15 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     ): selector.TextSelector(
                         selector.TextSelectorConfig(multiline=True)
                     ),
+                    # No clock involved: one rate for the first N kWh, then
+                    # another for the rest of the billing period, rather than
+                    # rates that apply at particular times of day.
+                    vol.Required(
+                        CONF_SINGLE_RATE, default=False
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_HAS_EXPORT, default=False
+                    ): selector.BooleanSelector(),
                 }
             ),
             errors=errors,
@@ -570,7 +623,6 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
             self._include_gst = bool(user_input[CONF_PRICES_INCLUDE_GST])
             self._gst_percent = float(user_input[CONF_GST_PERCENT])
             self._monthly_charge = float(user_input[CONF_MONTHLY_CHARGE])
-            self._demand_rate = float(user_input[CONF_DEMAND_RATE])
             day = int(user_input.get(CONF_BILLING_CYCLE_DAY) or 0)
             if day > MAX_BILLING_CYCLE_DAY:
                 # A cycle starts on the same day every month, so the day has to
@@ -578,6 +630,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_BILLING_CYCLE_DAY] = "billing_day_out_of_range"
             else:
                 self._billing_cycle_day = day or None
+                if self._single_rate:
+                    return await self.async_step_single_rate()
                 return await self.async_step_days()
 
         return self.async_show_form(
@@ -627,19 +681,112 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                             mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
-                    vol.Required(
-                        CONF_DEMAND_RATE, default=0.0
-                    ): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=0,
-                            max=1000,
-                            step="any",
-                            mode=selector.NumberSelectorMode.BOX,
-                        )
-                    ),
                 }
             ),
             errors=errors,
+            description_placeholders={"plan": self._name},
+        )
+
+    # ------------------------------------------------------- 2a single rate
+
+    @guarded_setup
+    async def async_step_single_rate(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """No clock: an amount for the first N kWh, then a price for the rest.
+
+        Declared the same way any capped rate declares its allowance and
+        fallback — nothing here counts usage yet. Built as an ordinary
+        all-day rate underneath, so it reads and resolves exactly like any
+        other plan; the shortcut is only in how it was entered.
+        """
+        if user_input is not None:
+            included: dict[str, Any] = {
+                CONF_NAME: "Included",
+                CONF_TIMETABLE: EVERY_DAY,
+                CONF_IMPORT_CENTS: user_input[CONF_IMPORT_CENTS],
+                CONF_RATE_ALLOWANCE_KWH: user_input.get(CONF_RATE_ALLOWANCE_KWH)
+                or None,
+                CONF_FALLBACK_RATE: "Additional",
+            }
+            additional: dict[str, Any] = {
+                CONF_NAME: "Additional",
+                CONF_TIMETABLE: EVERY_DAY,
+                CONF_IMPORT_CENTS: user_input[CONF_AFTER_ALLOWANCE_CENTS],
+            }
+            export_flat = 0.0
+            if self._has_export:
+                export_flat = float(user_input.get(CONF_EXPORT_FLAT_CENTS) or 0.0)
+                included[CONF_EXPORT_ALLOWANCE_KWH] = (
+                    user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
+                )
+                included[CONF_EXPORT_FALLBACK_CENTS] = (
+                    user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
+                )
+            self._rates = [included, additional]
+            self._patterns = [
+                {
+                    CONF_NAME: EVERY_DAY,
+                    CONF_DAYS: list(ALL_DAY_TOKENS),
+                    CONF_PERIODS: [
+                        {
+                            CONF_START: "00:00",
+                            CONF_END: "24:00",
+                            CONF_RATE: "Included",
+                        }
+                    ],
+                    CONF_EXPORT_PERIODS: [],
+                    CONF_EXPORT_SAME_ALL_DAY: True,
+                    CONF_EXPORT_FLAT_CENTS: export_flat,
+                }
+            ]
+            return await self.async_step_finish()
+
+        schema: dict[Any, Any] = {
+            vol.Required(CONF_IMPORT_CENTS, default=0.0): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+            vol.Required(CONF_RATE_ALLOWANCE_KWH, default=0.0): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=1000, step=0.1, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+            vol.Required(
+                CONF_AFTER_ALLOWANCE_CENTS, default=0.0
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                )
+            ),
+        }
+        if self._has_export:
+            schema[vol.Required(CONF_EXPORT_FLAT_CENTS, default=0.0)] = (
+                selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                    )
+                )
+            )
+            schema[vol.Required(CONF_EXPORT_ALLOWANCE_KWH, default=0.0)] = (
+                selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=1000, step=0.1, mode=selector.NumberSelectorMode.BOX
+                    )
+                )
+            )
+            schema[vol.Required(CONF_EXPORT_FALLBACK_CENTS, default=0.0)] = (
+                selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=1000, step=0.01, mode=selector.NumberSelectorMode.BOX
+                    )
+                )
+            )
+
+        return self.async_show_form(
+            step_id="single_rate",
+            data_schema=vol.Schema(schema),
             description_placeholders={"plan": self._name},
         )
 
@@ -675,6 +822,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_ENFORCEABLE_CONSTRAINTS] = "rule_in_both_lists"
             elif _counting_without_meter(user_input):
                 errors[CONF_IMPORT_ENERGY_SENSOR] = "energy_sensor_required"
+            elif _demand_without_rate(user_input):
+                errors[CONF_DEMAND_RATE] = "demand_rate_required"
             else:
                 # Plan-level, not the rate's: one grid meter, one answer.
                 self._count_allowance = bool(user_input.get(CONF_COUNT_ALLOWANCE))
@@ -1042,7 +1191,6 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_RATES: self._rates,
                 CONF_DAY_PATTERNS: self._patterns,
                 CONF_EXPORT_RATES: self._export_rates,
-                CONF_DEMAND_RATE: self._demand_rate,
                 CONF_MONTHLY_CHARGE: self._monthly_charge,
                 CONF_SUPPLY_CHARGE_CENTS: self._supply_charge,
                 CONF_PRICES_INCLUDE_GST: self._include_gst,
@@ -1308,6 +1456,8 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 errors[CONF_ENFORCEABLE_CONSTRAINTS] = "rule_in_both_lists"
             elif _counting_without_meter(user_input):
                 errors[CONF_IMPORT_ENERGY_SENSOR] = "energy_sensor_required"
+            elif _demand_without_rate(user_input):
+                errors[CONF_DEMAND_RATE] = "demand_rate_required"
             else:
                 self.working[CONF_COUNT_ALLOWANCE] = bool(
                     user_input.get(CONF_COUNT_ALLOWANCE)
@@ -1825,7 +1975,6 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             self.working[CONF_HOLIDAY_SENSOR] = (
                 user_input.get(CONF_HOLIDAY_SENSOR) or None
             )
-            self.working[CONF_DEMAND_RATE] = user_input[CONF_DEMAND_RATE]
             self.working[CONF_MONTHLY_CHARGE] = user_input[CONF_MONTHLY_CHARGE]
             day = int(user_input.get(CONF_BILLING_CYCLE_DAY) or 0)
             self.working[CONF_BILLING_CYCLE_DAY] = day or None
@@ -1889,17 +2038,6 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                         },
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="binary_sensor")
-                    ),
-                    vol.Required(
-                        CONF_DEMAND_RATE,
-                        default=float(options.get(CONF_DEMAND_RATE) or 0.0),
-                    ): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=0,
-                            max=1000,
-                            step="any",
-                            mode=selector.NumberSelectorMode.BOX,
-                        )
                     ),
                     vol.Required(
                         CONF_MONTHLY_CHARGE,

@@ -1,4 +1,4 @@
-"""One binary sensor per declared constraint.
+"""One binary sensor per declared constraint, and one for demand pricing.
 
 These are what battery, hot water and EV automations trigger on, instead of a
 clock comparison that has to be edited whenever the plan moves.
@@ -27,10 +27,16 @@ async def async_setup_entry(
 ) -> None:
     """Set up one binary sensor for each constraint declared in the plan."""
     coordinator = entry.runtime_data
-    async_add_entities(
+    entities: list[BinarySensorEntity] = [
         ConstraintBinarySensor(coordinator, constraint)
         for constraint in coordinator.plan.constraints
-    )
+    ]
+    # Only when a rate actually carries a demand charge. A plan with none
+    # would get an entity that is permanently off, which is clutter rather
+    # than information.
+    if any(rate.demand_period for rate in coordinator.plan.rates):
+        entities.append(DemandPeriodBinarySensor(coordinator))
+    async_add_entities(entities)
 
 
 class ConstraintBinarySensor(TariffEntity, BinarySensorEntity):
@@ -80,3 +86,30 @@ def _slug(value: str) -> str:
     return "".join(
         character if character.isalnum() else "_" for character in value.lower()
     )
+
+
+class DemandPeriodBinarySensor(TariffEntity, BinarySensorEntity):
+    """On while the rate in force carries a demand charge.
+
+    A declaration, the same as the interval's own demand_period field — what
+    an automation actually hooks into, rather than reading the interval and
+    reimplementing 'is this the rate in force right now' itself.
+    """
+
+    def __init__(self, coordinator: TariffCoordinator) -> None:
+        """Initialise the demand period sensor."""
+        super().__init__(coordinator, "demand_period_active")
+
+    @property
+    def is_on(self) -> bool:
+        """Return whether the rate in force right now carries a demand charge."""
+        rate = self.coordinator.state.effective_rate
+        return rate is not None and rate.demand_period
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the demand rate the current period carries, if any."""
+        rate = self.coordinator.state.effective_rate
+        if rate is None or not rate.demand_period:
+            return {"demand_rate_per_kw_month": None}
+        return {"demand_rate_per_kw_month": rate.demand_rate_per_kw_month}
