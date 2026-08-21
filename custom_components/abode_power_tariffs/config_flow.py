@@ -99,7 +99,18 @@ from .const import (
     UTILITY_METER_DOMAIN,
     WEEKDAY_TOKENS,
 )
-from .plan import Plan, PlanError, format_time, parse_time, slug
+from .plan import (
+    DayPattern,
+    ExportRate,
+    Period,
+    Plan,
+    PlanError,
+    Rate,
+    format_time,
+    merged,
+    parse_time,
+    slug,
+)
 from .strip import render_day_pattern, render_plan, render_rate_plan_card
 from .validate import plan_warnings, validate_plan
 
@@ -138,30 +149,43 @@ def _covered_minutes(periods: list[dict[str, Any]]) -> int:
 
 
 def _rate_record(user_input: dict[str, Any]) -> dict[str, Any]:
-    """Build a stored rate from a submitted form.
+    """Return the rate fields this form asked about, and only those.
+
+    A screen writes what it asked. What it did not ask about is not its to
+    decide: it belongs to the record already stored, and `plan.merged` carries
+    it through. Writing a key the form never showed is how editing a rate's
+    price came to blank the fields beside it.
 
     The form asks for the two rule lists separately so nothing has to be typed
     twice. What is stored is the union plus the enforceable subset, so anything
     reading the flat list sees exactly what it always saw.
     """
-    informational = _rules_from(user_input, CONF_INFORMATION_CONSTRAINTS)
-    enforceable = _rules_from(user_input, CONF_ENFORCEABLE_CONSTRAINTS)
-    union = [
-        *informational,
-        *(rule for rule in enforceable if rule not in informational),
-    ]
-    return {
+    record: dict[str, Any] = {
         CONF_NAME: str(user_input.get(CONF_NAME) or "").strip(),
-        CONF_TIMETABLE: _timetable_from(user_input),
         CONF_IMPORT_CENTS: user_input[CONF_IMPORT_CENTS],
-        CONF_EXPORT_CENTS: user_input.get(CONF_EXPORT_CENTS, 0.0),
-        CONF_CONSTRAINTS: union,
-        CONF_ENFORCEABLE_CONSTRAINTS: enforceable,
-        CONF_DEMAND_PERIOD: bool(user_input.get(CONF_DEMAND_PERIOD, False)),
-        CONF_DEMAND_RATE: user_input.get(CONF_DEMAND_RATE) or 0.0,
-        CONF_RATE_ALLOWANCE_KWH: user_input.get(CONF_RATE_ALLOWANCE_KWH) or None,
-        CONF_FALLBACK_RATE: user_input.get(CONF_FALLBACK_RATE) or None,
     }
+    # Setup does not show the timetable: it is entering one timetable at a
+    # time and sets the field itself, afterwards.
+    if CONF_TIMETABLE in user_input:
+        record[CONF_TIMETABLE] = _timetable_from(user_input)
+    if {CONF_INFORMATION_CONSTRAINTS, CONF_ENFORCEABLE_CONSTRAINTS} & set(user_input):
+        informational = _rules_from(user_input, CONF_INFORMATION_CONSTRAINTS)
+        enforceable = _rules_from(user_input, CONF_ENFORCEABLE_CONSTRAINTS)
+        record[CONF_CONSTRAINTS] = sorted({*informational, *enforceable})
+        record[CONF_ENFORCEABLE_CONSTRAINTS] = sorted(enforceable)
+    if CONF_DEMAND_PERIOD in user_input:
+        record[CONF_DEMAND_PERIOD] = bool(user_input.get(CONF_DEMAND_PERIOD, False))
+        record[CONF_DEMAND_RATE] = user_input.get(CONF_DEMAND_RATE) or 0.0
+    if CONF_RATE_ALLOWANCE_KWH in user_input:
+        allowance = user_input.get(CONF_RATE_ALLOWANCE_KWH) or None
+        record[CONF_RATE_ALLOWANCE_KWH] = allowance
+        # A fallback only means something with a cap to fall past it. The
+        # select always carries a value, so storing it either way would put a
+        # rate the user never chose onto every uncapped rate.
+        record[CONF_FALLBACK_RATE] = (
+            user_input.get(CONF_FALLBACK_RATE) or None if allowance else None
+        )
+    return record
 
 
 UNSCOPED_TIMETABLE: Final = "(not set - older plan)"
@@ -596,16 +620,20 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
     def _store_pattern(self) -> None:
         """Put the timetable just entered into the plan and start clean."""
         self._patterns.append(
-            {
-                CONF_NAME: self._pattern_name,
-                CONF_DAYS: self._pattern_days,
-                CONF_PERIODS: self._periods,
-                CONF_EXPORT_PERIODS: self._export_periods,
-                CONF_EXPORT_SAME_ALL_DAY: self._export_same_all_day,
-                CONF_EXPORT_FLAT_CENTS: self._export_flat,
-                CONF_EXPORT_ALLOWANCE_KWH: self._export_allowance,
-                CONF_EXPORT_FALLBACK_CENTS: self._export_fallback,
-            }
+            merged(
+                DayPattern,
+                None,
+                {
+                    CONF_NAME: self._pattern_name,
+                    CONF_DAYS: self._pattern_days,
+                    CONF_PERIODS: self._periods,
+                    CONF_EXPORT_PERIODS: self._export_periods,
+                    CONF_EXPORT_SAME_ALL_DAY: self._export_same_all_day,
+                    CONF_EXPORT_FLAT_CENTS: self._export_flat,
+                    CONF_EXPORT_ALLOWANCE_KWH: self._export_allowance,
+                    CONF_EXPORT_FALLBACK_CENTS: self._export_fallback,
+                },
+            )
         )
         self._pattern_name = ""
         self._pattern_days = []
@@ -781,24 +809,35 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 # declaration lives on the timetable that carries it.
                 export_allowance = user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
                 export_fallback = user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
-            self._rates = [included, additional]
+            self._rates = [
+                merged(Rate, None, included),
+                merged(Rate, None, additional),
+            ]
             self._patterns = [
-                {
-                    CONF_NAME: EVERY_DAY,
-                    CONF_DAYS: list(ALL_DAY_TOKENS),
-                    CONF_PERIODS: [
-                        {
-                            CONF_START: "00:00",
-                            CONF_END: "24:00",
-                            CONF_RATE: "Included",
-                        }
-                    ],
-                    CONF_EXPORT_PERIODS: [],
-                    CONF_EXPORT_SAME_ALL_DAY: True,
-                    CONF_EXPORT_FLAT_CENTS: export_flat,
-                    CONF_EXPORT_ALLOWANCE_KWH: export_allowance,
-                    CONF_EXPORT_FALLBACK_CENTS: export_fallback,
-                }
+                merged(
+                    DayPattern,
+                    None,
+                    {
+                        CONF_NAME: EVERY_DAY,
+                        CONF_DAYS: list(ALL_DAY_TOKENS),
+                        CONF_PERIODS: [
+                            merged(
+                                Period,
+                                None,
+                                {
+                                    CONF_START: "00:00",
+                                    CONF_END: "24:00",
+                                    CONF_RATE: "Included",
+                                },
+                            )
+                        ],
+                        CONF_EXPORT_PERIODS: [],
+                        CONF_EXPORT_SAME_ALL_DAY: True,
+                        CONF_EXPORT_FLAT_CENTS: export_flat,
+                        CONF_EXPORT_ALLOWANCE_KWH: export_allowance,
+                        CONF_EXPORT_FALLBACK_CENTS: export_fallback,
+                    },
+                )
             ]
             return await self.async_step_finish()
 
@@ -897,7 +936,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 # Plan-level, not the rate's: one grid meter, one answer.
                 self._count_allowance = bool(user_input.get(CONF_COUNT_ALLOWANCE))
                 self._energy_sensor = user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
-                self._rates.append(record)
+                self._rates.append(merged(Rate, None, record))
                 if action == SUBMIT_CONTINUE:
                     return await self.async_step_periods()
                 return await self.async_step_rates()
@@ -1011,11 +1050,15 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     errors["base"] = "period_overlaps"
                 else:
                     self._periods.append(
-                        {
-                            CONF_START: format_time(start),
-                            CONF_END: format_time(end),
-                            CONF_RATE: str(user_input[CONF_RATE]),
-                        }
+                        merged(
+                            Period,
+                            None,
+                            {
+                                CONF_START: format_time(start),
+                                CONF_END: format_time(end),
+                                CONF_RATE: str(user_input[CONF_RATE]),
+                            },
+                        )
                     )
                     if (
                         action == SUBMIT_CONTINUE
@@ -1088,18 +1131,22 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_NAME] = "rate_exists"
             else:
                 self._export_rates.append(
-                    {
-                        CONF_NAME: full,
-                        CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS],
-                        # The cap on this feed-in price and what is paid past
-                        # it, declared beside the price they belong to.
-                        CONF_EXPORT_ALLOWANCE_KWH: (
-                            user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
-                        ),
-                        CONF_EXPORT_FALLBACK_CENTS: (
-                            user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
-                        ),
-                    }
+                    merged(
+                        ExportRate,
+                        None,
+                        {
+                            CONF_NAME: full,
+                            CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS],
+                            # The cap on this feed-in price and what is paid
+                            # past it, declared beside the price they belong to.
+                            CONF_EXPORT_ALLOWANCE_KWH: (
+                                user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
+                            ),
+                            CONF_EXPORT_FALLBACK_CENTS: (
+                                user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
+                            ),
+                        },
+                    )
                 )
                 if action == SUBMIT_CONTINUE:
                     return await self.async_step_export_periods()
@@ -1185,11 +1232,15 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     errors["base"] = "period_overlaps"
                 else:
                     self._export_periods.append(
-                        {
-                            CONF_START: format_time(start),
-                            CONF_END: format_time(end),
-                            CONF_RATE: str(user_input[CONF_RATE]),
-                        }
+                        merged(
+                            Period,
+                            None,
+                            {
+                                CONF_START: format_time(start),
+                                CONF_END: format_time(end),
+                                CONF_RATE: str(user_input[CONF_RATE]),
+                            },
+                        )
                     )
                     if (
                         action == SUBMIT_CONTINUE
@@ -1642,10 +1693,12 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
                 )
                 if index is None:
-                    self._rates().append(record)
+                    self._rates().append(merged(Rate, None, record))
                 else:
                     previous = str(self._rates()[index].get(CONF_NAME, ""))
-                    self._rates()[index] = record
+                    # Onto the rate already stored. The screen writes the
+                    # fields it asked about; everything else stays as it is.
+                    self._rates()[index] = merged(Rate, existing, record)
                     if previous and previous != name:
                         self._rename_rate(previous, name, record.get(CONF_TIMETABLE))
                 self._rate_index = None
@@ -1819,7 +1872,11 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             elif not days:
                 errors[CONF_DAYS] = "days_required"
             else:
-                record = {
+                all_day = bool(user_input[CONF_EXPORT_SAME_ALL_DAY])
+                # The fields this screen asked about, and no others. The time
+                # periods are not among them: they belong to the record and
+                # are carried by it, not hand-copied across by this screen.
+                fields = {
                     CONF_NAME: name,
                     CONF_DAYS: days,
                     CONF_SEASON_FROM: str(
@@ -1828,11 +1885,22 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     or None,
                     CONF_SEASON_TO: str(user_input.get(CONF_SEASON_TO) or "").strip()
                     or None,
-                    CONF_PERIODS: existing.get(CONF_PERIODS, []),
-                    CONF_EXPORT_PERIODS: existing.get(CONF_EXPORT_PERIODS, []),
-                    CONF_EXPORT_SAME_ALL_DAY: user_input[CONF_EXPORT_SAME_ALL_DAY],
+                    CONF_EXPORT_SAME_ALL_DAY: all_day,
                     CONF_EXPORT_FLAT_CENTS: user_input[CONF_EXPORT_FLAT_CENTS],
+                    # Declared against the all-day price and only meaningful
+                    # with it, exactly as the setup feed-in screen has it.
+                    CONF_EXPORT_ALLOWANCE_KWH: (
+                        user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
+                        if all_day
+                        else None
+                    ),
+                    CONF_EXPORT_FALLBACK_CENTS: (
+                        user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
+                        if all_day
+                        else None
+                    ),
                 }
+                record = merged(DayPattern, existing or None, fields)
                 if index is None:
                     self._day_patterns().append(record)
                 else:
@@ -1879,6 +1947,32 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     vol.Required(
                         CONF_EXPORT_FLAT_CENTS,
                         default=float(existing.get(CONF_EXPORT_FLAT_CENTS) or 0.0),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=1000,
+                            step=0.01,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    # The all-day feed-in price, its cap, and what is paid past
+                    # the cap are one declaration. Setup asks for all three, so
+                    # Configure has to as well: otherwise a plan can say
+                    # something at setup that can never be corrected.
+                    vol.Required(
+                        CONF_EXPORT_ALLOWANCE_KWH,
+                        default=float(existing.get(CONF_EXPORT_ALLOWANCE_KWH) or 0.0),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=1000,
+                            step=0.1,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_EXPORT_FALLBACK_CENTS,
+                        default=float(existing.get(CONF_EXPORT_FALLBACK_CENTS) or 0.0),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
                             min=0,
@@ -2097,17 +2191,21 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     errors[CONF_END] = "end_before_start"
                 else:
                     chosen = str(user_input[CONF_RATE])
-                    record = {
-                        CONF_START: format_time(start),
-                        CONF_END: format_time(end),
-                        # The import screen shows identifiers; a period
-                        # stores the name, which is what it is resolved by.
-                        CONF_RATE: (
-                            chosen
-                            if self._editing_export
-                            else self._rate_name_by_id(chosen)
-                        ),
-                    }
+                    record = merged(
+                        Period,
+                        existing or None,
+                        {
+                            CONF_START: format_time(start),
+                            CONF_END: format_time(end),
+                            # The import screen shows identifiers; a period
+                            # stores the name, which is what it is resolved by.
+                            CONF_RATE: (
+                                chosen
+                                if self._editing_export
+                                else self._rate_name_by_id(chosen)
+                            ),
+                        },
+                    )
                     if index is None:
                         self._periods().append(record)
                     else:
@@ -2356,16 +2454,20 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             elif clash:
                 errors[CONF_NAME] = "rate_exists"
             else:
-                record = {
-                    CONF_NAME: name,
-                    CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS],
-                    CONF_EXPORT_ALLOWANCE_KWH: (
-                        user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
-                    ),
-                    CONF_EXPORT_FALLBACK_CENTS: (
-                        user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
-                    ),
-                }
+                record = merged(
+                    ExportRate,
+                    existing or None,
+                    {
+                        CONF_NAME: name,
+                        CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS],
+                        CONF_EXPORT_ALLOWANCE_KWH: (
+                            user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
+                        ),
+                        CONF_EXPORT_FALLBACK_CENTS: (
+                            user_input.get(CONF_EXPORT_FALLBACK_CENTS) or None
+                        ),
+                    },
+                )
                 if index is None:
                     self._export_rates().append(record)
                 else:

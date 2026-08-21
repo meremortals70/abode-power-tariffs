@@ -1056,8 +1056,11 @@ class TestRuleLists(unittest.TestCase):
             enforceable_constraints=["no_grid_import"],
         )
         rate = self._last_rate(driver)
+        # Stored sorted. A rate's rules are a set; the order they were typed in
+        # is not a fact about the plan, and a stable order is what keeps an
+        # unrelated edit from showing up as a change to the rules.
         self.assertEqual(
-            rate[CONST.CONF_CONSTRAINTS], ["precool_opportunity", "no_grid_import"]
+            rate[CONST.CONF_CONSTRAINTS], ["no_grid_import", "precool_opportunity"]
         )
         self.assertEqual(rate[CONST.CONF_ENFORCEABLE_CONSTRAINTS], ["no_grid_import"])
 
@@ -1242,7 +1245,7 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
             }
         )
         self.assertEqual(
-            record[CONST.CONF_CONSTRAINTS], ["precool_opportunity", "no_grid_import"]
+            record[CONST.CONF_CONSTRAINTS], ["no_grid_import", "precool_opportunity"]
         )
         self.assertEqual(record[CONST.CONF_ENFORCEABLE_CONSTRAINTS], ["no_grid_import"])
 
