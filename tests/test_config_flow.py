@@ -58,6 +58,20 @@ def _load() -> types.ModuleType:
 
 PKG = _load()
 FLOW = PKG.config_flow
+
+
+def _fields_of(schema: Any) -> list[tuple[str, str | None]]:
+    """Return (field, section) for every box on a form."""
+    fields: list[tuple[str, str | None]] = []
+    for key, value in schema.schema.items():
+        name = str(getattr(key, "schema", key))
+        if isinstance(value, _ha_stubs.Section):
+            fields.extend((inner, name) for inner, _ in _fields_of(value.schema))
+            continue
+        fields.append((name, None))
+    return fields
+
+
 CONST = PKG.const
 Plan = PKG.plan.Plan
 validate_plan = PKG.validate.validate_plan
@@ -590,6 +604,7 @@ class TestEveryStepIsReachable(unittest.TestCase):
             "export_periods",
             "timetable_done",
             "setup_failure",
+            "setup_invalid",
         }
         defined = {
             name.removeprefix("async_step_")
@@ -597,6 +612,101 @@ class TestEveryStepIsReachable(unittest.TestCase):
             if name.startswith("async_step_")
         }
         self.assertEqual(defined - {"finish"}, expected)
+
+
+class TestSetupChecksThePlanBeforeCreatingIt(unittest.TestCase):
+    """D8. Setup built the entry from whatever had been entered.
+
+    Configure refuses to save a plan that does not validate; setup refused
+    nothing, so a plan that Configure would not let you save could be created
+    by walking the setup flow.
+    """
+
+    def _capped_rate_with_no_fallback(self) -> FlowDriver:
+        # A single rate on its timetable is never offered a fallback select,
+        # so declaring an allowance on it produces a plan validate_plan
+        # rejects. Reachable from setup with no unusual input.
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Capped")
+        driver.submit()
+        driver.submit(name="Every day", same_every_day=True)
+        driver.submit(
+            name="Peak",
+            import_cents=30.0,
+            rate_allowance_kwh=10.0,
+            on_submit=CONST.SUBMIT_ADD,
+        )
+        driver.submit(on_submit=CONST.SUBMIT_CONTINUE)
+        driver.submit(
+            start="00:00", end="00:00", rate="Peak", on_submit=CONST.SUBMIT_ADD
+        )
+        driver.submit(on_submit=CONST.SUBMIT_CONTINUE)
+        driver.submit(export_same_all_day=True, export_flat_cents=0.0)
+        assert driver.step == "timetable_done", driver.step
+        return driver
+
+    def test_an_invalid_plan_is_not_created(self) -> None:
+        driver = self._capped_rate_with_no_fallback()
+        result = driver.choose("finish")
+        self.assertNotEqual(result.get("type"), CREATE)
+        self.assertEqual(result["step_id"], "setup_invalid")
+
+    def test_the_screen_says_what_is_wrong(self) -> None:
+        driver = self._capped_rate_with_no_fallback()
+        result = driver.choose("finish")
+        problems = result["description_placeholders"]["problems"]
+        self.assertIn("fallback", problems)
+
+    def test_submitting_it_returns_to_the_rate_screen(self) -> None:
+        driver = self._capped_rate_with_no_fallback()
+        driver.choose("finish")
+        driver.submit()
+        self.assertEqual(driver.step, "rates")
+
+    def test_a_valid_plan_is_still_created(self) -> None:
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Fine")
+        driver.submit()
+        a_timetable(
+            driver,
+            name="Every day",
+            rates=[("Peak", 30.0)],
+            periods=[("00:00", "00:00", "Peak")],
+            flat_export=0.0,
+        )
+        result = driver.choose("finish")
+        self.assertEqual(result["type"], CREATE)
+        plan = Plan.from_dict({**result["options"], "name": result["title"]})
+        self.assertEqual(validate_plan(plan), [])
+
+
+class TestBothRateFormsAskTheSameFilteredQuestion(unittest.TestCase):
+    """D3. Configure passed no fields= filter, so it rendered the whole schema.
+
+    The single schema definition exists so the two forms cannot drift. One of
+    them choosing every field by omission is that drift.
+    """
+
+    def test_configure_names_the_fields_it_shows(self) -> None:
+        self.assertEqual(
+            set(FLOW.OPTIONS_RATE_FIELDS),
+            set(FLOW.SETUP_RATE_FIELDS) | {CONST.CONF_TIMETABLE},
+        )
+
+    def test_neither_form_shows_a_field_the_other_definition_does_not_name(
+        self,
+    ) -> None:
+        for fields in (FLOW.SETUP_RATE_FIELDS, FLOW.OPTIONS_RATE_FIELDS):
+            schema = FLOW._rate_schema(
+                {},
+                ["Off Peak"],
+                fields=fields,
+                timetables=["Every day"],
+            )
+            shown = {field for field, _ in _fields_of(schema)}
+            self.assertLessEqual(shown, set(fields))
 
 
 if __name__ == "__main__":

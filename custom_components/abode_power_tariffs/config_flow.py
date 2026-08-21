@@ -298,6 +298,12 @@ SETUP_RATE_FIELDS: Final = (
     CONF_IMPORT_ENERGY_SENSOR,
 )
 
+# What the Configure form offers: the same fields, plus the timetable the rate
+# belongs to, which setup cannot ask about because it is building one. Stated
+# rather than left to whatever the schema happens to hold — the whole point of
+# the single definition is that the two forms differ only in what they ask.
+OPTIONS_RATE_FIELDS: Final = (*SETUP_RATE_FIELDS, CONF_TIMETABLE)
+
 
 def _field_name(key: Any) -> str:
     """Return the plain key behind a voluptuous marker."""
@@ -589,6 +595,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._pattern_days: list[str] = list(ALL_DAY_TOKENS)
         self._periods: list[dict[str, Any]] = []
         self._failure: str = ""
+        self._problems_text: str = ""
 
     async def async_step_setup_failure(
         self, user_input: dict[str, Any] | None = None
@@ -1381,27 +1388,64 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_finish(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Create the entry."""
+        """Check the plan, then create the entry."""
+        problems = self._problems()
+        if problems:
+            self._problems_text = "\n".join(f"  {problem}" for problem in problems)
+            return await self.async_step_setup_invalid()
         return self._create()
+
+    @guarded_setup
+    async def async_step_setup_invalid(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Say what is wrong, then go back to the rate screen to fix it.
+
+        Configure refuses to save an invalid plan; setup refused nothing and
+        created the entry from whatever had been entered. It now runs the same
+        check. There is no back mechanism in a config flow, so rather than
+        trapping the user on a dead end the screen hands them to the rate
+        screen of the timetable they were on, which is where the commonest
+        cause lives — a cap declared with no fallback rate beside it.
+        """
+        if user_input is not None:
+            return await self.async_step_rates()
+        return self.async_show_form(
+            step_id="setup_invalid",
+            data_schema=vol.Schema({}),
+            description_placeholders={"problems": self._problems_text or "None."},
+        )
+
+    def _problems(self) -> list[str]:
+        """Return what validation says is wrong with what has been entered."""
+        try:
+            plan = Plan.from_dict({**self._options(), CONF_NAME: self._name})
+        except PlanError as error:
+            return [str(error)]
+        return [str(problem) for problem in validate_plan(plan)]
+
+    def _options(self) -> dict[str, Any]:
+        """The options the entry is created with. One definition, used twice."""
+        return {
+            CONF_PLAN_DESCRIPTION: self._description,
+            CONF_RATES: self._rates,
+            CONF_DAY_PATTERNS: self._patterns,
+            CONF_EXPORT_RATES: self._export_rates,
+            CONF_MONTHLY_CHARGE: self._monthly_charge,
+            CONF_SUPPLY_CHARGE_CENTS: self._supply_charge,
+            CONF_PRICES_INCLUDE_GST: self._include_gst,
+            CONF_GST_PERCENT: self._gst_percent,
+            CONF_BILLING_CYCLE_DAY: self._billing_cycle_day,
+            CONF_COUNT_ALLOWANCE: self._count_allowance,
+            CONF_IMPORT_ENERGY_SENSOR: self._energy_sensor,
+        }
 
     def _create(self) -> ConfigFlowResult:
         """Create the entry from exactly what was entered."""
         return self.async_create_entry(
             title=self._name,
             data={CONF_PLAN_NAME: self._name},
-            options={
-                CONF_PLAN_DESCRIPTION: self._description,
-                CONF_RATES: self._rates,
-                CONF_DAY_PATTERNS: self._patterns,
-                CONF_EXPORT_RATES: self._export_rates,
-                CONF_MONTHLY_CHARGE: self._monthly_charge,
-                CONF_SUPPLY_CHARGE_CENTS: self._supply_charge,
-                CONF_PRICES_INCLUDE_GST: self._include_gst,
-                CONF_GST_PERCENT: self._gst_percent,
-                CONF_BILLING_CYCLE_DAY: self._billing_cycle_day,
-                CONF_COUNT_ALLOWANCE: self._count_allowance,
-                CONF_IMPORT_ENERGY_SENSOR: self._energy_sensor,
-            },
+            options=self._options(),
         )
 
     @staticmethod
@@ -1718,6 +1762,7 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 _rate_schema(
                     existing,
                     fallback_options,
+                    fields=OPTIONS_RATE_FIELDS,
                     known_constraints=self._known_constraints(),
                     timetables=self._day_pattern_names(),
                     count_allowance=bool(self.working.get(CONF_COUNT_ALLOWANCE)),

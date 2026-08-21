@@ -84,10 +84,11 @@ rules:
   test-coverage:
     status: todo
     comment: >
-      270 tests, 91% line and branch coverage measured with coverage.py against
-      thin Home Assistant stubs. Six modules are at 100%; the lowest are
-      config_flow.py and coordinator.py. The rule asks for 95% per module under
-      pytest-homeassistant-custom-component, which is listed in
+      365 tests, 92% line and branch coverage measured with coverage.py against
+      thin Home Assistant stubs, and run on every push by
+      .github/workflows/ci.yml. Four modules are at 100%; the lowest are
+      coordinator.py at 89% and config_flow.py at 90%. The rule asks for 95%
+      per module under pytest-homeassistant-custom-component, which is in
       requirements_test.txt but is not what these run against, so this is
       recorded as measured rather than claimed. Core submission will need the
       suite rewritten against the real harness.

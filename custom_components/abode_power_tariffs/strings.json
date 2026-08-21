@@ -172,6 +172,10 @@
         "title": "Setup failed",
         "description": "The detail below is the whole error - select it and copy it.\n\n```\n{detail}\n```\n\nSubmit to close."
       },
+      "setup_invalid": {
+        "title": "The plan is not ready to save",
+        "description": "Setup will not create a plan that does not add up. What is wrong:\n\n```\n{problems}\n```\n\nSubmit to go back to the rate screen for this timetable, where the commonest cause is fixed - a rate with an allowance needs a fallback rate for beyond it."
+      },
       "feed_in": {
         "title": "Feed-in",
         "description": "What you are paid for exporting, on {pattern}.\n\nIf it is the same all day, leave the switch on and enter the price. If it changes through the day, turn it off and you will enter feed-in rates and their times, exactly as you did for the import side.",
