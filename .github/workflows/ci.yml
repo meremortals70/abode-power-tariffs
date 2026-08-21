@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gates:
+    name: Lint, types, tests, coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.12 or later: __init__.py uses PEP 695 `type X = ...`, which
+          # 3.11 cannot parse. On 3.11 the suite silently collects a third of
+          # its tests and looks like a broken tree rather than a wrong
+          # interpreter.
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r requirements_test.txt
+
+      - name: ruff check
+        run: ruff check custom_components tests
+
+      - name: ruff format
+        # Home Assistant core runs ruff-format with no line-length override,
+        # so the tree stays at 88 characters and the eventual core submission
+        # is not one enormous reformat.
+        run: ruff format --check custom_components tests
+
+      - name: mypy
+        run: |
+          mypy --config-file mypy.ini \
+            custom_components/abode_power_tariffs/const.py \
+            custom_components/abode_power_tariffs/plan.py \
+            custom_components/abode_power_tariffs/validate.py \
+            custom_components/abode_power_tariffs/intervals.py \
+            custom_components/abode_power_tariffs/allowance.py \
+            custom_components/abode_power_tariffs/strip.py \
+            custom_components/abode_power_tariffs/serialise.py
+
+      - name: Tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+
+      - name: Coverage
+        run: |
+          python -m coverage run --rcfile=.coveragerc \
+            -m unittest discover -s tests -p "test_*.py"
+          python -m coverage report --fail-under=90
+
+  hassfest:
+    name: hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
