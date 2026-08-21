@@ -144,15 +144,11 @@
         "data": {
           "name": "Feed-in rate name",
           "export_cents": "You are paid (c/kWh)",
-          "on_submit": "When I submit",
-          "export_allowance_kwh": "Export allowance before the price changes (kWh)",
-          "export_fallback_cents": "Export price after the allowance (c/kWh)"
+          "on_submit": "When I submit"
         },
         "data_description": {
           "name": "Your own words - for example evening export, daytime export. '{pattern}' is put in front automatically.",
-          "on_submit": "Choose 'Continue to the feed-in time periods' when they are all in. Every feed-in rate you have entered is kept.",
-          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet.",
-          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent."
+          "on_submit": "Choose 'Continue to the feed-in time periods' when they are all in. Every feed-in rate you have entered is kept."
         }
       },
       "export_periods": {
@@ -177,15 +173,11 @@
         "description": "What you are paid for exporting, on {pattern}.\n\nIf it is the same all day, leave the switch on and enter the price. If it changes through the day, turn it off and you will enter feed-in rates and their times, exactly as you did for the import side.",
         "data": {
           "export_same_all_day": "One price all day",
-          "export_flat_cents": "You are paid (c/kWh)",
-          "export_allowance_kwh": "Export allowance before the price changes (kWh)",
-          "export_fallback_cents": "Export price after the allowance (c/kWh)"
+          "export_flat_cents": "You are paid (c/kWh)"
         },
         "data_description": {
           "export_same_all_day": "Turn off if the feed-in price changes through the day on this timetable.",
-          "export_flat_cents": "Used only when the switch is on. Zero if you do not export.",
-          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet.",
-          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent."
+          "export_flat_cents": "Used only when the switch is on. Zero if you do not export."
         }
       },
       "timetable_done": {
@@ -256,22 +248,24 @@
         "data": {
           "name": "Rate name",
           "timetable": "Timetable this rate belongs to",
-          "import_cents": "You pay (c/kWh)"
+          "import_cents": "You pay (c/kWh)",
+          "export_cents": "You are paid (c/kWh)",
+          "export_allowance_kwh": "Daily export allowance (kWh)",
+          "export_fallback_cents": "Export price once the export allowance is used up (c/kWh)"
         },
         "data_description": {
-          "timetable": "Rates are identified by their timetable and their name together, so a weekday Peak and a weekend Peak can both be called Peak at different prices. The rate is published as 'weekday.peak'. A rate from an older plan carries no timetable and keeps the name it already has."
+          "timetable": "Rates are identified by their timetable and their name together, so a weekday Peak and a weekend Peak can both be called Peak at different prices. The rate is published as 'weekday.peak'. A rate from an older plan carries no timetable and keeps the name it already has.",
+          "export_fallback_cents": "Only used when there is an export allowance: what export is paid once it is spent. Declared only — nothing is counted against it yet."
         },
         "sections": {
           "demand": {
             "name": "Demand charging",
             "description": "Whether a demand charge applies while this rate is in force, and what it is. Declared only — the monthly amount is not calculated here.",
             "data": {
-              "demand_period": "This is a demand charge period",
-              "demand_rate_per_kw_month": "Demand charge (per kW per month)"
+              "demand_period": "This is a demand charge period"
             },
             "data_description": {
-              "demand_period": "A marker only. The monthly demand charge is not calculated here.",
-              "demand_rate_per_kw_month": "Declared and published as entered. The monthly amount is not calculated here - that needs a measured peak, which is the consumer's arithmetic."
+              "demand_period": "A marker only. The monthly demand charge is not calculated here."
             }
           },
           "allowance": {
@@ -337,9 +331,7 @@
           "season_from": "Season starts (MM-DD)",
           "season_to": "Season ends (MM-DD)",
           "export_same_all_day": "Feed-in is one price all day",
-          "export_flat_cents": "Feed-in price (c/kWh)",
-          "export_allowance_kwh": "Export allowance before the price changes (kWh)",
-          "export_fallback_cents": "Export price after the allowance (c/kWh)"
+          "export_flat_cents": "Feed-in price (c/kWh)"
         },
         "data_description": {
           "same_every_day": "Leave this on unless weekends, weekdays or public holidays are priced differently.",
@@ -347,9 +339,7 @@
           "season_from": "Optional. Leave both empty for all year. A range may cross the new year, for example 11-01 to 03-31.",
           "season_to": "Optional. Leave both empty for all year.",
           "export_same_all_day": "Turn off if the feed-in price changes through the day on this timetable, then set the feed-in rates and their times under Feed-in.",
-          "export_flat_cents": "Used only while the switch above is on.",
-          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet. Used only while the switch above is on.",
-          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent. Used only while the switch above is on."
+          "export_flat_cents": "Used only while the switch above is on."
         }
       },
       "day_pattern_duplicate": {
@@ -484,13 +474,7 @@
         "description": "Entered in cents per kWh, as the bill quotes it.",
         "data": {
           "name": "Feed-in rate name",
-          "export_cents": "You are paid (c/kWh)",
-          "export_allowance_kwh": "Export allowance before the price changes (kWh)",
-          "export_fallback_cents": "Export price after the allowance (c/kWh)"
-        },
-        "data_description": {
-          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet.",
-          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent."
+          "export_cents": "You are paid (c/kWh)"
         }
       },
       "export_rate_remove": {

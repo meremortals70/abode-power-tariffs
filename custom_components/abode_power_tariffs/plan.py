@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any, TypeVar
+from typing import Any
 
 from .const import (
     ALL_DAY_TOKENS,
@@ -727,38 +727,3 @@ def _optional_date(value: Any) -> date | None:
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value))
-
-
-StoredRecord = TypeVar("StoredRecord", Rate, ExportRate, Period, DayPattern)
-
-
-def merged(
-    model: type[StoredRecord],
-    existing: dict[str, Any] | None,
-    changes: dict[str, Any],
-) -> dict[str, Any]:
-    """Return one stored record after a screen has written the fields it owns.
-
-    The single place that knows what a stored object is made of is the model
-    above. A screen that assembles its own dictionary holds a second copy of
-    that knowledge, and the second copy is the one that goes stale: a field
-    added here is picked up by storage for free and then has to be remembered,
-    by hand, in every screen that writes the object. It was not remembered, and
-    an edit to a timetable's name deleted the export allowance declared beside
-    it.
-
-    So a screen passes only the fields it asked the user about. Anything else
-    comes from the record already stored, and the shape comes from the model:
-
-    - nothing can be dropped, because every key the model reads is written;
-    - nothing can be invented, because keys the model does not read are not;
-    - nothing untouched is rewritten, because a value present in ``existing``
-      is passed through exactly as stored rather than round-tripped.
-
-    ``existing`` is None when the object is being created. A field absent at
-    creation means not declared, which is true, and the model's own default
-    is what fills it.
-    """
-    combined = {**(existing or {}), **changes}
-    canonical = model.from_dict(combined).as_dict()
-    return {key: combined.get(key, value) for key, value in canonical.items()}
