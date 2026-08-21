@@ -1,0 +1,3 @@
+[run]
+source = custom_components/abode_power_tariffs
+branch = True
