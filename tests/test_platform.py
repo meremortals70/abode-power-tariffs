@@ -185,7 +185,14 @@ class PlatformCase(unittest.TestCase):
 
 
 class TestSensorPlatform(PlatformCase):
-    def test_the_five_always_present_sensors(self) -> None:
+    def test_the_sensors_always_present(self) -> None:
+        """Five as before, plus the two accrual sensors rule 11 reinstated.
+
+        The base fixture declares a daily supply charge, and rule 11 was
+        revoked: a declared charge accumulates rather than sitting as a bare
+        statement of itself, so the two accrual sensors are present whenever
+        one is.
+        """
         added = self.sensors()
         keys = {entity._key for entity in added.entities}
         self.assertEqual(
@@ -196,6 +203,8 @@ class TestSensorPlatform(PlatformCase):
                 "rate",
                 "next_rate_change",
                 "daily_supply_charge",
+                "supply_charge_today",
+                "supply_charge_energy",
             },
         )
 
@@ -293,107 +302,485 @@ class TestSensorPlatform(PlatformCase):
         data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         return data
 
-    def test_a_cap_alone_does_not_start_counting(self) -> None:
-        """Declaring the cap and counting against it are separate things."""
+    def test_a_declared_cap_is_counted(self) -> None:
+        """Rule 7, inverted.
+
+        This test used to assert the opposite: that declaring a cap and
+        counting against it were separate things and counting was opt-in.
+        The rule was revoked, so the fact being asserted is now the other
+        way round and is still worth holding. There is no tickbox — a plan
+        that declares a cap and nominates a meter has it counted, because
+        declaring a cap and refusing to count it means publishing a price
+        that may already be wrong.
+        """
         data = self._capped(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
         added = self.sensors(data)
-        self.assertFalse(self.coordinator.counting_allowance)
-        self.assertNotIn(
-            "allowance_remaining", {entity._key for entity in added.entities}
+        self.assertTrue(self.coordinator.counting_allowance)
+        self.assertIn(
+            "allowance_remaining_kwh", {entity._key for entity in added.entities}
         )
 
-    def test_with_counting_off_the_price_is_the_scheduled_one(self) -> None:
-        """Never the fallback, because nothing here knows the cap is spent."""
+    def test_the_old_counting_tickbox_is_read_and_ignored(self) -> None:
+        """A stored plan carries it. Rule 13 forbids migrating it away.
+
+        An allowance that was declared but not counted starts being counted,
+        which is the intended change. The stored key is read and ignored
+        rather than renamed or removed.
+        """
+        off = self._capped(
+            **{
+                CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid",
+                "count_allowance": False,
+            }
+        )
+        self.sensors(off)
+        self.assertTrue(self.coordinator.counting_allowance)
+
+    def test_without_a_meter_the_price_is_the_scheduled_one(self) -> None:
+        """Never the fallback, because nothing here knows the cap is spent.
+
+        Rule 6 makes the meter required the moment a cap is declared, so this
+        is a plan stored before that or one whose meter has been removed.
+        """
         data = self._capped()
         sensor = self.sensors(data).by_key("import_price")
         self.assertAlmostEqual(sensor.native_value, 0.198)
         self.assertFalse(sensor.extra_state_attributes["allowance_counted"])
         self.assertFalse(sensor.extra_state_attributes["allowance_exhausted"])
 
-    def test_with_counting_on_the_price_says_so(self) -> None:
-        data = self._capped(
-            **{
-                CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid",
-                CONST.CONF_COUNT_ALLOWANCE: True,
-            }
-        )
+    def test_with_a_meter_the_price_says_it_is_counted(self) -> None:
+        data = self._capped(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
         sensor = self.sensors(data).by_key("import_price")
         self.assertTrue(sensor.extra_state_attributes["allowance_counted"])
 
-    def test_counting_needs_a_meter_as_well_as_the_switch(self) -> None:
-        data = self._capped(**{CONST.CONF_COUNT_ALLOWANCE: True})
+    def test_counting_needs_a_meter(self) -> None:
+        """The one thing that cannot be defaulted. Rule 6's own test."""
+        data = self._capped()
         self.sensors(data)
         self.assertFalse(self.coordinator.counting_allowance)
 
     def test_no_allowance_sensor_without_an_energy_entity(self) -> None:
         keys = {entity._key for entity in self.sensors().entities}
-        self.assertNotIn("allowance_remaining", keys)
+        self.assertNotIn("allowance_remaining_kwh", keys)
+        self.assertNotIn("allowance_used_kwh", keys)
 
     def test_the_allowance_sensor_appears_when_configured(self) -> None:
-        data = options(
-            **{
-                CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid",
-                CONST.CONF_COUNT_ALLOWANCE: True,
-            }
-        )
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
         data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
         data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
-        sensor = self.sensors(data).by_key("allowance_remaining")
+        sensor = self.sensors(data).by_key("allowance_remaining_kwh")
         self.assertAlmostEqual(sensor.native_value, 24.0)
         self.assertTrue(sensor.available)
 
-    def test_the_allowance_is_restored_across_a_restart(self) -> None:
-        data = options(
-            **{
-                CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid",
-                CONST.CONF_COUNT_ALLOWANCE: True,
-            }
-        )
+    def test_remaining_is_none_if_the_rate_is_unqualified(self) -> None:
+        """The rate-is-None branch: the rate has been edited away from under it."""
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
         data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
         data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
-        sensor = self.sensors(data).by_key("allowance_remaining")
-        sensor.hass = self.coordinator.hass
+        sensor = self.sensors(data).by_key("allowance_remaining_kwh")
+        sensor._qualified_name = "no.such.rate"
+        self.assertIsNone(sensor.native_value)
+
+    def test_the_allowance_is_restored_across_a_restart(self) -> None:
+        """The used sensor is what restores now; remaining is derived from it."""
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        added = self.sensors(data)
+        used = added.by_key("allowance_used_kwh")
+        used.hass = self.coordinator.hass
         module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
-        module.RestoreSensor.RESTORED = types.SimpleNamespace(native_value=9.0)
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(native_value=15.0)
         # Recorded in the slot the component has come back into.
+        ledger = self.coordinator.ledger_for(used._qualified_name)
         module.RestoreSensor.RESTORED_STATE = types.SimpleNamespace(
-            attributes={
-                CONST.ATTR_ALLOWANCE_SLOT: self.coordinator.state.allowance_slot
-            }
+            attributes={CONST.ATTR_ALLOWANCE_SLOT: ledger.allowance_key}
         )
-        run(sensor.async_added_to_hass())
-        self.assertAlmostEqual(self.coordinator.state.allowance_used_kwh, 15.0)
+        run(used.async_added_to_hass())
+        self.assertAlmostEqual(ledger.allowance_used_kwh, 15.0)
+        remaining = added.by_key("allowance_remaining_kwh")
+        self.assertAlmostEqual(remaining.native_value, 9.0)
         module.RestoreSensor.RESTORED = None
         module.RestoreSensor.RESTORED_STATE = None
 
     def test_a_count_from_another_slot_is_not_restored(self) -> None:
         """The allowance is the slot's. A figure from another one says nothing."""
-        data = options(
-            **{
-                CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid",
-                CONST.CONF_COUNT_ALLOWANCE: True,
-            }
-        )
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
         data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
         data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
-        sensor = self.sensors(data).by_key("allowance_remaining")
-        sensor.hass = self.coordinator.hass
+        added = self.sensors(data)
+        used = added.by_key("allowance_used_kwh")
+        used.hass = self.coordinator.hass
         module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
         module.RestoreSensor.RESTORED = types.SimpleNamespace(native_value=9.0)
         module.RestoreSensor.RESTORED_STATE = types.SimpleNamespace(
             attributes={CONST.ATTR_ALLOWANCE_SLOT: "some.other@0-60/2001-01-01"}
         )
-        run(sensor.async_added_to_hass())
-        self.assertEqual(self.coordinator.state.allowance_used_kwh, 0.0)
+        run(used.async_added_to_hass())
+        ledger = self.coordinator.ledger_for(used._qualified_name)
+        self.assertEqual(ledger.allowance_used_kwh, 0.0)
         module.RestoreSensor.RESTORED = None
         module.RestoreSensor.RESTORED_STATE = None
 
-    def test_the_supply_charge_is_declared_and_never_accumulated(self) -> None:
-        """The charge is a statement of what it is. A total is the consumer's."""
+    def test_the_supply_charge_accumulates(self) -> None:
+        """Rule 11, inverted.
+
+        This test used to assert the opposite: that the charge was a bare
+        declaration and a total was the consumer's own arithmetic. The rule
+        was revoked, so the fact worth holding is now that the two accrual
+        sensors are present, and it is these that are asserted rather than
+        the assertion being deleted.
+        """
         keys = {entity._key for entity in self.sensors().entities}
         self.assertIn("daily_supply_charge", keys)
-        self.assertNotIn("supply_charge_today", keys)
-        self.assertNotIn("supply_charge_energy", keys)
+        self.assertIn("supply_charge_today", keys)
+        self.assertIn("supply_charge_energy", keys)
+
+    def test_the_used_sensor_reads_zero_before_any_energy_is_recorded(self) -> None:
+        """The fixture refreshes on construction, so a ledger exists at zero."""
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        added = self.sensors(data)
+        used = added.by_key("allowance_used_kwh")
+        self.assertEqual(used.native_value, 0.0)
+
+    def test_the_used_sensor_is_none_if_the_rate_is_unqualified(self) -> None:
+        """The ledger-is-None branch: no such rate, so no ledger to read."""
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        added = self.sensors(data)
+        used = added.by_key("allowance_used_kwh")
+        used._qualified_name = "no.such.rate"
+        self.assertIsNone(used.native_value)
+
+    def test_the_used_sensor_reads_the_ledger_once_one_exists(self) -> None:
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        added = self.sensors(data)
+        used = added.by_key("allowance_used_kwh")
+        self.coordinator.async_refresh()
+        ledger = self.coordinator.ledger_for(used._qualified_name)
+        ledger.allowance_used_kwh = 7.5
+        self.assertAlmostEqual(used.native_value, 7.5)
+
+    def test_the_used_sensors_attributes_name_the_declaration(self) -> None:
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        data[CONST.CONF_RATES][0][CONST.CONF_ALLOWANCE_PERIOD] = "month"
+        added = self.sensors(data)
+        used = added.by_key("allowance_used_kwh")
+        self.coordinator.async_refresh()
+        attrs = used.extra_state_attributes
+        self.assertEqual(attrs["allowance_period"], "month")
+        self.assertAlmostEqual(attrs["allowance_kwh"], 24.0)
+        self.assertIn(CONST.ATTR_ESTIMATE, attrs)
+        self.assertEqual(attrs[CONST.ATTR_QUALIFIED_RATE], used._qualified_name)
+
+    def test_the_used_sensor_ignores_a_restore_with_no_stored_value(self) -> None:
+        """`_restored_value` returns None when there is nothing to read."""
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        added = self.sensors(data)
+        used = added.by_key("allowance_used_kwh")
+        used.hass = self.coordinator.hass
+        self.coordinator.async_refresh()
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = None
+        module.RestoreSensor.RESTORED_STATE = None
+        run(used.async_added_to_hass())
+        ledger = self.coordinator.ledger_for(used._qualified_name)
+        self.assertEqual(ledger.allowance_used_kwh, 0.0)
+
+    def test_the_used_sensor_ignores_a_restored_value_that_is_not_a_number(
+        self,
+    ) -> None:
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        added = self.sensors(data)
+        used = added.by_key("allowance_used_kwh")
+        used.hass = self.coordinator.hass
+        self.coordinator.async_refresh()
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(
+            native_value="not-a-number"
+        )
+        module.RestoreSensor.RESTORED_STATE = None
+        run(used.async_added_to_hass())
+        ledger = self.coordinator.ledger_for(used._qualified_name)
+        self.assertEqual(ledger.allowance_used_kwh, 0.0)
+        module.RestoreSensor.RESTORED = None
+
+    def test_the_used_sensor_ignores_a_restore_with_no_matching_rate(self) -> None:
+        """The ledger-is-None branch: the rate no longer exists to restore onto."""
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        added = self.sensors(data)
+        used = added.by_key("allowance_used_kwh")
+        used.hass = self.coordinator.hass
+        used._qualified_name = "no.such.rate"
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(native_value=9.0)
+        module.RestoreSensor.RESTORED_STATE = None
+        # Nothing to assert on a ledger that cannot exist; this exercises the
+        # early return and confirms it does not raise.
+        run(used.async_added_to_hass())
+        module.RestoreSensor.RESTORED = None
+
+
+class TestDemandSensors(PlatformCase):
+    def _demand_data(self) -> dict[str, Any]:
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
+        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 20.0
+        return data
+
+    def test_the_demand_sensors_appear_only_for_a_rate_that_declares_one(self) -> None:
+        added = self.sensors(self._demand_data())
+        keys = {entity._key for entity in added.entities}
+        self.assertIn("demand_now_kw", keys)
+        self.assertIn("demand_peak_kw", keys)
+        self.assertIn("demand_peak_at", keys)
+        self.assertIn("demand_cost_to_date", keys)
+        self.assertIn("demand_cost_projected", keys)
+
+    def test_no_demand_sensors_when_nothing_declares_a_demand_charge(self) -> None:
+        keys = {entity._key for entity in self.sensors().entities}
+        self.assertNotIn("demand_peak_kw", keys)
+
+    def test_the_peak_sensor_reads_the_ledger(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_kw")
+        ledger = self.coordinator.ledger_for(sensor._qualified_name)
+        ledger.peak_kw = 5.0
+        self.assertAlmostEqual(sensor.native_value, 5.0)
+
+    def test_the_projected_cost_uses_the_whole_cycle(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_cost_projected")
+        ledger = self.coordinator.ledger_for(sensor._qualified_name)
+        ledger.peak_kw = 5.0
+        self.coordinator.state.days_in_cycle = 31
+        # 5 kW at $20/kW/day over 31 days.
+        self.assertAlmostEqual(sensor.native_value, 5.0 * 20.0 * 31, places=2)
+
+    def test_the_cost_sensors_are_none_before_anything_accumulates(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_cost_to_date")
+        self.coordinator.state.ledgers.clear()
+        self.assertIsNone(sensor.native_value)
+
+    def test_the_peak_at_sensor_reports_when_it_was_set(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_at")
+        self.assertIsNone(sensor.native_value)
+        ledger = self.coordinator.ledger_for(sensor._qualified_name)
+        moment = datetime(2026, 5, 20, 17, 30, tzinfo=BRISBANE)
+        ledger.peak_at = moment
+        self.assertEqual(sensor.native_value, moment)
+
+    def test_an_unqualified_rate_makes_the_entity_unavailable(self) -> None:
+        """If the rate is edited away from under it, the entity says so."""
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_kw")
+        sensor._qualified_name = "no.such.rate"
+        self.assertFalse(sensor.available)
+
+    def test_the_peak_restores_when_it_belongs_to_the_current_cycle(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_kw")
+        sensor.hass = self.coordinator.hass
+        self.coordinator.async_refresh()
+        cycle = self.coordinator.state.cycle_start.isoformat()
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(native_value=5.0)
+        module.RestoreSensor.RESTORED_STATE = types.SimpleNamespace(
+            attributes={CONST.ATTR_CYCLE_START: cycle}
+        )
+        run(sensor.async_added_to_hass())
+        ledger = self.coordinator.ledger_for(sensor._qualified_name)
+        self.assertAlmostEqual(ledger.peak_kw, 5.0)
+        module.RestoreSensor.RESTORED = None
+        module.RestoreSensor.RESTORED_STATE = None
+
+    def test_a_peak_from_a_different_cycle_is_discarded(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_kw")
+        sensor.hass = self.coordinator.hass
+        self.coordinator.async_refresh()
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(native_value=5.0)
+        module.RestoreSensor.RESTORED_STATE = types.SimpleNamespace(
+            attributes={CONST.ATTR_CYCLE_START: "2001-01-01"}
+        )
+        run(sensor.async_added_to_hass())
+        ledger = self.coordinator.ledger_for(sensor._qualified_name)
+        self.assertEqual(ledger.peak_kw, 0.0)
+        module.RestoreSensor.RESTORED = None
+        module.RestoreSensor.RESTORED_STATE = None
+
+    def test_a_peak_restore_with_nothing_stored_does_nothing(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_kw")
+        sensor.hass = self.coordinator.hass
+        self.coordinator.async_refresh()
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = None
+        module.RestoreSensor.RESTORED_STATE = None
+        run(sensor.async_added_to_hass())
+        ledger = self.coordinator.ledger_for(sensor._qualified_name)
+        self.assertEqual(ledger.peak_kw, 0.0)
+
+    def test_a_non_numeric_restored_peak_is_ignored(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_kw")
+        sensor.hass = self.coordinator.hass
+        self.coordinator.async_refresh()
+        cycle = self.coordinator.state.cycle_start.isoformat()
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(native_value="oops")
+        module.RestoreSensor.RESTORED_STATE = types.SimpleNamespace(
+            attributes={CONST.ATTR_CYCLE_START: cycle}
+        )
+        run(sensor.async_added_to_hass())
+        ledger = self.coordinator.ledger_for(sensor._qualified_name)
+        self.assertEqual(ledger.peak_kw, 0.0)
+        module.RestoreSensor.RESTORED = None
+        module.RestoreSensor.RESTORED_STATE = None
+
+    def test_a_peak_restore_with_no_matching_rate_does_nothing(self) -> None:
+        """The ledger-is-None branch of the peak sensor's own restore method."""
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_kw")
+        sensor.hass = self.coordinator.hass
+        sensor._qualified_name = "no.such.rate"
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(native_value=5.0)
+        module.RestoreSensor.RESTORED_STATE = None
+        run(sensor.async_added_to_hass())
+        module.RestoreSensor.RESTORED = None
+
+    def test_the_now_sensor_is_none_if_the_rate_is_unqualified(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_now_kw")
+        sensor._qualified_name = "no.such.rate"
+        self.assertIsNone(sensor.native_value)
+
+    def test_a_peak_restore_with_no_last_state_still_checks_the_value(self) -> None:
+        """The last-state-is-None branch: only the sensor value was recorded."""
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_kw")
+        sensor.hass = self.coordinator.hass
+        self.coordinator.async_refresh()
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(native_value=5.0)
+        module.RestoreSensor.RESTORED_STATE = None
+        run(sensor.async_added_to_hass())
+        ledger = self.coordinator.ledger_for(sensor._qualified_name)
+        # No cycle recorded, so it cannot match the current one.
+        self.assertEqual(ledger.peak_kw, 0.0)
+        module.RestoreSensor.RESTORED = None
+
+    def test_the_peak_attributes_omit_the_basis_if_the_rate_is_unqualified(
+        self,
+    ) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_kw")
+        sensor._qualified_name = "no.such.rate"
+        attrs = sensor.extra_state_attributes
+        self.assertNotIn("demand_interval", attrs)
+
+    def test_the_peak_sensors_attributes_carry_the_declared_basis(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_kw")
+        self.coordinator.async_refresh()
+        attrs = sensor.extra_state_attributes
+        self.assertEqual(attrs["demand_interval"], 30)
+        self.assertEqual(attrs["demand_basis"], "day")
+
+
+class TestBillingCycleSensor(PlatformCase):
+    def test_no_progress_sensor_when_the_plan_accounts_for_nothing(self) -> None:
+        keys = {entity._key for entity in self.sensors().entities}
+        self.assertNotIn("billing_cycle_progress", keys)
+
+    def test_progress_is_none_if_the_cycle_has_no_length(self) -> None:
+        """The guard branch: days_in_cycle at its unset default."""
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        added = self.sensors(data)
+        sensor = added.by_key("billing_cycle_progress")
+        self.coordinator.state.days_in_cycle = 0
+        self.assertIsNone(sensor.native_value)
+
+    def test_progress_appears_when_the_plan_accounts(self) -> None:
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        added = self.sensors(data)
+        sensor = added.by_key("billing_cycle_progress")
+        self.coordinator.state.days_elapsed = 10
+        self.coordinator.state.days_in_cycle = 31
+        self.assertAlmostEqual(sensor.native_value, round(1000 / 31, 1))
+        self.assertTrue(sensor.available)
+
+    def test_progress_attributes_carry_the_cycle_dates(self) -> None:
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        added = self.sensors(data)
+        sensor = added.by_key("billing_cycle_progress")
+        self.coordinator.async_refresh()
+        attrs = sensor.extra_state_attributes
+        self.assertIsNotNone(attrs[CONST.ATTR_CYCLE_START])
+        self.assertIsNotNone(attrs[CONST.ATTR_CYCLE_END])
+        self.assertEqual(
+            attrs["days_remaining"], attrs["days_in_cycle"] - attrs["days_elapsed"]
+        )
+        self.assertEqual(
+            attrs["billing_cycle_day"], self.coordinator.plan.billing_cycle_day
+        )
+        self.assertIn(CONST.ATTR_CYCLE_COMPLETE, attrs)
+
+
+class TestSupplyChargeAccrualSensors(PlatformCase):
+    def test_today_reads_the_coordinator_state(self) -> None:
+        sensor = self.sensors().by_key("supply_charge_today")
+        self.coordinator.state.supply_charge_today = 0.5
+        self.assertAlmostEqual(sensor.native_value, 0.5)
+        self.assertTrue(sensor.available)
+
+    def test_cycle_reads_the_coordinator_state(self) -> None:
+        sensor = self.sensors().by_key("supply_charge_energy")
+        self.coordinator.state.supply_charge_cycle = 3.0
+        self.assertAlmostEqual(sensor.native_value, 3.0)
+
+    def test_the_accrual_attributes_say_it_is_an_estimate(self) -> None:
+        added = self.sensors()
+        today = added.by_key("supply_charge_today")
+        self.coordinator.async_refresh()
+        attrs = today.extra_state_attributes
+        self.assertIn(CONST.ATTR_ESTIMATE, attrs)
+        self.assertIsNotNone(attrs[CONST.ATTR_CYCLE_START])
+        self.assertIsNotNone(attrs[CONST.ATTR_CYCLE_END])
+        self.assertIn(CONST.ATTR_CYCLE_COMPLETE, attrs)
+
+    def test_the_daily_supply_charge_sensor_names_the_cycle_too(self) -> None:
+        """Rule 11: the declared figure and its accrual are no longer separate
+        stories, so the plain declaration also carries the cycle dates."""
+        added = self.sensors()
+        declared = added.by_key("daily_supply_charge")
+        self.coordinator.async_refresh()
+        attrs = declared.extra_state_attributes
+        self.assertIsNotNone(attrs[CONST.ATTR_CYCLE_START])
+        self.assertIsNotNone(attrs[CONST.ATTR_CYCLE_END])
 
 
 class TestBinarySensorPlatform(PlatformCase):
@@ -470,6 +857,13 @@ class TestBinarySensorPlatform(PlatformCase):
         self.assertIn("demand_period_active", keys)
 
     def test_the_demand_sensor_is_on_only_while_its_rate_is_in_force(self) -> None:
+        """One sensor per rate now (rule 10), not one per plan.
+
+        Its attributes describe the rate it belongs to, not whichever rate
+        happens to be in force — that is the whole point of moving it off the
+        plan, so a demand charge on a rate that is not currently active still
+        has something to say about itself.
+        """
         data = options()
         data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
         data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 18.4
@@ -478,8 +872,11 @@ class TestBinarySensorPlatform(PlatformCase):
         demand = self._added().by_key("demand_period_active")
 
         # "Every day Off Peak" is in force at setup (COORD.dt_util.NOW default).
+        # Peak is not, but it still declares 18.4 c/kW/day about itself.
         self.assertFalse(demand.is_on)
-        self.assertIsNone(demand.extra_state_attributes["demand_rate_per_kw_month"])
+        self.assertAlmostEqual(
+            demand.extra_state_attributes["demand_rate_per_kw_month"], 18.4
+        )
 
         COORD.dt_util.NOW = datetime(2026, 8, 14, 17, 0, tzinfo=BRISBANE)
         self.coordinator.async_refresh()
@@ -487,6 +884,23 @@ class TestBinarySensorPlatform(PlatformCase):
         self.assertAlmostEqual(
             demand.extra_state_attributes["demand_rate_per_kw_month"], 18.4
         )
+
+    def test_no_data_complete_sensor_when_the_plan_accounts_for_nothing(self) -> None:
+        keys = {entity._key for entity in self._added().entities}
+        self.assertNotIn("data_complete", keys)
+
+    def test_data_complete_appears_when_the_plan_accounts(self) -> None:
+        data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
+        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        self.coordinator = a_coordinator(data)
+        self.entry.runtime_data = self.coordinator
+        sensor = self._added().by_key("data_complete")
+        self.assertFalse(sensor.is_on)
+        self.coordinator.state.data_complete = False
+        self.coordinator.state.cycle_complete = False
+        self.assertTrue(sensor.is_on)
+        self.assertFalse(sensor.extra_state_attributes["cycle_complete"])
 
 
 class TestSetupAndUnload(PlatformCase):

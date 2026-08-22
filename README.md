@@ -26,13 +26,28 @@ action. It answers questions and other things decide.
 | `sensor.<name>_rate` | The rate in force, as `weekday.peak` — its timetable and its name |
 | `sensor.<name>_next_rate_change` | When the import rate next changes |
 | `sensor.<name>_next_export_change` | When the feed-in price next changes, if it moves during the day |
-| `sensor.<name>_daily_supply_charge` | Your daily supply charge |
-| `sensor.<name>_allowance_remaining` | kWh left of a capped period, when you have asked for it to be counted |
+| `sensor.<name>_daily_supply_charge` | Your declared daily supply charge |
+| `sensor.<name>_supply_charge_today` | The declared charge accrued so far today |
+| `sensor.<name>_supply_charge_energy` | The declared charge accrued so far this billing cycle |
+| `sensor.<name>_billing_cycle_progress` | Days elapsed of the cycle, as a percentage. Only when something on the plan accumulates |
+| `sensor.<name>_<rate>_allowance_used_kwh` | kWh spent so far in a capped rate's current period, once a meter is nominated. One per capped rate |
+| `sensor.<name>_<rate>_allowance_remaining_kwh` | kWh left. One per capped rate |
+| `sensor.<name>_<rate>_demand_now_kw` | The average draw over the demand interval in progress, once a meter is nominated. One per demand-charged rate |
+| `sensor.<name>_<rate>_demand_peak_kw` | The highest completed interval this billing cycle — the number the bill is built on. One per demand-charged rate |
+| `sensor.<name>_<rate>_demand_peak_at` | When that peak was set |
+| `sensor.<name>_<rate>_demand_cost_to_date` | What the peak has cost so far, on the declared basis |
+| `sensor.<name>_<rate>_demand_cost_projected` | What the bill says if nothing beats the peak |
 | `binary_sensor.<name>_<constraint>` | One per rule you declared — see below |
-| `binary_sensor.<name>_demand_period_active` | On while the rate in force carries a demand charge. Only created when a rate has one |
+| `binary_sensor.<name>_<rate>_demand_period_active` | On while this rate is in force. One per rate that carries a demand charge |
+| `binary_sensor.<name>_data_complete` | Off while an input is unreadable. Only when something on the plan accumulates — see Accumulating figures |
 
 Plus an action, `abode_power_tariffs.get_intervals`, returning the forward
 series.
+
+**Everything that accumulates is an estimate this integration measured
+itself.** It is taken from a meter you nominate, on a clock this integration
+keeps, and it will not reconcile exactly with what your retailer bills. Every
+accumulating sensor's attributes say so.
 
 ---
 
@@ -242,12 +257,14 @@ closed:
 | Field | Section | Notes |
 |---|---|---|
 | Timetable | — | Which timetable the rate belongs to. Rates are identified by the pair, so two timetables can each have a Peak |
-| Demand charge period | Demand charging | Marks this rate as carrying a demand charge, and turns on `binary_sensor.<name>_demand_period_active` while it is in force |
-| Demand charge ($/kW/month) | Demand charging | Declared alongside the flag. Published on every interval; the monthly amount is not calculated |
-| Energy allowance for this rate | Allowance | Some plans give a period free only up to a cap. Zero for none. The allowance belongs to the time slot, not the day |
+| Demand charge period | Demand charging | Marks this rate as carrying a demand charge, and turns on `binary_sensor.<name>_<rate>_demand_period_active` while it is in force |
+| Demand charge ($/kW) | Demand charging | Declared alongside the flag. The number the demand cost sensors are built on |
+| Meter averaging interval | Demand charging | 15, 30 or 60 minutes, or instantaneous. Defaults to 30 minutes, what Australian distributors meter on |
+| How the peak is charged | Demand charging | Once for the billing cycle, or once for every day of it. The same peak can be a very different bill either way |
+| Energy allowance for this rate | Allowance | Some plans give a period free only up to a cap. Zero for none. Counted once a meter is nominated |
 | Rate beyond the allowance | Allowance | Required when there is an allowance |
-| Count usage against this allowance | Allowance | Marked *not yet implemented* — see Known limitations |
-| Energy sensor to count | Allowance | Marked *not yet implemented* |
+| What the allowance covers | Allowance | Each occurrence of this rate's time period, or the whole billing cycle. Defaults to the time period, which is the tighter and more common cap |
+| Energy sensor to count | Allowance | The grid import meter. One for the whole plan. Required once a rate declares a demand charge or an allowance |
 | Information only rules | Constraints | Your own words. Each becomes a binary sensor. See below |
 | Enforceable rules | Constraints | The same, but declared as part of what the rate means. See below |
 
@@ -330,19 +347,60 @@ consumption source → **Use an entity with current price** → pick
 **Return to grid.** The same, with `sensor.<name>_export_price`.
 
 **Daily supply charge.** The Energy dashboard has no field for a fixed daily
-charge — it is one of its longest-running open requests. This integration
-declares the charge as `sensor.<name>_daily_supply_charge` and stops there: it
-states what the charge is, and does not keep a running total against it.
-
-If you want that total, build it yourself with a `utility_meter` helper against
-the declared figure. That keeps the billing cycle where it belongs — plans
-rarely start on the first of the month, and owning the cycle would make this an
-accounting system rather than a statement of what your plan says.
+charge — it is one of its longest-running open requests. `sensor.<name>_daily_supply_charge`
+states what the charge is; `sensor.<name>_supply_charge_today` and
+`sensor.<name>_supply_charge_energy` accrue it, on this integration's own
+clock, against the billing cycle day you declared.
 
 **Usage split by rate.** Create a `utility_meter` helper with your rate names as
 its tariffs. It makes one meter per rate plus a select naming which is in force.
 Nominate that select under Track usage by rate and the integration sets it at each
 time period boundary — the automation people normally write for this disappears.
+
+---
+
+## Accumulating figures
+
+Declare an allowance or a demand charge on a rate, nominate the grid import
+meter, and this integration starts counting: what has been used against a
+cap, and the highest completed interval of a demand charge, per rate.
+
+**It is an estimate this integration measured itself.** It is not what your
+retailer measures, and it will not reconcile with a bill to the cent. Every
+accumulating sensor's attributes say so, alongside the billing cycle the
+figure belongs to.
+
+**A cap switches the effective rate once it is spent.** `sensor.<name>_rate`
+reports the fallback and `sensor.<name>_import_price` reports its price; the
+declared cap and fallback are still published on the scheduled rate's own
+attributes for a consumer that wants to apply the rule itself instead.
+
+**A capped rate declares which period the allowance covers**: each occurrence
+of its own time period, or the whole billing cycle. A period cap resets on
+entry to every occurrence — nothing carries from yesterday's peak period into
+today's. A monthly cap accumulates across every slot and day and resets on
+the billing cycle day.
+
+**A demand charge is measured on a clock, not on the price schedule.** Declare
+the averaging interval — 15, 30 or 60 minutes, or instantaneous — and the
+integration finds the highest *completed* interval while the rate is in
+force. A half-finished interval is never a candidate, so the figure reads low
+until each interval closes. `sensor.<name>_<rate>_demand_cost_to_date` and
+`..._demand_cost_projected` apply the declared basis: once for the billing
+cycle, or once for every day of it.
+
+**A gap in the meter makes the cycle's figures read low, never high.**
+`binary_sensor.<name>_data_complete` goes off the moment the nominated meter
+becomes unreadable, and a Home Assistant repair notice appears at the same
+time. The binary sensor clears when the meter comes back; its `cycle_complete`
+attribute does not, because reconnecting does not recover what was missed —
+it stays down for the rest of the cycle and clears when the cycle rolls.
+
+**Restarting Home Assistant does not lose a count.** A period allowance
+restores only if the integration comes back inside the same occurrence of the
+period; a monthly one, only inside the same billing cycle; a demand peak,
+only inside the same billing cycle. Coming back into a different one starts
+from zero rather than keeping a stale figure.
 
 That select is the only thing this integration ever writes, it is off by
 default, and it writes only to selects you nominated.
@@ -522,7 +580,7 @@ actions:
 ```yaml
 triggers:
   - trigger: numeric_state
-    entity_id: sensor.electricity_allowance_remaining
+    entity_id: sensor.electricity_weekday_peak_allowance_remaining_kwh
     below: 3
 actions:
   - action: notify.persistent_notification
@@ -616,16 +674,18 @@ select actually offers.
 under the general settings. Without one the day option is not offered, and
 holidays follow the calendar weekday.
 
-**Nothing is counting my allowance.** Counting is marked *not yet
-implemented* on the rate screen while how an allowance should accumulate is
-still being decided. The cap and the fallback are declared and published
-either way, on the rate and on every interval, so a consuming system can
-apply the rule itself.
+**Nothing is counting my allowance or my demand charge.** Check that a rate
+declares one and that a grid import meter is nominated on the rate form —
+rule 6 makes the meter required the moment either is declared, and without
+one the scheduled price and the declared cap or rate are still published, for
+a consumer to apply the rule itself.
 
-**The count does not match my bill.** It will not. It counts the meter you
-nominated, and the count belongs to the time slot — each occurrence of a
-capped period has its own, and nothing carries between slots, days or billing
-cycles. Your retailer meters and resets on their own terms.
+**The count does not match my bill.** It will not exactly. It counts the
+meter you nominated, on this integration's own clock, and a period allowance
+belongs to the time slot — each occurrence of a capped period has its own,
+and nothing carries between periods, days or billing cycles unless you
+declared it as a monthly allowance. Your retailer meters and resets on their
+own terms.
 
 **A capped rate runs through midnight.** Configure will say so. A period cannot
 cross midnight here, so a capped stretch from 22:00 to 02:00 is two periods
@@ -649,12 +709,10 @@ is resolved right now with a trace of why, and the next 24 hours.
   with "Is this power plan based on a single rate?" ticked gets a price for
   the first part of usage and a different price for the rest, on both import
   and export. A timetabled rate does not yet support a second tier.
-- **Nothing is counted against an allowance or a demand charge.** Every one of
-  them is declared and published — the cap, the price past it and the demand
-  rate — but nothing switches automatically once one is spent, and the two
-  counting fields on the rate screen are labelled *not yet implemented* while
-  how an allowance should accumulate is decided. `perosb/power_max_tracker`
-  already tracks a monthly maximum for demand.
+- **There is no demand ratchet.** A declared demand rate is charged on this
+  cycle's measured peak alone; some commercial and overseas tariffs bill on
+  the higher of that and a floor derived from past cycles. Researched and not
+  built — it earns nothing on an Australian residential tariff.
 - **Dynamic tariffs are not connected yet.** The interface is shaped for it —
   the action's response matches Amber's — but no adapter is written. A static
   plan is the only price source today.
@@ -666,8 +724,8 @@ is resolved right now with a trace of why, and the next 24 hours.
   next-rate-change sensors already say what is in force.
 - **No text or CSV import.** With rates defined once, a time period is three fields.
   Diagnostics renders the plan as CSV for backup and for support.
-- **No bill reconciliation.** It reports the rate in force; it does not
-  reproduce an invoice.
+- **No bill reconciliation.** Accumulating figures are this integration's own
+  estimate, measured on its own clock; they will not reproduce an invoice.
 
 ---
 

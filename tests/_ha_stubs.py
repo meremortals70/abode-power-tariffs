@@ -270,6 +270,11 @@ def install() -> None:
 
     const.UnitOfEnergy = _UnitOfEnergy
 
+    class _UnitOfPower:
+        KILO_WATT = "kW"
+
+    const.UnitOfPower = _UnitOfPower
+
     class _Platform:
         SENSOR = "sensor"
         BINARY_SENSOR = "binary_sensor"
@@ -380,6 +385,7 @@ def install() -> None:
             "MONETARY": "monetary",
             "ENERGY": "energy",
             "ENERGY_STORAGE": "energy_storage",
+            "POWER": "power",
         },
     )
     sensor_mod.SensorStateClass = type(
@@ -419,7 +425,9 @@ def install() -> None:
     issues = _module("homeassistant.helpers.issue_registry")
     issues.RAISED = []
     issues.DELETED = []
-    issues.IssueSeverity = type("IssueSeverity", (), {"ERROR": "error"})
+    issues.IssueSeverity = type(
+        "IssueSeverity", (), {"ERROR": "error", "WARNING": "warning"}
+    )
     issues.async_create_issue = lambda hass, domain, issue_id, **kw: (
         issues.RAISED.append((issue_id, kw))
     )

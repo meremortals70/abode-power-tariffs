@@ -311,9 +311,10 @@ class TestSingleRatePlan(unittest.TestCase):
         self.assertAlmostEqual(pattern.export_fallback_price, 0.02)
 
     def test_nothing_counts_yet(self) -> None:
-        """No accumulation at this stage: counting is off by default."""
+        """Rule 7, revoked: there is no tickbox left to be false."""
         result = self._finish()
-        self.assertFalse(result["options"][CONST.CONF_COUNT_ALLOWANCE])
+        self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, result["options"])
+        self.assertIsNone(result["options"].get(CONST.CONF_IMPORT_ENERGY_SENSOR))
 
 
 class TestSingleRatePlanWithNoExport(unittest.TestCase):
@@ -626,6 +627,11 @@ class TestSetupChecksThePlanBeforeCreatingIt(unittest.TestCase):
         # A single rate on its timetable is never offered a fallback select,
         # so declaring an allowance on it produces a plan validate_plan
         # rejects. Reachable from setup with no unusual input.
+        #
+        # A meter is supplied because rule 6 now makes it required the moment
+        # a cap is declared — the fixture would otherwise never leave the
+        # rates step at all, for want of a meter rather than for the fallback
+        # problem this class actually tests.
         driver = FlowDriver()
         driver.start()
         driver.submit(plan_name="Capped")
@@ -635,6 +641,7 @@ class TestSetupChecksThePlanBeforeCreatingIt(unittest.TestCase):
             name="Peak",
             import_cents=30.0,
             rate_allowance_kwh=10.0,
+            import_energy_sensor="sensor.grid_import",
             on_submit=CONST.SUBMIT_ADD,
         )
         driver.submit(on_submit=CONST.SUBMIT_CONTINUE)

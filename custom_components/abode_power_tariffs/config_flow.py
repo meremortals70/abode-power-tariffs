@@ -32,12 +32,15 @@ from homeassistant.util import slugify
 
 from .const import (
     ALL_DAY_TOKENS,
+    ALLOWANCE_PERIODS,
     CONF_AFTER_ALLOWANCE_CENTS,
+    CONF_ALLOWANCE_PERIOD,
     CONF_BILLING_CYCLE_DAY,
     CONF_CONSTRAINTS,
-    CONF_COUNT_ALLOWANCE,
     CONF_DAY_PATTERNS,
     CONF_DAYS,
+    CONF_DEMAND_BASIS,
+    CONF_DEMAND_INTERVAL,
     CONF_DEMAND_PERIOD,
     CONF_DEMAND_RATE,
     CONF_END,
@@ -76,7 +79,12 @@ from .const import (
     CONF_TIMETABLE,
     CONF_VALID_FROM,
     CONF_VALID_TO,
+    DEFAULT_ALLOWANCE_PERIOD,
+    DEFAULT_DEMAND_BASIS,
+    DEFAULT_DEMAND_INTERVAL,
     DEFAULT_GST_PERCENT,
+    DEMAND_BASES,
+    DEMAND_INTERVALS,
     DOMAIN,
     KNOWN_CONSTRAINTS,
     MAX_BILLING_CYCLE_DAY,
@@ -176,6 +184,17 @@ def _rate_record(user_input: dict[str, Any]) -> dict[str, Any]:
     if CONF_DEMAND_PERIOD in user_input:
         record[CONF_DEMAND_PERIOD] = bool(user_input.get(CONF_DEMAND_PERIOD, False))
         record[CONF_DEMAND_RATE] = user_input.get(CONF_DEMAND_RATE) or 0.0
+        # A SelectSelector's value is a string even when every option is a
+        # number typed as text.
+        raw_interval = user_input.get(CONF_DEMAND_INTERVAL)
+        record[CONF_DEMAND_INTERVAL] = (
+            int(raw_interval)
+            if raw_interval not in (None, "")
+            else DEFAULT_DEMAND_INTERVAL
+        )
+        record[CONF_DEMAND_BASIS] = (
+            user_input.get(CONF_DEMAND_BASIS) or DEFAULT_DEMAND_BASIS
+        )
     if CONF_RATE_ALLOWANCE_KWH in user_input:
         allowance = user_input.get(CONF_RATE_ALLOWANCE_KWH) or None
         record[CONF_RATE_ALLOWANCE_KWH] = allowance
@@ -184,6 +203,9 @@ def _rate_record(user_input: dict[str, Any]) -> dict[str, Any]:
         # rate the user never chose onto every uncapped rate.
         record[CONF_FALLBACK_RATE] = (
             user_input.get(CONF_FALLBACK_RATE) or None if allowance else None
+        )
+        record[CONF_ALLOWANCE_PERIOD] = (
+            user_input.get(CONF_ALLOWANCE_PERIOD) or DEFAULT_ALLOWANCE_PERIOD
         )
     return record
 
@@ -221,15 +243,19 @@ def _rules_from(user_input: dict[str, Any], key: str) -> list[str]:
     return seen
 
 
-def _counting_without_meter(user_input: dict[str, Any]) -> bool:
-    """Return whether counting was asked for with no meter to count.
+def _meter_required_without_one(user_input: dict[str, Any]) -> bool:
+    """Return whether a meter is needed but not given.
 
-    Nothing on the rate form is required until the box is ticked. Ticking it is
-    a choice the component cannot honour without a sensor, so at that point the
-    sensor becomes required — which is what asking the minimum means here,
-    rather than the field not being offered at all.
+    Rule 7 was revoked: there is no counting tickbox, and a declared cap is
+    counted. Rule 6 makes the meter required the moment that becomes true —
+    the same test a demand charge is held to, since neither can be honoured
+    without one. Nothing about the meter is required until one of the two is
+    declared, which is what asking the minimum means here.
     """
-    if not user_input.get(CONF_COUNT_ALLOWANCE):
+    needs_meter = bool(user_input.get(CONF_DEMAND_PERIOD)) or bool(
+        user_input.get(CONF_RATE_ALLOWANCE_KWH)
+    )
+    if not needs_meter:
         return False
     return not user_input.get(CONF_IMPORT_ENERGY_SENSOR)
 
@@ -292,9 +318,11 @@ SETUP_RATE_FIELDS: Final = (
     CONF_ENFORCEABLE_CONSTRAINTS,
     CONF_DEMAND_PERIOD,
     CONF_DEMAND_RATE,
+    CONF_DEMAND_INTERVAL,
+    CONF_DEMAND_BASIS,
     CONF_RATE_ALLOWANCE_KWH,
     CONF_FALLBACK_RATE,
-    CONF_COUNT_ALLOWANCE,
+    CONF_ALLOWANCE_PERIOD,
     CONF_IMPORT_ENERGY_SENSOR,
 )
 
@@ -329,7 +357,6 @@ def _rate_schema(
     fields: tuple[str, ...] | None = None,
     known_constraints: list[str] | None = None,
     timetables: list[str] | None = None,
-    count_allowance: bool = False,
     energy_sensor: str | None = None,
 ) -> vol.Schema:
     """Return the rate form.
@@ -401,6 +428,36 @@ def _rate_schema(
             min=0, max=1000, step="any", mode=selector.NumberSelectorMode.BOX
         )
     )
+    # How the meter averages the draw, and what the money means. Neither is a
+    # property of when the rate is in force, which the timetable already
+    # carries, so both are asked here beside the price. Defaulted to what
+    # Australian distributors meter and bill on, so a user who opens the
+    # section, reads nothing and submits gets the right answer for this
+    # market rather than a zero.
+    schema[
+        vol.Optional(
+            CONF_DEMAND_INTERVAL,
+            default=str(
+                int(existing.get(CONF_DEMAND_INTERVAL) or DEFAULT_DEMAND_INTERVAL)
+            ),
+        )
+    ] = selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=[str(value) for value in DEMAND_INTERVALS],
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
+    )
+    schema[
+        vol.Optional(
+            CONF_DEMAND_BASIS,
+            default=str(existing.get(CONF_DEMAND_BASIS) or DEFAULT_DEMAND_BASIS),
+        )
+    ] = selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=list(DEMAND_BASES),
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
+    )
     schema[
         vol.Required(
             CONF_RATE_ALLOWANCE_KWH,
@@ -423,17 +480,21 @@ def _rate_schema(
         ] = selector.SelectSelector(
             selector.SelectSelectorConfig(options=fallback_options)
         )
-    # Counting sits with the cap, because it is the same decision: the user
-    # declares an allowance and says in the same breath whether this component
-    # should watch a meter against it and switch to the fallback once it is
-    # spent. It used to be a screen of its own, which is how an allowance came
-    # to be declared in one place and counted in another.
-    #
-    # Both values are the plan's rather than the rate's. There is one grid
-    # import meter, so the sensor is one answer shown wherever a cap is; a
-    # later rate finds it already filled in.
-    schema[vol.Required(CONF_COUNT_ALLOWANCE, default=count_allowance)] = (
-        selector.BooleanSelector()
+    # Which accounting period the cap belongs to: each occurrence of the
+    # rate's slot, or the whole billing cycle. Sits beside the cap because it
+    # is part of the same declaration — what the number caps.
+    schema[
+        vol.Optional(
+            CONF_ALLOWANCE_PERIOD,
+            default=str(
+                existing.get(CONF_ALLOWANCE_PERIOD) or DEFAULT_ALLOWANCE_PERIOD
+            ),
+        )
+    ] = selector.SelectSelector(
+        selector.SelectSelectorConfig(
+            options=list(ALLOWANCE_PERIODS),
+            mode=selector.SelectSelectorMode.DROPDOWN,
+        )
     )
     schema[
         vol.Optional(
@@ -453,13 +514,16 @@ def _rate_schema(
 # Name and price are not in one: they are what every rate has, and the form
 # opens on them.
 RATE_SECTIONS: Final = (
-    (SECTION_DEMAND, (CONF_DEMAND_PERIOD, CONF_DEMAND_RATE)),
+    (
+        SECTION_DEMAND,
+        (CONF_DEMAND_PERIOD, CONF_DEMAND_RATE, CONF_DEMAND_INTERVAL, CONF_DEMAND_BASIS),
+    ),
     (
         SECTION_ALLOWANCE,
         (
             CONF_RATE_ALLOWANCE_KWH,
             CONF_FALLBACK_RATE,
-            CONF_COUNT_ALLOWANCE,
+            CONF_ALLOWANCE_PERIOD,
             CONF_IMPORT_ENERGY_SENSOR,
         ),
     ),
@@ -579,8 +643,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._billing_cycle_day: int | None = None
         self._single_rate: bool = False
         self._has_export: bool = False
-        # Plan-level, collected on the rate screen beside the cap they belong to.
-        self._count_allowance: bool = False
+        # Plan-level, collected on the rate screen beside the cap it belongs to.
         self._energy_sensor: str | None = None
         self._monthly_charge: float = 0.0
         self._patterns: list[dict[str, Any]] = []
@@ -935,13 +998,12 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_NAME] = "rate_exists"
             elif _rules_in_both_lists(user_input):
                 errors[CONF_ENFORCEABLE_CONSTRAINTS] = "rule_in_both_lists"
-            elif _counting_without_meter(user_input):
+            elif _meter_required_without_one(user_input):
                 errors[CONF_IMPORT_ENERGY_SENSOR] = "energy_sensor_required"
             elif _demand_without_rate(user_input):
                 errors[CONF_DEMAND_RATE] = "demand_rate_required"
             else:
                 # Plan-level, not the rate's: one grid meter, one answer.
-                self._count_allowance = bool(user_input.get(CONF_COUNT_ALLOWANCE))
                 self._energy_sensor = user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
                 self._rates.append(merged(Rate, None, record))
                 if action == SUBMIT_CONTINUE:
@@ -954,7 +1016,6 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 [str(rate.get(CONF_NAME, "")) for rate in self._pattern_rates()],
                 fields=SETUP_RATE_FIELDS,
                 known_constraints=known_constraints(self._rates),
-                count_allowance=self._count_allowance,
                 energy_sensor=self._energy_sensor,
             ).schema,
             **on_submit("submit_rates"),
@@ -1436,7 +1497,6 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_PRICES_INCLUDE_GST: self._include_gst,
             CONF_GST_PERCENT: self._gst_percent,
             CONF_BILLING_CYCLE_DAY: self._billing_cycle_day,
-            CONF_COUNT_ALLOWANCE: self._count_allowance,
             CONF_IMPORT_ENERGY_SENSOR: self._energy_sensor,
         }
 
@@ -1725,14 +1785,11 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 errors[CONF_NAME] = "rate_exists"
             elif _rules_in_both_lists(user_input):
                 errors[CONF_ENFORCEABLE_CONSTRAINTS] = "rule_in_both_lists"
-            elif _counting_without_meter(user_input):
+            elif _meter_required_without_one(user_input):
                 errors[CONF_IMPORT_ENERGY_SENSOR] = "energy_sensor_required"
             elif _demand_without_rate(user_input):
                 errors[CONF_DEMAND_RATE] = "demand_rate_required"
             else:
-                self.working[CONF_COUNT_ALLOWANCE] = bool(
-                    user_input.get(CONF_COUNT_ALLOWANCE)
-                )
                 self.working[CONF_IMPORT_ENERGY_SENSOR] = (
                     user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
                 )
@@ -1765,7 +1822,6 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     fields=OPTIONS_RATE_FIELDS,
                     known_constraints=self._known_constraints(),
                     timetables=self._day_pattern_names(),
-                    count_allowance=bool(self.working.get(CONF_COUNT_ALLOWANCE)),
                     energy_sensor=self.working.get(CONF_IMPORT_ENERGY_SENSOR),
                 )
             ),

@@ -104,6 +104,9 @@ def populated_options() -> dict[str, Any]:
                 CONST.CONF_FALLBACK_RATE: None,
                 CONST.CONF_DEMAND_PERIOD: False,
                 CONST.CONF_DEMAND_RATE: 0.0,
+                CONST.CONF_DEMAND_INTERVAL: 30,
+                CONST.CONF_DEMAND_BASIS: "day",
+                CONST.CONF_ALLOWANCE_PERIOD: "slot",
                 # Stored, never written by a screen, never read at runtime.
                 # Exactly the kind of field a rebuild loses silently.
                 CONST.CONF_COMPONENTS: {"network": 8.5},
@@ -119,6 +122,13 @@ def populated_options() -> dict[str, Any]:
                 CONST.CONF_FALLBACK_RATE: "Off Peak",
                 CONST.CONF_DEMAND_PERIOD: True,
                 CONST.CONF_DEMAND_RATE: 14.5,
+                # Deliberately not the defaults. A screen that rebuilt the
+                # record from its own idea of the key set would put these
+                # back to 30 and 'day' and silently change what the money
+                # means.
+                CONST.CONF_DEMAND_INTERVAL: 15,
+                CONST.CONF_DEMAND_BASIS: "period",
+                CONST.CONF_ALLOWANCE_PERIOD: "month",
                 CONST.CONF_COMPONENTS: {},
             },
         ],
@@ -279,6 +289,42 @@ class TestAnEditChangesOnlyWhatWasEdited(unittest.TestCase):
         self.driver.submit(name="every_day.off_peak")
         self.driver.submit(import_cents=21.0)
         self.assert_only(["rates[0].import_cents: 19.8 -> 21.0"])
+
+    def test_a_plan_stored_before_the_new_fields_gains_them_at_their_defaults(
+        self,
+    ) -> None:
+        """The one addition an edit is allowed to make, asserted deliberately.
+
+        Rule 15 writes the model's whole key set, so the first edit of a plan
+        stored before P35 materialises the three new keys. Nothing is deleted
+        and no declared fact changes — the values written are the ones the
+        model was already reading them as — but the guard would otherwise
+        report it as a surprise, and a surprise in this test is how a real
+        deletion would be waved through.
+        """
+        before = populated_options()
+        for rate in before[CONST.CONF_RATES]:
+            for key in (
+                CONST.CONF_DEMAND_INTERVAL,
+                CONST.CONF_DEMAND_BASIS,
+                CONST.CONF_ALLOWANCE_PERIOD,
+            ):
+                rate.pop(key)
+        driver = OptionsDriver(copy.deepcopy(before))
+        driver.start()
+        driver.choose("rates_menu")
+        driver.choose("rate_pick")
+        driver.submit(name="every_day.off_peak")
+        driver.submit(import_cents=21.0)
+        self.assertEqual(
+            differences(before, driver.flow.working),
+            [
+                "rates[0].allowance_period: added ('slot')",
+                "rates[0].demand_basis: added ('day')",
+                "rates[0].demand_interval: added (30)",
+                "rates[0].import_cents: 19.8 -> 21.0",
+            ],
+        )
 
     def test_changing_an_export_rates_price_keeps_its_allowance(self) -> None:
         self.driver.choose("export_menu")

@@ -136,6 +136,14 @@ def a_coordinator(options: dict[str, Any] | None = None) -> Any:
     return TariffCoordinator(hass, "entry1", plan, data)
 
 
+def peak_name(coordinator: Any, timetable: str | None = None) -> str:
+    """Return the qualified identifier of the sample plan's Peak rate."""
+    for rate in coordinator.plan.rates:
+        if rate.name == "Every day Peak" and rate.timetable == timetable:
+            return rate.qualified_name
+    raise AssertionError("no Peak rate on that timetable")
+
+
 class CoordinatorCase(unittest.TestCase):
     def setUp(self) -> None:
         _ha_stubs.SCHEDULED.__init__()  # type: ignore[misc]
@@ -414,6 +422,258 @@ class TestAllowanceAccounting(CoordinatorCase):
         assert resolution is not None
         self.assertIn(str(resolution.period.start), slot)
         self.assertIn(resolution.rate.qualified_name, slot)
+        PKG.coordinator.dt_util.NOW = None
+
+
+class TestDemandAccumulation(CoordinatorCase):
+    """Section 9 items 3, 5 and 9 — the demand side of P35."""
+
+    def _demand(self, **rate_extra: Any) -> Any:
+        opts = sample_options()
+        opts[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
+        opts[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 20.0
+        opts[CONST.CONF_RATES][1].update(rate_extra)
+        opts[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(opts)
+        coordinator.hass.states.set("sensor.grid_import", "0.0")
+        coordinator._seed_energy_total()
+        return coordinator
+
+    def test_energy_drawn_in_the_interval_becomes_the_peak_once_it_completes(
+        self,
+    ) -> None:
+        """A5. Energy is credited to the rate it was drawn under, not thrown away."""
+        coordinator = self._demand()
+        PKG.coordinator.dt_util.NOW = at(17, 0, day=14)
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "2.5")
+        coordinator._accumulate_energy("sensor.grid_import")
+
+        # The interval closes when the clock moves into the next one.
+        PKG.coordinator.dt_util.NOW = at(17, 30, day=14)
+        coordinator.async_refresh()
+
+        ledger = coordinator.ledger_for(peak_name(coordinator))
+        self.assertAlmostEqual(ledger.peak_kw, 5.0, places=6)
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_a_partial_interval_is_not_a_peak_candidate(self) -> None:
+        coordinator = self._demand()
+        PKG.coordinator.dt_util.NOW = at(17, 0, day=14)
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "2.5")
+        coordinator._accumulate_energy("sensor.grid_import")
+        # Still inside the same interval; nothing has completed yet.
+        PKG.coordinator.dt_util.NOW = at(17, 15, day=14)
+        coordinator.async_refresh()
+        ledger = coordinator.ledger_for(peak_name(coordinator))
+        self.assertEqual(ledger.peak_kw, 0.0)
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_leaving_the_rate_discards_a_part_finished_interval(self) -> None:
+        """Consumption never billed under this rate cannot set its peak."""
+        coordinator = self._demand()
+        PKG.coordinator.dt_util.NOW = at(15, 45, day=14)
+        coordinator.async_refresh()  # Off Peak, not the demand rate.
+        coordinator.hass.states.set("sensor.grid_import", "1.0")
+        coordinator._accumulate_energy("sensor.grid_import")
+
+        # 16:00 crosses into Peak, which does carry a demand charge.
+        PKG.coordinator.dt_util.NOW = at(16, 5, day=14)
+        coordinator.async_refresh()
+        ledger = coordinator.ledger_for(peak_name(coordinator))
+        self.assertEqual(ledger.interval_kwh, 0.0)
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_two_rates_on_two_timetables_keep_separate_peaks(self) -> None:
+        """The strip.py failure, asserted in the new place it could recur."""
+        opts = sample_options()
+        opts[CONST.CONF_RATES][1][CONST.CONF_TIMETABLE] = "Weekday"
+        opts[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
+        opts[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 20.0
+        opts[CONST.CONF_RATES].append(
+            {
+                CONST.CONF_NAME: "Every day Peak",
+                CONST.CONF_TIMETABLE: "Weekend",
+                CONST.CONF_IMPORT_CENTS: 40.0,
+                CONST.CONF_DEMAND_PERIOD: True,
+                CONST.CONF_DEMAND_RATE: 20.0,
+            }
+        )
+        opts[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(opts)
+        coordinator.hass.states.set("sensor.grid_import", "0.0")
+        coordinator._seed_energy_total()
+
+        weekday_ledger = coordinator.ledger_for(peak_name(coordinator, "Weekday"))
+        weekend_ledger = coordinator.ledger_for(peak_name(coordinator, "Weekend"))
+        weekday_ledger.peak_kw = 5.0
+        weekend_ledger.peak_kw = 1.0
+        self.assertNotEqual(weekday_ledger.peak_kw, weekend_ledger.peak_kw)
+        self.assertIsNot(weekday_ledger, weekend_ledger)
+
+    def test_the_two_bases_cost_different_money_from_the_same_peak(self) -> None:
+        flat = self._demand(demand_basis="period")
+        per_day = self._demand(demand_basis="day")
+        for coordinator in (flat, per_day):
+            PKG.coordinator.dt_util.NOW = at(10, 0, day=14)
+            coordinator.async_refresh()
+            ledger = coordinator.ledger_for(peak_name(coordinator))
+            ledger.peak_kw = 5.0
+        flat_cost = PKG.accounting.demand_cost(5.0, 0.20, "period", 31)
+        per_day_cost = PKG.accounting.demand_cost(5.0, 0.20, "day", 31)
+        self.assertAlmostEqual(flat_cost, 1.00, places=6)
+        self.assertAlmostEqual(per_day_cost, 31.00, places=6)
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_a_restored_peak_from_a_different_cycle_is_discarded(self) -> None:
+        """Consistent with the allowance restore: identity is the cycle key."""
+        coordinator = self._demand()
+        PKG.coordinator.dt_util.NOW = at(17, 0, day=14)
+        coordinator.async_refresh()
+        ledger = coordinator.ledger_for(peak_name(coordinator))
+        ledger.peak_kw = 9.0
+        ledger.peak_cycle = "2020-01-01"
+        # A refresh recomputes the cycle key and rolls anything stale.
+        coordinator.async_refresh()
+        self.assertEqual(ledger.peak_kw, 0.0)
+        PKG.coordinator.dt_util.NOW = None
+
+
+class TestBillingCycle(CoordinatorCase):
+    """Rule 11, reinstated: the supply charge accumulates."""
+
+    def test_the_supply_charge_accrues_across_the_day(self) -> None:
+        coordinator = a_coordinator()
+        PKG.coordinator.dt_util.NOW = at(12, 0, day=14)  # half the day gone
+        coordinator.async_refresh()
+        self.assertAlmostEqual(
+            coordinator.state.supply_charge_today, 1.166 / 2, places=3
+        )
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_the_cycle_accrual_adds_the_closed_days(self) -> None:
+        options = sample_options()
+        options[CONST.CONF_BILLING_CYCLE_DAY] = 12
+        coordinator = a_coordinator(options)
+        PKG.coordinator.dt_util.NOW = at(0, 0, day=14)  # third day of the cycle
+        coordinator.async_refresh()
+        # Two whole days closed (the 12th, the 13th) plus a sliver of the 14th.
+        self.assertGreaterEqual(coordinator.state.supply_charge_cycle, 1.166 * 2)
+        self.assertLess(coordinator.state.supply_charge_cycle, 1.166 * 3)
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_a_new_billing_cycle_clears_every_ledgers_peak(self) -> None:
+        options = sample_options()
+        options[CONST.CONF_BILLING_CYCLE_DAY] = 12
+        options[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
+        options[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 20.0
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(options)
+        PKG.coordinator.dt_util.NOW = at(17, 0, day=14)  # inside the Aug 12 cycle
+        coordinator.async_refresh()
+        ledger = coordinator.ledger_for(peak_name(coordinator))
+        ledger.peak_kw = 5.0
+
+        # September 12 opens the next cycle.
+        PKG.coordinator.dt_util.NOW = datetime(2026, 9, 12, 17, 0, tzinfo=BRISBANE)
+        coordinator.async_refresh()
+        self.assertEqual(ledger.peak_kw, 0.0)
+        PKG.coordinator.dt_util.NOW = None
+
+
+class TestGapDetection(CoordinatorCase):
+    """Section 6. A gap is any interruption to an input."""
+
+    def _capped_with_meter(self) -> Any:
+        options = sample_options()
+        options[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        options[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(options)
+        coordinator.hass.states.set("sensor.grid_import", "100.0")
+        coordinator._seed_energy_total()
+        return coordinator
+
+    def test_an_unavailable_meter_opens_the_gap_immediately(self) -> None:
+        coordinator = self._capped_with_meter()
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "unavailable")
+        coordinator._accumulate_energy("sensor.grid_import")
+        self.assertFalse(coordinator.state.data_complete)
+        self.assertFalse(coordinator.state.cycle_complete)
+
+    def test_a_gap_raises_a_repair_issue(self) -> None:
+        coordinator = self._capped_with_meter()
+        coordinator.async_refresh()
+        module = sys.modules["homeassistant.helpers.issue_registry"]
+        module.RAISED.clear()
+        coordinator.hass.states.set("sensor.grid_import", "unavailable")
+        coordinator._accumulate_energy("sensor.grid_import")
+        self.assertEqual(len(module.RAISED), 1)
+        issue_id, _ = module.RAISED[0]
+        self.assertEqual(issue_id, coordinator._gap_issue_id)
+
+    def test_recovery_clears_the_repair_issue(self) -> None:
+        coordinator = self._capped_with_meter()
+        coordinator.async_refresh()
+        module = sys.modules["homeassistant.helpers.issue_registry"]
+        module.DELETED.clear()
+        coordinator.hass.states.set("sensor.grid_import", "unavailable")
+        coordinator._accumulate_energy("sensor.grid_import")
+        coordinator.hass.states.set("sensor.grid_import", "105.0")
+        coordinator._accumulate_energy("sensor.grid_import")
+        self.assertIn(coordinator._gap_issue_id, module.DELETED)
+
+    def test_a_second_gap_does_not_raise_the_issue_twice(self) -> None:
+        """The immediate flag is a level, not an edge; raising is idempotent."""
+        coordinator = self._capped_with_meter()
+        coordinator.async_refresh()
+        module = sys.modules["homeassistant.helpers.issue_registry"]
+        module.RAISED.clear()
+        coordinator.hass.states.set("sensor.grid_import", "unavailable")
+        coordinator._accumulate_energy("sensor.grid_import")
+        coordinator._accumulate_energy("sensor.grid_import")
+        self.assertEqual(len(module.RAISED), 1)
+
+    def test_recovery_clears_the_immediate_flag_but_not_the_cycle_flag(self) -> None:
+        coordinator = self._capped_with_meter()
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "unavailable")
+        coordinator._accumulate_energy("sensor.grid_import")
+        coordinator.hass.states.set("sensor.grid_import", "105.0")
+        coordinator._accumulate_energy("sensor.grid_import")
+        self.assertTrue(coordinator.state.data_complete)
+        self.assertFalse(coordinator.state.cycle_complete)
+
+    def test_the_cycle_flag_clears_only_when_the_cycle_rolls(self) -> None:
+        coordinator = self._capped_with_meter()
+        PKG.coordinator.dt_util.NOW = at(9, 0, day=14)
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "unavailable")
+        coordinator._accumulate_energy("sensor.grid_import")
+        self.assertFalse(coordinator.state.cycle_complete)
+
+        # Still the same cycle tomorrow (billing day defaults to the 1st).
+        PKG.coordinator.dt_util.NOW = at(9, 0, day=15)
+        coordinator.async_refresh()
+        self.assertFalse(coordinator.state.cycle_complete)
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_every_ledgers_incomplete_flag_is_set_by_a_gap(self) -> None:
+        options = sample_options()
+        options[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
+        options[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 20.0
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(options)
+        coordinator.hass.states.set("sensor.grid_import", "0.0")
+        coordinator._seed_energy_total()
+        PKG.coordinator.dt_util.NOW = at(17, 0, day=14)
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "unavailable")
+        coordinator._accumulate_energy("sensor.grid_import")
+        ledger = coordinator.ledger_for(peak_name(coordinator))
+        self.assertTrue(ledger.incomplete)
         PKG.coordinator.dt_util.NOW = None
 
 
@@ -1171,14 +1431,19 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
         }
         self.assertEqual(
             grouped[CONST.SECTION_DEMAND],
-            {CONST.CONF_DEMAND_PERIOD, CONST.CONF_DEMAND_RATE},
+            {
+                CONST.CONF_DEMAND_PERIOD,
+                CONST.CONF_DEMAND_RATE,
+                CONST.CONF_DEMAND_INTERVAL,
+                CONST.CONF_DEMAND_BASIS,
+            },
         )
         self.assertEqual(
             grouped[CONST.SECTION_ALLOWANCE],
             {
                 CONST.CONF_RATE_ALLOWANCE_KWH,
                 CONST.CONF_FALLBACK_RATE,
-                CONST.CONF_COUNT_ALLOWANCE,
+                CONST.CONF_ALLOWANCE_PERIOD,
                 CONST.CONF_IMPORT_ENERGY_SENSOR,
             },
         )
@@ -1198,12 +1463,13 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
         )
         self.assertIn(CONST.CONSTRAINT_COASTING_PERMITTED, CONST.KNOWN_CONSTRAINTS)
 
-    def test_setup_offers_the_allowance_and_its_counting(self) -> None:
+    def test_setup_offers_the_allowance_and_its_accounting_period(self) -> None:
         """Asking the minimum is about what is required, not what is offered.
 
         An allowance declared during setup should not have to be declared a
-        second time in Configure, and the tickbox belongs beside the cap it
-        counts rather than on a screen of its own.
+        second time in Configure. There is no counting tickbox any more
+        (rule 7, revoked) — what is offered instead is which accounting
+        period the cap belongs to.
         """
         fields = _ha_stubs.field_names(
             PKG.config_flow._rate_schema(
@@ -1212,8 +1478,9 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
         )
         self.assertIn(CONST.CONF_RATE_ALLOWANCE_KWH, fields)
         self.assertIn(CONST.CONF_FALLBACK_RATE, fields)
-        self.assertIn(CONST.CONF_COUNT_ALLOWANCE, fields)
+        self.assertIn(CONST.CONF_ALLOWANCE_PERIOD, fields)
         self.assertIn(CONST.CONF_IMPORT_ENERGY_SENSOR, fields)
+        self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, fields)
 
     def test_the_edit_form_is_the_same_form_unfiltered(self) -> None:
         """One definition. The setup form asking for less is the only difference."""
@@ -1251,10 +1518,12 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
 
 
 class TestCountingSitsWithTheCap(unittest.TestCase):
-    """The tickbox and the meter belong on the rate form, beside the allowance.
+    """The meter belongs on the rate form, beside the allowance.
 
-    They used to be a Configure screen of their own, which meant an allowance
-    was declared in one place and counted in another.
+    It used to be a Configure screen of its own, which meant an allowance was
+    declared in one place and counted in another (P24). Rule 7 was then
+    revoked: there is no tickbox any more, because there is no opt-in — a
+    declared cap is counted whenever a meter is nominated.
     """
 
     def test_the_separate_screen_is_gone(self) -> None:
@@ -1265,49 +1534,73 @@ class TestCountingSitsWithTheCap(unittest.TestCase):
             )
         )
 
-    def test_the_rate_form_carries_the_tickbox_and_the_meter(self) -> None:
+    def test_the_tickbox_is_gone(self) -> None:
+        """Rule 7, inverted. There is no opt-in field left to find."""
+        fields = _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"]))
+        self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, fields)
+
+    def test_the_rate_form_carries_the_allowance_period_and_the_meter(self) -> None:
         fields = _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"]))
         self.assertIn(CONST.CONF_RATE_ALLOWANCE_KWH, fields)
-        self.assertIn(CONST.CONF_COUNT_ALLOWANCE, fields)
+        self.assertIn(CONST.CONF_ALLOWANCE_PERIOD, fields)
         self.assertIn(CONST.CONF_IMPORT_ENERGY_SENSOR, fields)
 
     def test_the_meter_defaults_to_the_one_already_chosen(self) -> None:
         """One grid meter for the plan, so a later capped rate finds it filled."""
         schema = PKG.config_flow._rate_schema(
-            {}, ["Other"], count_allowance=True, energy_sensor="sensor.grid_import"
+            {}, ["Other"], energy_sensor="sensor.grid_import"
         )
         marker, _selector = _ha_stubs.field_for(schema, CONST.CONF_IMPORT_ENERGY_SENSOR)
         self.assertEqual(marker.description, {"suggested_value": "sensor.grid_import"})
 
-    def test_ticking_the_box_makes_the_meter_required(self) -> None:
-        """Nothing is required until the box is ticked; then the meter is."""
+    def test_a_declared_cap_makes_the_meter_required(self) -> None:
+        """Rule 6's own test, replacing the old tickbox guard."""
         self.assertFalse(
-            PKG.config_flow._counting_without_meter({CONST.CONF_COUNT_ALLOWANCE: False})
+            PKG.config_flow._meter_required_without_one(
+                {CONST.CONF_RATE_ALLOWANCE_KWH: 0.0}
+            )
         )
         self.assertTrue(
-            PKG.config_flow._counting_without_meter({CONST.CONF_COUNT_ALLOWANCE: True})
+            PKG.config_flow._meter_required_without_one(
+                {CONST.CONF_RATE_ALLOWANCE_KWH: 24.0}
+            )
         )
         self.assertFalse(
-            PKG.config_flow._counting_without_meter(
+            PKG.config_flow._meter_required_without_one(
                 {
-                    CONST.CONF_COUNT_ALLOWANCE: True,
+                    CONST.CONF_RATE_ALLOWANCE_KWH: 24.0,
                     CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
                 }
             )
         )
 
-    def test_counting_is_not_stored_on_the_rate(self) -> None:
-        """Both are the plan's. One meter, one answer."""
+    def test_a_declared_demand_charge_also_makes_the_meter_required(self) -> None:
+        """The same guard, the same reason: neither can be honoured without one."""
+        self.assertTrue(
+            PKG.config_flow._meter_required_without_one(
+                {CONST.CONF_DEMAND_PERIOD: True}
+            )
+        )
+        self.assertFalse(
+            PKG.config_flow._meter_required_without_one(
+                {
+                    CONST.CONF_DEMAND_PERIOD: True,
+                    CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
+                }
+            )
+        )
+
+    def test_the_meter_is_not_stored_on_the_rate(self) -> None:
+        """Plan-level. One meter, one answer."""
         record = PKG.config_flow._rate_record(
             {
                 CONST.CONF_NAME: "Off Peak",
                 CONST.CONF_IMPORT_CENTS: 22.0,
-                CONST.CONF_COUNT_ALLOWANCE: True,
                 CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
             }
         )
-        self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, record)
         self.assertNotIn(CONST.CONF_IMPORT_ENERGY_SENSOR, record)
+        self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, record)
 
 
 class TestTheDemandRateSitsOnTheRate(unittest.TestCase):
@@ -1344,6 +1637,29 @@ class TestTheDemandRateSitsOnTheRate(unittest.TestCase):
         )
 
     def test_a_demand_period_with_no_rate_is_refused_on_the_rates_step(self) -> None:
+        """A meter is supplied so this exercises the demand guard specifically,
+        not the meter guard that now also fires on a bare demand_period."""
+        flow = PKG.config_flow.AbodePowerTariffsConfigFlow()
+        flow._name = "P"
+        result = run(
+            flow.async_step_rates(
+                {
+                    CONST.CONF_NAME: "Peak",
+                    CONST.CONF_IMPORT_CENTS: 50.0,
+                    CONST.CONF_DEMAND_PERIOD: True,
+                    CONST.CONF_DEMAND_RATE: 0.0,
+                    CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
+                    CONST.CONF_ON_SUBMIT: "submit_add",
+                }
+            )
+        )
+        self.assertEqual(
+            result["errors"], {CONST.CONF_DEMAND_RATE: "demand_rate_required"}
+        )
+
+    def test_a_bare_demand_period_is_refused_for_want_of_a_meter_first(self) -> None:
+        """Rule 6 checks the meter before the rate. Both are unmet; the meter
+        guard is the one that fires, since it runs first in the chain."""
         flow = PKG.config_flow.AbodePowerTariffsConfigFlow()
         flow._name = "P"
         result = run(
@@ -1358,7 +1674,8 @@ class TestTheDemandRateSitsOnTheRate(unittest.TestCase):
             )
         )
         self.assertEqual(
-            result["errors"], {CONST.CONF_DEMAND_RATE: "demand_rate_required"}
+            result["errors"],
+            {CONST.CONF_IMPORT_ENERGY_SENSOR: "energy_sensor_required"},
         )
 
     def test_a_demand_rate_declared_at_setup_reaches_the_stored_rate(self) -> None:
@@ -1371,6 +1688,7 @@ class TestTheDemandRateSitsOnTheRate(unittest.TestCase):
                     CONST.CONF_IMPORT_CENTS: 50.0,
                     CONST.CONF_DEMAND_PERIOD: True,
                     CONST.CONF_DEMAND_RATE: 18.4,
+                    CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
                     CONST.CONF_ON_SUBMIT: "submit_add",
                 }
             )
@@ -1663,7 +1981,8 @@ class TestTheRateFormIsSectioned(unittest.TestCase):
             ["no_grid_import", "precool_opportunity"],
         )
 
-    def test_the_accumulation_fields_say_they_are_not_implemented(self) -> None:
+    def test_the_accumulation_fields_no_longer_say_not_implemented(self) -> None:
+        """P35, inverted. Counting shipped; the caveat that it hadn't is stale."""
         strings = json.loads(
             (Path(PKG.config_flow.__file__).parent / "strings.json").read_text()
         )
@@ -1672,12 +1991,13 @@ class TestTheRateFormIsSectioned(unittest.TestCase):
                 "data"
             ]
             for field in (
-                CONST.CONF_COUNT_ALLOWANCE,
+                CONST.CONF_RATE_ALLOWANCE_KWH,
+                CONST.CONF_FALLBACK_RATE,
+                CONST.CONF_ALLOWANCE_PERIOD,
                 CONST.CONF_IMPORT_ENERGY_SENSOR,
             ):
-                self.assertIn("(not yet implemented)", labels[field], (root, field))
-            for field in (CONST.CONF_RATE_ALLOWANCE_KWH, CONST.CONF_FALLBACK_RATE):
-                self.assertNotIn("(not yet implemented)", labels[field], (root, field))
+                self.assertNotIn("not yet implemented", labels[field], (root, field))
+            self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, labels, root)
 
     def test_coasting_declared_as_a_rule_reaches_the_published_rate(self) -> None:
         driver = self._at_rate_form()

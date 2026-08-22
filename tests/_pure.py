@@ -20,6 +20,7 @@ PURE_MODULES = (
     "validate",
     "intervals",
     "allowance",
+    "accounting",
     "strip",
     "serialise",
 )

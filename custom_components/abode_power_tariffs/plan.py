@@ -14,11 +14,16 @@ from typing import Any, TypeVar
 
 from .const import (
     ALL_DAY_TOKENS,
+    ALLOWANCE_PERIOD_MONTH,
+    ALLOWANCE_PERIODS,
+    CONF_ALLOWANCE_PERIOD,
     CONF_BILLING_CYCLE_DAY,
     CONF_COMPONENTS,
     CONF_CONSTRAINTS,
     CONF_DAY_PATTERNS,
     CONF_DAYS,
+    CONF_DEMAND_BASIS,
+    CONF_DEMAND_INTERVAL,
     CONF_DEMAND_PERIOD,
     CONF_DEMAND_RATE,
     CONF_END,
@@ -50,6 +55,11 @@ from .const import (
     CONF_VALID_TO,
     CONSTRAINT_COASTING_PERMITTED,
     DAY_HOLIDAY,
+    DEFAULT_ALLOWANCE_PERIOD,
+    DEFAULT_DEMAND_BASIS,
+    DEFAULT_DEMAND_INTERVAL,
+    DEMAND_BASES,
+    DEMAND_INTERVALS,
     MINUTES_PER_DAY,
     WEEKDAY_TOKENS,
 )
@@ -148,8 +158,39 @@ class Rate:
     # not a plan-wide fact. Declared, never blended into import_price — a
     # consumer applies its own assumption about draw to work out the real
     # cost, the same way it already does with an allowance.
+    #
+    # Misnamed under the two-basis model below: the rate may be per kW per day
+    # rather than per month. A stored key cannot be renamed, because there is
+    # no config entry migration and no version to trigger one (rule 13), so it
+    # keeps the name it was given and this comment carries the correction.
     demand_rate_per_kw_month: float = 0.0
+    # How the meter averages the draw: 15, 30 or 60 minutes, or zero for
+    # instantaneous. A property of the measurement, not of when the rate is in
+    # force — the timetable already carries when.
+    demand_interval: int = DEFAULT_DEMAND_INTERVAL
+    # Whether the peak is charged once for the billing period or for every day
+    # of it. Decides what the money means and cannot be inferred from a price.
+    demand_basis: str = DEFAULT_DEMAND_BASIS
+    # Whether the cap belongs to each occurrence of this rate's slot or to the
+    # whole billing cycle. Rule 8 and its sibling.
+    allowance_period: str = DEFAULT_ALLOWANCE_PERIOD
     components: tuple[tuple[str, float], ...] = ()
+
+    @property
+    def has_demand_charge(self) -> bool:
+        """Return whether this rate declares a demand charge that is counted.
+
+        Declaring the period is what makes it a demand rate. The price may be
+        zero — a plan can declare that a window is demand-metered before the
+        household knows what it is charged for it — and the peak is still
+        worth counting, because the peak is the fact the bill is built on.
+        """
+        return self.demand_period
+
+    @property
+    def counts_monthly_allowance(self) -> bool:
+        """Return whether this rate's cap runs to the billing cycle."""
+        return self.has_allowance and self.allowance_period == ALLOWANCE_PERIOD_MONTH
 
     @property
     def coasting_permitted(self) -> bool:
@@ -202,6 +243,9 @@ class Rate:
             CONF_FALLBACK_RATE: self.fallback_rate,
             CONF_DEMAND_PERIOD: self.demand_period,
             CONF_DEMAND_RATE: self.demand_rate_per_kw_month,
+            CONF_DEMAND_INTERVAL: self.demand_interval,
+            CONF_DEMAND_BASIS: self.demand_basis,
+            CONF_ALLOWANCE_PERIOD: self.allowance_period,
             CONF_COMPONENTS: dict(self.components),
         }
 
@@ -239,10 +283,48 @@ class Rate:
             ),
             demand_period=bool(raw.get(CONF_DEMAND_PERIOD, False)),
             demand_rate_per_kw_month=float(raw.get(CONF_DEMAND_RATE) or 0.0),
+            # A plan stored before P35 carries neither key. It loads with the
+            # market defaults rather than with a zero interval, which would
+            # read as instantaneous and count no peak at all.
+            demand_interval=_one_of_int(
+                raw.get(CONF_DEMAND_INTERVAL), DEMAND_INTERVALS, DEFAULT_DEMAND_INTERVAL
+            ),
+            demand_basis=_one_of(
+                raw.get(CONF_DEMAND_BASIS), DEMAND_BASES, DEFAULT_DEMAND_BASIS
+            ),
+            allowance_period=_one_of(
+                raw.get(CONF_ALLOWANCE_PERIOD),
+                ALLOWANCE_PERIODS,
+                DEFAULT_ALLOWANCE_PERIOD,
+            ),
             components=tuple(
                 (str(key), float(value)) for key, value in sorted(components.items())
             ),
         )
+
+
+def _one_of(value: Any, permitted: tuple[str, ...], fallback: str) -> str:
+    """Return a stored token, or the default when it is absent or unknown.
+
+    Storage is not schema-checked on read. A value that is not one of the
+    permitted tokens would otherwise reach the arithmetic and be compared
+    against a constant it can never equal, silently choosing the other branch.
+    """
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    return text if text in permitted else fallback
+
+
+def _one_of_int(value: Any, permitted: tuple[int, ...], fallback: int) -> int:
+    """Return a stored integer token, or the default when it is not one."""
+    if value is None or value == "":
+        return fallback
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if number in permitted else fallback
 
 
 def _cents_to_dollars(value: Any) -> float:

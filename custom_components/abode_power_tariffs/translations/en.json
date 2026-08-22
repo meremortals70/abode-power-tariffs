@@ -74,11 +74,15 @@
             "description": "Whether a demand charge applies while this rate is in force, and what it is. Declared only — the monthly amount is not calculated here.",
             "data": {
               "demand_period": "This is a demand charge period",
-              "demand_rate_per_kw_month": "Demand charge ($/kW/month)"
+              "demand_rate_per_kw_month": "Demand charge ($/kW)",
+              "demand_interval": "Meter averaging interval (minutes)",
+              "demand_basis": "How the peak is charged"
             },
             "data_description": {
-              "demand_period": "A marker only. The monthly demand charge is not calculated here.",
-              "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here."
+              "demand_period": "Turns on counting: the highest completed interval while this rate is in force becomes the published peak.",
+              "demand_rate_per_kw_month": "Zero if you do not have one. Charged on the highest completed interval while this rate is in force.",
+              "demand_interval": "0 for instantaneous. 30 minutes is the Australian default; use what your meter and bill actually measure.",
+              "demand_basis": "'period' charges the peak once for the billing cycle. 'day' charges it for every day of the cycle. The same peak is a very different bill either way."
             }
           },
           "allowance": {
@@ -87,14 +91,14 @@
             "data": {
               "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
               "fallback_rate": "Rate once the allowance is used up",
-              "count_allowance": "Count usage against this allowance (not yet implemented)",
-              "import_energy_sensor": "Energy sensor to count (whole-of-plan) (not yet implemented)"
+              "allowance_period": "What the allowance covers",
+              "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
             },
             "data_description": {
-              "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
+              "rate_allowance_kwh": "Zero for none. A declared cap is counted against a meter, and this component switches to the fallback once it is spent.",
               "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
-              "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
-              "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
+              "allowance_period": "'slot' resets on entry to each occurrence of this rate's time period. 'month' accumulates across every slot and day of the billing cycle and resets on the billing day.",
+              "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped or demand-charged rate. Required once either is declared."
             }
           },
           "constraints_section": {
@@ -271,11 +275,15 @@
             "description": "Whether a demand charge applies while this rate is in force, and what it is. Declared only — the monthly amount is not calculated here.",
             "data": {
               "demand_period": "This is a demand charge period",
-              "demand_rate_per_kw_month": "Demand charge (per kW per month)"
+              "demand_rate_per_kw_month": "Demand charge (per kW)",
+              "demand_interval": "Meter averaging interval (minutes)",
+              "demand_basis": "How the peak is charged"
             },
             "data_description": {
-              "demand_period": "A marker only. The monthly demand charge is not calculated here.",
-              "demand_rate_per_kw_month": "Declared and published as entered. The monthly amount is not calculated here - that needs a measured peak, which is the consumer's arithmetic."
+              "demand_period": "Turns on counting: the highest completed interval while this rate is in force becomes the published peak.",
+              "demand_rate_per_kw_month": "Zero if you do not have one. Charged on the highest completed interval while this rate is in force.",
+              "demand_interval": "0 for instantaneous. 30 minutes is the Australian default; use what your meter and bill actually measure.",
+              "demand_basis": "'period' charges the peak once for the billing cycle. 'day' charges it for every day of the cycle. The same peak is a very different bill either way."
             }
           },
           "allowance": {
@@ -284,14 +292,14 @@
             "data": {
               "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
               "fallback_rate": "Rate once the allowance is used up",
-              "count_allowance": "Count usage against this allowance (not yet implemented)",
-              "import_energy_sensor": "Energy sensor to count (whole-of-plan) (not yet implemented)"
+              "allowance_period": "What the allowance covers",
+              "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
             },
             "data_description": {
-              "rate_allowance_kwh": "Zero for none. Some plans give a period free only up to a cap. The allowance belongs to the time slot, not the day.",
+              "rate_allowance_kwh": "Zero for none. A declared cap is counted against a meter, and this component switches to the fallback once it is spent.",
               "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
-              "count_allowance": "Watch a meter and switch this rate to its fallback once the allowance is spent. Leave it off and the cap and fallback are still published, for something else to apply.",
-              "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped rate."
+              "allowance_period": "'slot' resets on entry to each occurrence of this rate's time period. 'month' accumulates across every slot and day of the billing cycle and resets on the billing day.",
+              "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped or demand-charged rate. Required once either is declared."
             }
           },
           "constraints_section": {
@@ -580,19 +588,43 @@
       "daily_supply_charge": {
         "name": "Daily supply charge"
       },
-      "allowance_remaining": {
-        "name": "Allowance remaining"
-      },
       "supply_charge_today": {
         "name": "Supply charge today"
       },
       "supply_charge_energy": {
-        "name": "Supply charge energy"
+        "name": "Supply charge this cycle"
+      },
+      "billing_cycle_progress": {
+        "name": "Billing cycle progress"
+      },
+      "allowance_used_kwh": {
+        "name": "Allowance used ({rate})"
+      },
+      "allowance_remaining_kwh": {
+        "name": "Allowance remaining ({rate})"
+      },
+      "demand_now_kw": {
+        "name": "Demand now ({rate})"
+      },
+      "demand_peak_kw": {
+        "name": "Demand peak ({rate})"
+      },
+      "demand_peak_at": {
+        "name": "Demand peak set at ({rate})"
+      },
+      "demand_cost_to_date": {
+        "name": "Demand cost to date ({rate})"
+      },
+      "demand_cost_projected": {
+        "name": "Demand cost projected ({rate})"
       }
     },
     "binary_sensor": {
       "demand_period_active": {
-        "name": "Demand period active"
+        "name": "Demand period active ({rate})"
+      },
+      "data_complete": {
+        "name": "Data complete"
       }
     }
   },
@@ -620,6 +652,10 @@
     "invalid_plan": {
       "title": "The tariff plan for {title} is not valid",
       "description": "The plan was loaded but does not pass validation, so prices may be missing for part of the day. Open Configure and correct the following:\n\n{problems}"
+    },
+    "input_data_gap": {
+      "title": "An input for {title} is unreadable",
+      "description": "{reason}, since {since}. Consumption in this gap is not being counted, so the current cycle's figures will read low until it closes. Reconnecting the input does not recover what was missed."
     }
   },
   "exceptions": {

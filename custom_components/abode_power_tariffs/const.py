@@ -97,6 +97,73 @@ CONF_EXPORT_FALLBACK_CENTS: Final = "export_fallback_cents"
 CONF_DEMAND_PERIOD: Final = "demand_period"
 CONF_COMPONENTS: Final = "price_components"
 
+# How the meter averages a demand charge. Not a property of when the rate is
+# in force — the timetable already carries that — but of how the retailer
+# measures the draw inside it. Minutes; zero means instantaneous.
+CONF_DEMAND_INTERVAL: Final = "demand_interval"
+DEMAND_INTERVAL_INSTANTANEOUS: Final = 0
+DEMAND_INTERVAL_15: Final = 15
+DEMAND_INTERVAL_30: Final = 30
+DEMAND_INTERVAL_60: Final = 60
+DEMAND_INTERVALS: Final = (
+    DEMAND_INTERVAL_INSTANTANEOUS,
+    DEMAND_INTERVAL_15,
+    DEMAND_INTERVAL_30,
+    DEMAND_INTERVAL_60,
+)
+# What the money means. A flat basis charges the peak once for the billing
+# period; a per-day basis charges it for every day of the cycle. The same 5 kW
+# peak at 20 c is $1.00 or $31.00, so it cannot be inferred.
+CONF_DEMAND_BASIS: Final = "demand_basis"
+DEMAND_BASIS_PERIOD: Final = "period"
+DEMAND_BASIS_DAY: Final = "day"
+DEMAND_BASES: Final = (DEMAND_BASIS_DAY, DEMAND_BASIS_PERIOD)
+# Australian distributors meter on the half hour and bill per kW per day, so a
+# user who opens the section, reads nothing and submits gets this market's
+# answer rather than a zero.
+DEFAULT_DEMAND_INTERVAL: Final = DEMAND_INTERVAL_30
+DEFAULT_DEMAND_BASIS: Final = DEMAND_BASIS_DAY
+
+# Which accounting period an allowance belongs to. A timed one resets on entry
+# to each occurrence of its slot — the owner's hard rule, rule 8 — while a
+# monthly one accumulates across every slot and day of the billing cycle.
+CONF_ALLOWANCE_PERIOD: Final = "allowance_period"
+ALLOWANCE_PERIOD_SLOT: Final = "slot"
+ALLOWANCE_PERIOD_MONTH: Final = "month"
+ALLOWANCE_PERIODS: Final = (ALLOWANCE_PERIOD_SLOT, ALLOWANCE_PERIOD_MONTH)
+DEFAULT_ALLOWANCE_PERIOD: Final = ALLOWANCE_PERIOD_SLOT
+
+# A plan that never declared a billing day bills from the first, which is what
+# a retailer does in the absence of anything else.
+DEFAULT_BILLING_CYCLE_DAY: Final = 1
+
+# Accumulating entity keys. Per rate, qualified by the rate's identifier.
+KEY_DEMAND_PERIOD_ACTIVE: Final = "demand_period_active"
+KEY_DEMAND_NOW_KW: Final = "demand_now_kw"
+KEY_DEMAND_PEAK_KW: Final = "demand_peak_kw"
+KEY_DEMAND_PEAK_AT: Final = "demand_peak_at"
+KEY_DEMAND_COST_TO_DATE: Final = "demand_cost_to_date"
+KEY_DEMAND_COST_PROJECTED: Final = "demand_cost_projected"
+KEY_ALLOWANCE_USED: Final = "allowance_used_kwh"
+KEY_ALLOWANCE_REMAINING: Final = "allowance_remaining_kwh"
+# Per plan. The first two reclaim the unique ids the sensors removed at P11
+# had, so the entities lingering unavailable in a registry are picked up again
+# rather than needing deletion by hand.
+KEY_SUPPLY_CHARGE_TODAY: Final = "supply_charge_today"
+KEY_SUPPLY_CHARGE_ENERGY: Final = "supply_charge_energy"
+KEY_BILLING_CYCLE_PROGRESS: Final = "billing_cycle_progress"
+KEY_DATA_COMPLETE: Final = "data_complete"
+
+# Published beside an accumulated figure so nothing reads it as a bill.
+ATTR_ESTIMATE: Final = "estimate"
+ATTR_CYCLE_START: Final = "cycle_start"
+ATTR_CYCLE_END: Final = "cycle_end"
+ATTR_CYCLE_COMPLETE: Final = "cycle_complete"
+ATTR_QUALIFIED_RATE: Final = "rate"
+
+# The repair issue raised the moment an input gap opens.
+ISSUE_DATA_GAP: Final = "input_data_gap"
+
 # Front-page setup shortcuts. Both are asked once, before any rate.
 CONF_SINGLE_RATE: Final = "single_rate_plan"
 CONF_HAS_EXPORT: Final = "has_export"

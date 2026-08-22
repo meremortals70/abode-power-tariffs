@@ -19,14 +19,43 @@
       "daily_supply_charge": {
         "default": "mdi:calendar-clock"
       },
-      "allowance_remaining": {
-        "default": "mdi:battery-clock"
-      },
       "supply_charge_today": {
         "default": "mdi:cash-clock"
       },
       "supply_charge_energy": {
         "default": "mdi:counter"
+      },
+      "billing_cycle_progress": {
+        "default": "mdi:calendar-refresh"
+      },
+      "allowance_used_kwh": {
+        "default": "mdi:battery-minus"
+      },
+      "allowance_remaining_kwh": {
+        "default": "mdi:battery-clock"
+      },
+      "demand_now_kw": {
+        "default": "mdi:flash"
+      },
+      "demand_peak_kw": {
+        "default": "mdi:flash-alert"
+      },
+      "demand_peak_at": {
+        "default": "mdi:clock-alert"
+      },
+      "demand_cost_to_date": {
+        "default": "mdi:cash"
+      },
+      "demand_cost_projected": {
+        "default": "mdi:cash-sync"
+      }
+    },
+    "binary_sensor": {
+      "demand_period_active": {
+        "default": "mdi:flash-alert-outline"
+      },
+      "data_complete": {
+        "default": "mdi:database-check"
       }
     }
   },

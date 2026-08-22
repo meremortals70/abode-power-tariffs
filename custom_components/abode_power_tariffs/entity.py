@@ -7,8 +7,10 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 
+from .accounting import RateLedger
 from .const import DOMAIN, SIGNAL_UPDATE
 from .coordinator import TariffCoordinator
+from .plan import Rate
 
 
 class TariffEntity(Entity):
@@ -17,12 +19,31 @@ class TariffEntity(Entity):
     _attr_has_entity_name = True
     _attr_should_poll = False
 
-    def __init__(self, coordinator: TariffCoordinator, key: str) -> None:
-        """Initialise the entity."""
+    def __init__(
+        self,
+        coordinator: TariffCoordinator,
+        key: str,
+        qualified_name: str | None = None,
+    ) -> None:
+        """Initialise the entity.
+
+        ``qualified_name`` makes this one of a set, one per rate. A rate is its
+        timetable plus its name (rule 10), so the identifier is what goes in
+        the unique id — never the bare name, which two timetables can share.
+        Without it the entity is one per plan, as before.
+        """
         self.coordinator = coordinator
         self._key = key
-        self._attr_unique_id = f"{coordinator.entry_id}_{key}"
+        self._qualified_name = qualified_name
+        if qualified_name is None:
+            self._attr_unique_id = f"{coordinator.entry_id}_{key}"
+        else:
+            self._attr_unique_id = f"{coordinator.entry_id}_{qualified_name}_{key}"
         self._attr_translation_key = key
+        if qualified_name is not None:
+            # The identifier is what a human is shown alongside the rate
+            # anywhere uniqueness matters, so it goes in the name too.
+            self._attr_translation_placeholders = {"rate": qualified_name}
         self._attr_device_info = DeviceInfo(
             identifiers={coordinator.device_identifier},
             entry_type=DeviceEntryType.SERVICE,
@@ -56,6 +77,63 @@ class TariffEntity(Entity):
         Energy dashboard cost tracking without saying so.
         """
         return self.coordinator.state.resolution is not None
+
+
+class RateTariffEntity(TariffEntity):
+    """An entity belonging to one rate rather than to the plan.
+
+    One set per ``weekday.peak``, never one per ``peak``. Two timetables can
+    each carry a rate called Peak at different prices with different demand
+    charges, and anything keyed on the bare name collapses the two together —
+    which has already happened once, in strip.py, and turned two timetables
+    into one colour.
+    """
+
+    def __init__(self, coordinator: TariffCoordinator, key: str, rate: Rate) -> None:
+        """Initialise an entity scoped to one rate."""
+        super().__init__(coordinator, key, qualified_name=rate.qualified_name)
+        self._rate_name = rate.name
+        self._rate_timetable = rate.timetable
+
+    @property
+    def rate(self) -> Rate | None:
+        """Return this entity's rate as the plan currently holds it.
+
+        Looked up rather than held, so a price edited in Configure is picked
+        up. The entry is reloaded on an options change, but the lookup costs
+        nothing and makes the entity independent of that happening.
+        """
+        assert self._qualified_name is not None
+        for rate in self.coordinator.plan.rates:
+            if rate.qualified_name == self._qualified_name:
+                return rate
+        return None
+
+    @property
+    def ledger(self) -> RateLedger | None:
+        """Return this rate's ledger, or None before anything accumulated."""
+        assert self._qualified_name is not None
+        return self.coordinator.state.ledgers.get(self._qualified_name)
+
+    @property
+    def in_force(self) -> bool:
+        """Return whether this rate is the one in force right now."""
+        resolution = self.coordinator.state.resolution
+        return (
+            resolution is not None
+            and resolution.rate.qualified_name == self._qualified_name
+        )
+
+    @property
+    def available(self) -> bool:
+        """Return True whatever is in force.
+
+        An accumulated figure is a fact about the whole cycle, not about this
+        minute. A peak set on Tuesday is still the number the bill is built on
+        at midnight on Sunday, so the entity that reports it cannot go
+        unavailable the moment its rate stops being in force.
+        """
+        return self.rate is not None
 
 
 DEVICE_DOMAIN = DOMAIN

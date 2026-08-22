@@ -157,48 +157,88 @@ class TestNoUnreachableCode(unittest.TestCase):
 
 
 class TestConstructorsAreComplete(unittest.TestCase):
-    """Every self._x read in a class must be assigned in that class's __init__."""
+    """Every self._x read must be assigned in an __init__ in its class chain."""
 
     def test_every_private_attribute_is_initialised(self) -> None:
-        failures: list[str] = []
+        """A ``self._x`` that is read must be assigned somewhere in its family.
+
+        The fault this guards against shipped once and crashed setup: an
+        attribute read that nothing ever assigned, which neither ruff nor mypy
+        catches because the files cannot be imported without Home Assistant.
+
+        Resolution follows base classes, across files. The entity classes are
+        two and three deep now — a rate-scoped sensor reads what
+        ``TariffEntity.__init__`` set two levels up and in another module —
+        and a guard that only looked at one class body would force every
+        subclass to re-declare what its base already sets, which is how a
+        guard stops being obeyed. What it still catches is the real fault: a
+        name assigned in no ``__init__`` anywhere in the chain.
+        """
+        assigned_by: dict[str, set[str]] = {}
+        methods_by: dict[str, set[str]] = {}
+        bases_of: dict[str, list[str]] = {}
+        classes: list[tuple[Path, ast.ClassDef]] = []
+
         for path in _python_files():
             tree = ast.parse(path.read_text(), filename=str(path))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.ClassDef):
                     continue
+                classes.append((path, node))
                 inits = [
                     m
                     for m in node.body
                     if isinstance(m, ast.FunctionDef) and m.name == "__init__"
                 ]
-                if not inits:
-                    continue
-                assigned = {
+                assigned_by[node.name] = {
                     a.attr
-                    for a in ast.walk(inits[0])
+                    for init in inits
+                    for a in ast.walk(init)
                     if isinstance(a, ast.Attribute) and isinstance(a.ctx, ast.Store)
                 }
-                methods = {
+                methods_by[node.name] = {
                     m.name
                     for m in node.body
                     if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
                 }
-                for a in ast.walk(node):
-                    if (
-                        isinstance(a, ast.Attribute)
-                        and isinstance(a.ctx, ast.Load)
-                        and isinstance(a.value, ast.Name)
-                        and a.value.id == "self"
-                        and a.attr.startswith("_")
-                        and not a.attr.startswith("_attr_")
-                        and not a.attr.startswith("_abort")
-                        and a.attr not in assigned
-                        and a.attr not in methods
-                    ):
-                        failures.append(
-                            f"{path.name}:{a.lineno} {node.name}.{a.attr} is never "
-                            "set in __init__"
-                        )
+                bases_of[node.name] = [
+                    base.id for base in node.bases if isinstance(base, ast.Name)
+                ]
+
+        def gather(
+            source: dict[str, set[str]], name: str, seen: frozenset[str]
+        ) -> set[str]:
+            if name in seen or name not in source:
+                return set()
+            found = set(source[name])
+            for base in bases_of.get(name, []):
+                found |= gather(source, base, seen | {name})
+            return found
+
+        failures: list[str] = []
+        for path, node in classes:
+            assigned = gather(assigned_by, node.name, frozenset())
+            methods = gather(methods_by, node.name, frozenset())
+            if not assigned:
+                # Nothing in the chain has an __init__ of its own, so there is
+                # nothing to check it against.
+                continue
+            for a in ast.walk(node):
+                if (
+                    isinstance(a, ast.Attribute)
+                    and isinstance(a.ctx, ast.Load)
+                    and isinstance(a.value, ast.Name)
+                    and a.value.id == "self"
+                    and a.attr.startswith("_")
+                    and not a.attr.startswith("_attr_")
+                    and not a.attr.startswith("_abort")
+                    and a.attr not in assigned
+                    and a.attr not in methods
+                ):
+                    failures.append(
+                        f"{path.name}:{a.lineno} {node.name}.{a.attr} is never "
+                        "set in __init__"
+                    )
         self.assertEqual(failures, [], "\n".join(failures))
 
 
@@ -288,6 +328,7 @@ class TestPureModulesStayPure(unittest.TestCase):
         "validate.py",
         "intervals.py",
         "allowance.py",
+        "accounting.py",
         "strip.py",
         "serialise.py",
     )
