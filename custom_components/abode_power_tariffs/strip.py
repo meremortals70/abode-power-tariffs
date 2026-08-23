@@ -84,7 +84,7 @@ def render_export_row(
 
     lines = ["  Feed-in:"]
     for period in day_pattern.sorted_export_periods():
-        rate = plan.export_rate_by_name(period.rate)
+        rate = plan.export_rate_by_name(period.rate, day_pattern.name)
         lines.append(
             _row(
                 f"{format_time(period.start)}-{format_time(period.end)}",

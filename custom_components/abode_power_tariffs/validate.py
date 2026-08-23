@@ -137,7 +137,6 @@ def _season_probe_dates(plan: Plan) -> list[date]:
 def validate_export(plan: Plan) -> list[Problem]:
     """Check the export side when it is not a single all-day price."""
     problems: list[Problem] = []
-    names = set(plan.export_rate_names)
 
     for pattern in plan.day_patterns:
         if pattern.export_same_all_day:
@@ -148,7 +147,7 @@ def validate_export(plan: Plan) -> list[Problem]:
             continue
         cursor = 0
         for period in periods:
-            if period.rate not in names:
+            if plan.export_rate_by_name(period.rate, pattern.name) is None:
                 problems.append(
                     Problem(
                         f"{pattern.name} export",

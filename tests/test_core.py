@@ -1343,6 +1343,183 @@ class TestExportSide(unittest.TestCase):
         )
         self.assertFalse(is_valid(broken))
 
+    def test_export_at_is_none_when_no_day_pattern_matches(self) -> None:
+        """P36. Was a fabricated 0.0, indistinguishable from a genuine one."""
+        ExportRate = _pkg.plan.ExportRate
+        weekdays_only = DayPattern(
+            "Weekday",
+            frozenset({"mon", "tue", "wed", "thu", "fri"}),
+            (Period(0, 1440, "standard"),),
+            None,
+            None,
+            (Period(0, 1440, "daytime"),),
+            False,
+            0.0,
+        )
+        plan = Plan(
+            "P",
+            (Rate("standard", 0.32),),
+            (weekdays_only,),
+            export_rates=(ExportRate("daytime", 0.027),),
+        )
+        # A Saturday, which the plan's only day pattern does not cover.
+        self.assertIsNone(plan.export_at(date(2026, 8, 15), 600, False))
+        self.assertIsNone(plan.export_price_at(date(2026, 8, 15), 600, False))
+        self.assertIsNone(plan.export_resolve(date(2026, 8, 15), 600, False))
+
+    def test_export_at_is_none_when_no_period_covers_the_minute(self) -> None:
+        """P36. The incomplete-day case above, queried at the actual gap."""
+        ExportRate = _pkg.plan.ExportRate
+        plan = Plan(
+            "P",
+            (Rate("standard", 0.32),),
+            (
+                DayPattern(
+                    "Every day",
+                    ALL_DAYS,
+                    (Period(0, 1440, "standard"),),
+                    None,
+                    None,
+                    (Period(0, 600, "daytime"),),
+                    False,
+                    0.0,
+                ),
+            ),
+            export_rates=(ExportRate("daytime", 0.027),),
+        )
+        # 600 is covered; 601 falls in the gap the incomplete day leaves.
+        self.assertAlmostEqual(
+            plan.export_price_at(date(2026, 8, 14), 599, False), 0.027
+        )
+        self.assertIsNone(plan.export_at(date(2026, 8, 14), 601, False))
+        self.assertIsNone(plan.export_price_at(date(2026, 8, 14), 601, False))
+
+    def test_export_at_is_none_when_the_named_rate_does_not_exist(self) -> None:
+        """P36. The strip.py-style dangling reference, on the export side."""
+        plan = Plan(
+            "P",
+            (Rate("standard", 0.32),),
+            (
+                DayPattern(
+                    "Every day",
+                    ALL_DAYS,
+                    (Period(0, 1440, "standard"),),
+                    None,
+                    None,
+                    (Period(0, 1440, "ghost"),),
+                    False,
+                    0.0,
+                ),
+            ),
+            # No export rate named "ghost" declared at all.
+            export_rates=(),
+        )
+        self.assertIsNone(plan.export_at(date(2026, 8, 14), 600, False))
+        self.assertIsNone(plan.export_price_at(date(2026, 8, 14), 600, False))
+
+    def test_an_unscoped_export_rate_still_resolves(self) -> None:
+        """P37. An old plan's export rates carry no timetable field at all —
+        from_dict must not require one, and the lookup must still find it
+        regardless of which timetable asks. Mirrors the equivalent Rate test.
+        """
+        rate = ExportRate.from_dict({"name": "Daytime", "export_cents": 8.0})
+        self.assertIsNone(rate.timetable)
+        plan = Plan(
+            "P",
+            (Rate("standard", 0.32),),
+            (
+                DayPattern(
+                    "Every day",
+                    ALL_DAYS,
+                    (Period(0, 1440, "standard"),),
+                    None,
+                    None,
+                    (Period(0, 1440, "Daytime"),),
+                    False,
+                    0.0,
+                ),
+            ),
+            export_rates=(rate,),
+        )
+        self.assertAlmostEqual(
+            plan.export_price_at(date(2026, 8, 14), 600, False), 0.08
+        )
+
+    def test_the_same_export_rate_name_on_two_timetables_is_two_rates(self) -> None:
+        """P37. Both are called Evening. They are told apart by their
+        timetable — the export-side equivalent of rule 10's own test.
+        """
+        weekday = DayPattern(
+            "Weekday",
+            frozenset({"mon", "tue", "wed", "thu", "fri"}),
+            (Period(0, 1440, "standard"),),
+            None,
+            None,
+            (Period(0, 1440, "Evening"),),
+            False,
+            0.0,
+        )
+        weekend = DayPattern(
+            "Weekend",
+            frozenset({"sat", "sun", "holiday"}),
+            (Period(0, 1440, "standard"),),
+            None,
+            None,
+            (Period(0, 1440, "Evening"),),
+            False,
+            0.0,
+        )
+        plan = Plan(
+            "P",
+            (Rate("standard", 0.32),),
+            (weekday, weekend),
+            export_rates=(
+                ExportRate("Evening", 0.08, timetable="Weekday"),
+                ExportRate("Evening", 0.15, timetable="Weekend"),
+            ),
+        )
+        # A Wednesday and a Saturday, so each pattern resolves in turn.
+        self.assertAlmostEqual(
+            plan.export_price_at(date(2026, 8, 12), 1200, False), 0.08
+        )
+        self.assertAlmostEqual(
+            plan.export_price_at(date(2026, 8, 15), 1200, False), 0.15
+        )
+
+    def test_validate_export_catches_a_rate_missing_on_its_own_timetable(
+        self,
+    ) -> None:
+        """P37. The scoped-miss case: an export rate named 'Evening' exists,
+        but only on the *other* timetable — the flat membership test this
+        replaced would have missed this entirely.
+        """
+        weekday = DayPattern(
+            "Weekday",
+            frozenset({"mon", "tue", "wed", "thu", "fri"}),
+            (Period(0, 1440, "standard"),),
+            None,
+            None,
+            (Period(0, 1440, "Evening"),),
+            False,
+            0.0,
+        )
+        plan = Plan(
+            "P",
+            (Rate("standard", 0.32),),
+            (weekday,),
+            # Only declared on Weekend — Weekday's own period names a rate
+            # that, for Weekday, does not exist.
+            export_rates=(ExportRate("Evening", 0.15, timetable="Weekend"),),
+        )
+        self.assertFalse(is_valid(plan))
+        problems = [str(problem) for problem in validate_plan(plan)]
+        self.assertTrue(
+            any(
+                "Evening" in problem and "does not exist" in problem
+                for problem in problems
+            )
+        )
+
     def test_demand_rate_round_trips(self) -> None:
         """P27: the demand rate belongs to the rate, not the plan."""
         plan = Plan(

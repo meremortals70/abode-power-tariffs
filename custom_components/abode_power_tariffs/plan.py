@@ -362,11 +362,23 @@ class ExportRate:
     # A bare price rather than the name of another export rate: there is no
     # second export rate to point at the way import's fallback_rate does.
     fallback_price: float | None = None
+    # Which timetable this rate belongs to. Two timetables can each have an
+    # export rate called Evening at different prices, because a rate is
+    # identified by the pair rather than by the name alone (rule 10, and
+    # now its export equivalent).
+    #
+    # None means the rate was stored before the scoping existed, when the
+    # setup flow guaranteed uniqueness by prefixing the timetable name onto
+    # the rate name. Such a rate keeps the name it was given, is already
+    # unique, and resolves in any timetable. It is not a way to share a
+    # rate; it is what the old plans look like.
+    timetable: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the export rate as a plain dictionary."""
         return {
             CONF_NAME: self.name,
+            CONF_TIMETABLE: self.timetable,
             CONF_EXPORT_CENTS: round(self.price * 100, 4),
             CONF_EXPORT_ALLOWANCE_KWH: self.allowance_kwh,
             CONF_EXPORT_FALLBACK_CENTS: (
@@ -382,8 +394,13 @@ class ExportRate:
         name = str(raw.get(CONF_NAME, "")).strip()
         if not name:
             raise PlanError("An export rate must have a name")
+        timetable = raw.get(CONF_TIMETABLE)
         return cls(
             name=name,
+            # Absent on a plan stored before the scoping existed, whose
+            # export rate names already carry the timetable and are
+            # already unique.
+            timetable=str(timetable).strip() or None if timetable else None,
             price=_cents_to_dollars(raw.get(CONF_EXPORT_CENTS)),
             allowance_kwh=_optional_float(raw.get(CONF_EXPORT_ALLOWANCE_KWH)),
             fallback_price=(
@@ -575,6 +592,22 @@ class Resolution:
 
 
 @dataclass(frozen=True, slots=True)
+class ExportResolution:
+    """The feed-in declaration resolved at one instant, with its context.
+
+    Kept apart from Resolution (rule 5): a feed-in price resolving or
+    failing to resolve says nothing about whether an import period did, and
+    the day pattern that matched may have no export period at all if it
+    uses one flat all-day price instead — period is None in exactly that
+    case, not because nothing resolved.
+    """
+
+    day_pattern: DayPattern
+    period: Period | None
+    pricing: ExportPricing
+
+
+@dataclass(frozen=True, slots=True)
 class Plan:
     """A complete tariff plan for one metering channel."""
 
@@ -659,46 +692,89 @@ class Plan:
         # A seasonal day set is more specific than a year-round one.
         return seasonal or general
 
-    def export_rate_by_name(self, name: str) -> ExportRate | None:
-        """Return an export rate by name, or None."""
+    def export_rate_by_name(
+        self, name: str, timetable: str | None = None
+    ) -> ExportRate | None:
+        """Return an export rate by name, preferring one belonging to a timetable.
+
+        An export rate scoped to the timetable asked for wins, so a period in
+        the Weekend timetable naming 'Evening' gets the weekend's Evening and
+        not the weekday's. An unscoped rate is the fallback, which is what a
+        plan stored before the scoping existed consists of entirely. Mirrors
+        rate_by_name exactly.
+        """
+        unscoped: ExportRate | None = None
         for rate in self.export_rates:
-            if rate.name == name:
+            if rate.name != name:
+                continue
+            if timetable is not None and rate.timetable == timetable:
                 return rate
-        return None
+            if rate.timetable is None and unscoped is None:
+                unscoped = rate
+        return unscoped
 
     @property
     def export_rate_names(self) -> tuple[str, ...]:
         """Return every export rate name, in configured order."""
         return tuple(rate.name for rate in self.export_rates)
 
-    def export_at(self, day: date, minutes: int, is_holiday: bool) -> ExportPricing:
-        """Return the whole feed-in declaration in force at a moment.
+    def export_resolve(
+        self, day: date, minutes: int, is_holiday: bool
+    ) -> ExportResolution | None:
+        """Return the feed-in declaration in force at a moment, with context.
 
-        The price, the cap on it, and what is paid past that cap — read from
-        wherever the feed-in price is declared. The mode is a property of the
-        timetable: one may be flat while another has periods, and the
-        declaration follows the price either way.
+        None means nothing resolved: no day pattern matched, no period
+        covered the minute, or the period named a rate that does not exist.
+        The single place this is decided — export_at and export_price_at
+        both read it rather than repeating the walk, so the entity that
+        needs the day pattern and period alongside the price is never
+        tempted to reconstruct them separately and risk disagreeing.
         """
         pattern = self.day_pattern_for(day, is_holiday)
         if pattern is None:
-            return ExportPricing(0.0, None, None)
+            return None
         if pattern.export_same_all_day:
-            return ExportPricing(
-                pattern.export_flat_price,
-                pattern.export_allowance_kwh,
-                pattern.export_fallback_price,
+            return ExportResolution(
+                day_pattern=pattern,
+                period=None,
+                pricing=ExportPricing(
+                    pattern.export_flat_price,
+                    pattern.export_allowance_kwh,
+                    pattern.export_fallback_price,
+                ),
             )
         period = pattern.export_period_at(minutes)
         if period is None:
-            return ExportPricing(0.0, None, None)
-        rate = self.export_rate_by_name(period.rate)
+            return None
+        rate = self.export_rate_by_name(period.rate, pattern.name)
         if rate is None:
-            return ExportPricing(0.0, None, None)
-        return ExportPricing(rate.price, rate.allowance_kwh, rate.fallback_price)
+            return None
+        return ExportResolution(
+            day_pattern=pattern,
+            period=period,
+            pricing=ExportPricing(rate.price, rate.allowance_kwh, rate.fallback_price),
+        )
 
-    def export_price_at(self, day: date, minutes: int, is_holiday: bool) -> float:
-        """Return the feed-in price in force, in dollars per kWh."""
-        return self.export_at(day, minutes, is_holiday).price
+    def export_at(
+        self, day: date, minutes: int, is_holiday: bool
+    ) -> ExportPricing | None:
+        """Return the whole feed-in declaration in force at a moment, or None.
+
+        A fabricated 0.0 used to stand in for every failure to resolve,
+        indistinguishable from a plan that genuinely charges nothing for
+        feed-in — the same mistake rule 6's blank-price reasoning already
+        rules out elsewhere. Mirrors Resolution | None on the import side,
+        which propagates through effective_rate to the sensor the same way.
+        """
+        resolution = self.export_resolve(day, minutes, is_holiday)
+        return None if resolution is None else resolution.pricing
+
+    def export_price_at(
+        self, day: date, minutes: int, is_holiday: bool
+    ) -> float | None:
+        """Return the feed-in price in force, in dollars per kWh, or None."""
+        pricing = self.export_at(day, minutes, is_holiday)
+        return None if pricing is None else pricing.price
 
     def is_active_on(self, day: date) -> bool:
         """Return whether the plan's validity range contains this date."""

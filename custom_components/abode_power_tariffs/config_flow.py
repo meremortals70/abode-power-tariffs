@@ -54,6 +54,7 @@ from .const import (
     CONF_EXPORT_SAME_ALL_DAY,
     CONF_FALLBACK_RATE,
     CONF_GST_PERCENT,
+    CONF_HAS_ALLOWANCE,
     CONF_HAS_EXPORT,
     CONF_HOLIDAY_SENSOR,
     CONF_IMPORT_CENTS,
@@ -195,14 +196,23 @@ def _rate_record(user_input: dict[str, Any]) -> dict[str, Any]:
         record[CONF_DEMAND_BASIS] = (
             user_input.get(CONF_DEMAND_BASIS) or DEFAULT_DEMAND_BASIS
         )
-    if CONF_RATE_ALLOWANCE_KWH in user_input:
-        allowance = user_input.get(CONF_RATE_ALLOWANCE_KWH) or None
-        record[CONF_RATE_ALLOWANCE_KWH] = allowance
+    if CONF_HAS_ALLOWANCE in user_input:
+        has_allowance = bool(user_input.get(CONF_HAS_ALLOWANCE))
+        # Checked is what makes it an allowance, the same as demand_period —
+        # not the magnitude. A checked box with a zero typed is now a
+        # legitimate declared-zero cap, symmetric with demand_rate already
+        # allowing zero. Unchecked always clears it, whatever the number box
+        # still holds.
+        record[CONF_RATE_ALLOWANCE_KWH] = (
+            user_input.get(CONF_RATE_ALLOWANCE_KWH, 0.0) if has_allowance else None
+        )
         # A fallback only means something with a cap to fall past it. The
         # select always carries a value, so storing it either way would put a
         # rate the user never chose onto every uncapped rate.
         record[CONF_FALLBACK_RATE] = (
-            user_input.get(CONF_FALLBACK_RATE) or None if allowance else None
+            str(user_input.get(CONF_FALLBACK_RATE) or "").strip() or None
+            if has_allowance
+            else None
         )
         record[CONF_ALLOWANCE_PERIOD] = (
             user_input.get(CONF_ALLOWANCE_PERIOD) or DEFAULT_ALLOWANCE_PERIOD
@@ -251,9 +261,13 @@ def _meter_required_without_one(user_input: dict[str, Any]) -> bool:
     the same test a demand charge is held to, since neither can be honoured
     without one. Nothing about the meter is required until one of the two is
     declared, which is what asking the minimum means here.
+
+    Reads the has_allowance checkbox, not the typed magnitude — a checked box
+    with a zero typed is still a declared cap, the same way demand_period
+    being checked still declares a demand charge with a zero-priced rate.
     """
     needs_meter = bool(user_input.get(CONF_DEMAND_PERIOD)) or bool(
-        user_input.get(CONF_RATE_ALLOWANCE_KWH)
+        user_input.get(CONF_HAS_ALLOWANCE)
     )
     if not needs_meter:
         return False
@@ -320,6 +334,7 @@ SETUP_RATE_FIELDS: Final = (
     CONF_DEMAND_RATE,
     CONF_DEMAND_INTERVAL,
     CONF_DEMAND_BASIS,
+    CONF_HAS_ALLOWANCE,
     CONF_RATE_ALLOWANCE_KWH,
     CONF_FALLBACK_RATE,
     CONF_ALLOWANCE_PERIOD,
@@ -458,8 +473,20 @@ def _rate_schema(
             mode=selector.SelectSelectorMode.DROPDOWN,
         )
     )
+    # Declaring the allowance is what makes it a cap, the same shape
+    # demand_period already is — not inferred from whether the typed amount
+    # is zero. Form-only: not read by _rate_record's shape, only by whether
+    # it's true, so nothing needs to migrate for old stored rates. Defaulted
+    # from whether the rate already has one, the same way editing a demand
+    # rate defaults its own checkbox from what's stored.
     schema[
         vol.Required(
+            CONF_HAS_ALLOWANCE,
+            default=existing.get(CONF_RATE_ALLOWANCE_KWH) is not None,
+        )
+    ] = selector.BooleanSelector()
+    schema[
+        vol.Optional(
             CONF_RATE_ALLOWANCE_KWH,
             default=float(existing.get(CONF_RATE_ALLOWANCE_KWH) or 0.0),
         )
@@ -471,15 +498,23 @@ def _rate_schema(
     # No export fields here. An export allowance belongs beside the export
     # price it caps, which is on the feed-in screens; import and export are
     # separate flows and this is an import rate.
-    if fallback_options:
-        schema[
-            vol.Required(
-                CONF_FALLBACK_RATE,
-                default=existing.get(CONF_FALLBACK_RATE) or fallback_options[0],
-            )
-        ] = selector.SelectSelector(
-            selector.SelectSelectorConfig(options=fallback_options)
+    #
+    # custom_value lets the user name a rate that doesn't exist yet — the
+    # single-rate-timetable case, where fallback_options is empty because
+    # there is nothing else on the timetable to offer. validate_plan already
+    # catches an unresolved name and async_step_setup_invalid already routes
+    # back to fix it, so nothing else has to be built for that name to
+    # resolve. Gated on the checkbox, not on fallback_options, so a rate that
+    # never declared an allowance is never asked for one.
+    schema[
+        vol.Optional(
+            CONF_FALLBACK_RATE,
+            default=existing.get(CONF_FALLBACK_RATE)
+            or (fallback_options[0] if fallback_options else ""),
         )
+    ] = selector.SelectSelector(
+        selector.SelectSelectorConfig(options=fallback_options, custom_value=True)
+    )
     # Which accounting period the cap belongs to: each occurrence of the
     # rate's slot, or the whole billing cycle. Sits beside the cap because it
     # is part of the same declaration — what the number caps.
@@ -521,6 +556,7 @@ RATE_SECTIONS: Final = (
     (
         SECTION_ALLOWANCE,
         (
+            CONF_HAS_ALLOWANCE,
             CONF_RATE_ALLOWANCE_KWH,
             CONF_FALLBACK_RATE,
             CONF_ALLOWANCE_PERIOD,
@@ -682,9 +718,10 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     def _pattern_export_rates(self) -> list[dict[str, Any]]:
         """Return the feed-in rates belonging to the timetable being entered."""
-        prefix = f"{self._pattern_name} "
         return [
-            rate for rate in self._export_rates if rate[CONF_NAME].startswith(prefix)
+            rate
+            for rate in self._export_rates
+            if rate.get(CONF_TIMETABLE) == self._pattern_name
         ]
 
     def _store_pattern(self) -> None:
@@ -713,6 +750,31 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._export_flat = 0.0
         self._export_allowance = None
         self._export_fallback = None
+
+    def _restore_pattern(self) -> None:
+        """Undo _store_pattern, the exact inverse, field for field.
+
+        async_step_timetable_done stores the pattern just entered the moment
+        it is reached — before the plan is checked, since checking only
+        happens if the user chooses finish. If validation then fails,
+        async_step_setup_invalid sends the user back to the rate screen to
+        fix it, and the only path back to timetable_done from there is
+        through periods and feed-in again. Without this, that second pass
+        finds _pattern_name and _periods already cleared and either crashes
+        rebuilding a nameless pattern or, if it did not, would duplicate the
+        one already stored. Popping it back off and restoring the scratch
+        state is what makes the second pass an edit of the same timetable
+        rather than a phantom new one.
+        """
+        pattern = self._patterns.pop()
+        self._pattern_name = str(pattern[CONF_NAME])
+        self._pattern_days = list(pattern[CONF_DAYS])
+        self._periods = list(pattern[CONF_PERIODS])
+        self._export_periods = list(pattern[CONF_EXPORT_PERIODS])
+        self._export_same_all_day = bool(pattern[CONF_EXPORT_SAME_ALL_DAY])
+        self._export_flat = float(pattern[CONF_EXPORT_FLAT_CENTS])
+        self._export_allowance = pattern[CONF_EXPORT_ALLOWANCE_KWH]
+        self._export_fallback = pattern[CONF_EXPORT_FALLBACK_CENTS]
 
     # ---------------------------------------------------------------- 1 name
 
@@ -1192,10 +1254,19 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
             # first, then move on. The import side reads the same way.
             if action == SUBMIT_CONTINUE and not typed and self._pattern_export_rates():
                 return await self.async_step_export_periods()
-            full = f"{self._pattern_name} {typed}".strip()
             if not typed:
                 errors[CONF_NAME] = "name_required"
-            elif any(rate[CONF_NAME] == full for rate in self._export_rates):
+            # The rate belongs to this timetable, and says so in a field
+            # rather than by having the timetable's name pushed onto the
+            # front of its own — the same fix rule 10 already got for
+            # import rates. That's what lets a weekend Evening sit
+            # alongside a weekday Evening while both are still called
+            # Evening.
+            elif any(
+                rate[CONF_NAME] == typed
+                and rate.get(CONF_TIMETABLE) == self._pattern_name
+                for rate in self._export_rates
+            ):
                 errors[CONF_NAME] = "rate_exists"
             else:
                 self._export_rates.append(
@@ -1203,7 +1274,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                         ExportRate,
                         None,
                         {
-                            CONF_NAME: full,
+                            CONF_NAME: typed,
+                            CONF_TIMETABLE: self._pattern_name,
                             CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS],
                             # The cap on this feed-in price and what is paid
                             # past it, declared beside the price they belong to.
@@ -1470,6 +1542,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         cause lives — a cap declared with no fallback rate beside it.
         """
         if user_input is not None:
+            self._restore_pattern()
             return await self.async_step_rates()
         return self.async_show_form(
             step_id="setup_invalid",
@@ -1567,6 +1640,11 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         self._export_rate_index: int | None = None
         self._editing_export: bool = False
         self._failure: str = ""
+        # Set while a duplicated timetable is waiting on its own day
+        # coverage. Read once by async_step_day_pattern_add's success path,
+        # then cleared — see async_step_day_pattern_duplicate.
+        self._duplicate_source: str | None = None
+        self._duplicate_target_name: str | None = None
 
     # ------------------------------------------------------------- utilities
 
@@ -1847,6 +1925,82 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             ):
                 rate[CONF_FALLBACK_RATE] = current
 
+    def _rename_export_rate(
+        self, previous: str, current: str, timetable: str | None
+    ) -> None:
+        """Follow an export rate rename into the export periods that name it.
+
+        Scoped to the rate's own timetable, the same reasoning as
+        _rename_rate: renaming the weekday Evening must not repoint the
+        weekend's export periods at it. No fallback_rate half here — export's
+        fallback is a bare price, not the name of another export rate.
+        """
+        for pattern in self._day_patterns():
+            if timetable is not None and pattern.get(CONF_NAME) != timetable:
+                continue
+            for period in pattern.get(CONF_EXPORT_PERIODS, []):
+                if period.get(CONF_RATE) == previous:
+                    period[CONF_RATE] = current
+
+    def _duplicate_into(self, source_name: str, target_name: str) -> None:
+        """Copy a timetable's rates and periods onto a newly created one.
+
+        Called once the new timetable has its own name and its own,
+        genuinely different day coverage — never the source's, which is
+        what made the old duplicate mechanism never actually activate
+        (A1c). Nothing here touches days or season; those already came
+        from a real add, not a copy, by the time this runs.
+
+        Each rate the source's periods use is duplicated too, requalified
+        onto the new timetable rather than left pointing at the source's —
+        the pair is what makes a rate unique (rule 10), so the same bare
+        name is fine on both. fallback_rate needs no rewriting: it resolves
+        scoped to the rate's own timetable at read time, and both halves of
+        any fallback pair are duplicated together here.
+
+        The export side is a full copy too, overwriting whatever the add
+        screen's own export fields captured — duplicate means a complete
+        starting point, and export mode was never the collision-prone part
+        days and season were. Requires Part A: without timetable-scoped
+        export rates, this would collide with the source's under the same
+        bare name, the same clash the config-flow screen already refuses.
+        """
+        target = next(
+            (p for p in self._day_patterns() if p.get(CONF_NAME) == target_name),
+            None,
+        )
+        source = next(
+            (p for p in self._day_patterns() if p.get(CONF_NAME) == source_name),
+            None,
+        )
+        if target is None or source is None:
+            return
+
+        for rate in list(self._rates()):
+            if rate.get(CONF_TIMETABLE) != source_name:
+                continue
+            copied = copy.deepcopy(rate)
+            copied[CONF_TIMETABLE] = target_name
+            self._rates().append(copied)
+        target[CONF_PERIODS] = copy.deepcopy(source.get(CONF_PERIODS, []))
+
+        target[CONF_EXPORT_SAME_ALL_DAY] = source.get(CONF_EXPORT_SAME_ALL_DAY, True)
+        if source.get(CONF_EXPORT_SAME_ALL_DAY, True):
+            target[CONF_EXPORT_FLAT_CENTS] = source.get(CONF_EXPORT_FLAT_CENTS, 0.0)
+            target[CONF_EXPORT_ALLOWANCE_KWH] = source.get(CONF_EXPORT_ALLOWANCE_KWH)
+            target[CONF_EXPORT_FALLBACK_CENTS] = source.get(CONF_EXPORT_FALLBACK_CENTS)
+            target[CONF_EXPORT_PERIODS] = []
+        else:
+            for rate in list(self._export_rates()):
+                if rate.get(CONF_TIMETABLE) != source_name:
+                    continue
+                copied = copy.deepcopy(rate)
+                copied[CONF_TIMETABLE] = target_name
+                self._export_rates().append(copied)
+            target[CONF_EXPORT_PERIODS] = copy.deepcopy(
+                source.get(CONF_EXPORT_PERIODS, [])
+            )
+
     def _rename_timetable(self, previous: str, current: str) -> None:
         """Follow a timetable rename into the rates that belong to it.
 
@@ -2004,6 +2158,10 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 record = merged(DayPattern, existing or None, fields)
                 if index is None:
                     self._day_patterns().append(record)
+                    if self._duplicate_source is not None:
+                        self._duplicate_into(self._duplicate_source, name)
+                        self._duplicate_source = None
+                        self._duplicate_target_name = None
                 else:
                     previous = str(existing.get(CONF_NAME, ""))
                     self._day_patterns()[index] = record
@@ -2017,7 +2175,12 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        CONF_NAME, default=str(existing.get(CONF_NAME) or EVERY_DAY)
+                        CONF_NAME,
+                        default=str(
+                            existing.get(CONF_NAME)
+                            or self._duplicate_target_name
+                            or EVERY_DAY
+                        ),
                     ): selector.TextSelector(),
                     vol.Required(
                         "same_every_day", default=same_every_day
@@ -2092,19 +2255,29 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
     async def async_step_day_pattern_duplicate(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Copy a day pattern and its periods, then open it for editing."""
+        """Copy a timetable's rates and periods onto a new one.
+
+        Asks for day coverage the same way adding a timetable from scratch
+        does (async_step_day_pattern_add, with no index — a genuine add,
+        not an edit of a copy) rather than copying the source's days and
+        season. Copying them verbatim used to produce two patterns that
+        silently collide — day_pattern_for resolves the first match in list
+        order, so the copy was never actually selected for any date, since
+        `44072ae` (0.2.0 beta) introduced this step. Rates and periods are
+        duplicated once the new pattern has its own name and its own,
+        genuinely different days — see _duplicate_into.
+        """
         names = self._day_pattern_names()
         if not names:
             self._day_pattern_index = None
             return await self.async_step_day_pattern_add()
         if user_input is not None:
             source = self._day_patterns()[names.index(str(user_input["source"]))]
-            copied = copy.deepcopy(source)
-            copied[CONF_NAME] = (
+            self._duplicate_source = str(source.get(CONF_NAME))
+            self._duplicate_target_name = (
                 str(user_input[CONF_NAME]).strip() or f"{source.get(CONF_NAME)} copy"
             )
-            self._day_patterns().append(copied)
-            self._day_pattern_index = len(self._day_patterns()) - 1
+            self._day_pattern_index = None
             return await self.async_step_day_pattern_add()
         return self.async_show_form(
             step_id="day_pattern_duplicate",
@@ -2545,8 +2718,12 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
 
         if user_input is not None:
             name = str(user_input[CONF_NAME]).strip()
+            timetable = _timetable_from(user_input)
+            # Identified by the pair, so the same name under a different
+            # timetable is a different rate rather than a clash — the same
+            # fix rule 10 already got for import rates.
             clash = any(
-                rate.get(CONF_NAME) == name
+                rate.get(CONF_NAME) == name and rate.get(CONF_TIMETABLE) == timetable
                 for position, rate in enumerate(self._export_rates())
                 if position != index
             )
@@ -2560,6 +2737,7 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     existing or None,
                     {
                         CONF_NAME: name,
+                        CONF_TIMETABLE: timetable,
                         CONF_EXPORT_CENTS: user_input[CONF_EXPORT_CENTS],
                         CONF_EXPORT_ALLOWANCE_KWH: (
                             user_input.get(CONF_EXPORT_ALLOWANCE_KWH) or None
@@ -2575,12 +2753,17 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     previous = str(self._export_rates()[index].get(CONF_NAME, ""))
                     self._export_rates()[index] = record
                     if previous and previous != name:
-                        for pattern in self._day_patterns():
-                            for period in pattern.get(CONF_EXPORT_PERIODS, []):
-                                if period.get(CONF_RATE) == previous:
-                                    period[CONF_RATE] = name
+                        self._rename_export_rate(previous, name, timetable)
                 self._export_rate_index = None
                 return await self.async_step_export_menu()
+
+        # Offer "leave it alone" for a rate stored before the scoping
+        # existed, the same as the import rate screen does.
+        current = existing.get(CONF_TIMETABLE)
+        timetables = self._day_pattern_names()
+        offered_timetables = list(timetables)
+        if not current and existing:
+            offered_timetables = [UNSCOPED_TIMETABLE, *offered_timetables]
 
         return self.async_show_form(
             step_id="export_rate_add",
@@ -2589,6 +2772,13 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     vol.Required(
                         CONF_NAME, default=str(existing.get(CONF_NAME) or "")
                     ): selector.TextSelector(),
+                    vol.Required(
+                        CONF_TIMETABLE,
+                        default=current
+                        or (offered_timetables[0] if offered_timetables else ""),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=offered_timetables)
+                    ),
                     vol.Required(
                         CONF_EXPORT_CENTS,
                         default=float(existing.get(CONF_EXPORT_CENTS) or 0.0),

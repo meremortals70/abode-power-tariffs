@@ -89,14 +89,16 @@
             "name": "Allowance",
             "description": "Whether this rate is capped, and what energy costs once the cap is spent.",
             "data": {
+              "has_allowance": "This rate has an energy allowance",
               "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
               "fallback_rate": "Rate once the allowance is used up",
               "allowance_period": "What the allowance covers",
               "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
             },
             "data_description": {
-              "rate_allowance_kwh": "Zero for none. A declared cap is counted against a meter, and this component switches to the fallback once it is spent.",
-              "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
+              "has_allowance": "Turns on counting: a declared cap is counted against a meter, and this component switches to the fallback once it is spent.",
+              "rate_allowance_kwh": "The cap. A zero here with the box above checked is a legitimate zero allowance, not 'none' — leave the box unchecked for that.",
+              "fallback_rate": "Only used when there is an allowance. Pick an existing rate, or type the name of one you haven't created yet — it resolves once you add it.",
               "allowance_period": "'slot' resets on entry to each occurrence of this rate's time period. 'month' accumulates across every slot and day of the billing cycle and resets on the billing day.",
               "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped or demand-charged rate. Required once either is declared."
             }
@@ -290,14 +292,16 @@
             "name": "Allowance",
             "description": "Whether this rate is capped, and what energy costs once the cap is spent.",
             "data": {
+              "has_allowance": "This rate has an energy allowance",
               "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
               "fallback_rate": "Rate once the allowance is used up",
               "allowance_period": "What the allowance covers",
               "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
             },
             "data_description": {
-              "rate_allowance_kwh": "Zero for none. A declared cap is counted against a meter, and this component switches to the fallback once it is spent.",
-              "fallback_rate": "Only used when there is an allowance: what the energy costs once it is spent.",
+              "has_allowance": "Turns on counting: a declared cap is counted against a meter, and this component switches to the fallback once it is spent.",
+              "rate_allowance_kwh": "The cap. A zero here with the box above checked is a legitimate zero allowance, not 'none' — leave the box unchecked for that.",
+              "fallback_rate": "Only used when there is an allowance. Pick an existing rate, or type the name of one you haven't created yet — it resolves once you add it.",
               "allowance_period": "'slot' resets on entry to each occurrence of this rate's time period. 'month' accumulates across every slot and day of the billing cycle and resets on the billing day.",
               "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped or demand-charged rate. Required once either is declared."
             }
@@ -496,11 +500,13 @@
         "description": "Entered in cents per kWh, as the bill quotes it.",
         "data": {
           "name": "Feed-in rate name",
+          "timetable": "Timetable this rate belongs to",
           "export_cents": "You are paid (c/kWh)",
           "export_allowance_kwh": "Export allowance before the price changes (kWh)",
           "export_fallback_cents": "Export price after the allowance (c/kWh)"
         },
         "data_description": {
+          "timetable": "Export rates are identified by their timetable and their name together, the same as import rates — a weekday Evening and a weekend Evening can both be called Evening at different prices. A rate from an older plan carries no timetable and keeps the name it already has.",
           "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet.",
           "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent."
         }

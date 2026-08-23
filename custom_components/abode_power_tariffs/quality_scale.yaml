@@ -84,7 +84,7 @@ rules:
   test-coverage:
     status: todo
     comment: >
-      477 tests, 93% line and branch coverage measured with coverage.py against
+      495 tests, 94% line and branch coverage measured with coverage.py against
       thin Home Assistant stubs, and run on every push by
       .github/workflows/ci.yml. Four modules are at 100%; the lowest are
       config_flow.py and coordinator.py, both at 90%. The rule asks for 95%

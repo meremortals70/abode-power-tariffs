@@ -31,7 +31,7 @@ class Interval:
     end: datetime
     rate: str
     import_price: float
-    export_price: float
+    export_price: float | None
     constraints: tuple[str, ...]
     enforceable_constraints: tuple[str, ...]
     coasting_permitted: bool
@@ -71,7 +71,9 @@ class Interval:
             "end_time": self.end.isoformat(),
             "duration": self.duration_minutes,
             "per_kwh": round(self.import_price, 6),
-            "export_per_kwh": round(self.export_price, 6),
+            "export_per_kwh": (
+                None if self.export_price is None else round(self.export_price, 6)
+            ),
             "rate": self.rate,
             # The flat list is every rule, unchanged, so a consumer that has
             # always read it sees what it always saw. The sibling key names
@@ -97,17 +99,29 @@ class Interval:
             "forecast": False,
         }
 
-    def as_evcc_entry(self) -> dict[str, Any]:
+    def as_evcc_entry(self, *, export: bool = False) -> dict[str, Any] | None:
         """Return the interval in the shape evcc reads from a forecast attribute.
 
         Local time, with the offset, like everything else this component
         publishes. The offset makes the instant unambiguous, including on the
         day the clocks go back and a wall-clock time occurs twice.
+
+        Returns None when the requested side did not resolve for this
+        interval — export_price can be None even though the interval exists
+        (it exists because import resolved), and the caller filters those
+        out rather than sending evcc a null price. evcc's own Rate.Price is
+        a bare, non-pointer float64: a null either fails to parse or gets
+        coerced back to 0.0 on evcc's side, the same fabricated-zero bug
+        relocated rather than fixed. A missing entry, by contrast, is a
+        known, tolerated case there.
         """
+        value = self.export_price if export else self.import_price
+        if value is None:
+            return None
         return {
             "start": self.start.isoformat(),
             "end": self.end.isoformat(),
-            "value": round(self.import_price, 6),
+            "value": round(value, 6),
         }
 
 
@@ -275,7 +289,7 @@ def generate(
                     end=nxt.astimezone(zone),
                     rate=resolution.rate.qualified_name,
                     import_price=resolution.rate.import_price,
-                    export_price=export.price,
+                    export_price=None if export is None else export.price,
                     constraints=tuple(sorted(resolution.rate.constraints)),
                     enforceable_constraints=tuple(
                         sorted(resolution.rate.enforceable_constraints)
@@ -289,8 +303,12 @@ def generate(
                     day_pattern=resolution.day_pattern.name,
                     demand_period=resolution.rate.demand_period,
                     demand_rate_per_kw_month=resolution.rate.demand_rate_per_kw_month,
-                    export_allowance_kwh=export.allowance_kwh,
-                    export_fallback_price=export.fallback_price,
+                    export_allowance_kwh=None
+                    if export is None
+                    else export.allowance_kwh,
+                    export_fallback_price=(
+                        None if export is None else export.fallback_price
+                    ),
                 )
             )
         cursor = nxt

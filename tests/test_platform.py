@@ -244,6 +244,146 @@ class TestSensorPlatform(PlatformCase):
             sensor = self.sensors().by_key(key)
             self.assertIn("forecast", type(sensor)._unrecorded_attributes)
 
+    def test_export_price_is_unknown_when_import_resolves_but_export_does_not(
+        self,
+    ) -> None:
+        """P36. Was a fabricated $0.00 — import and export are separate
+        flows (rule 5), so one resolving says nothing about the other.
+        """
+        data = options(
+            **{
+                CONST.CONF_DAY_PATTERNS: [
+                    {
+                        CONST.CONF_NAME: "Every day",
+                        CONST.CONF_DAYS: list(CONST.ALL_DAY_TOKENS),
+                        CONST.CONF_PERIODS: [
+                            {
+                                CONST.CONF_START: "00:00",
+                                CONST.CONF_END: "16:00",
+                                CONST.CONF_RATE: "Every day Off Peak",
+                            },
+                            {
+                                CONST.CONF_START: "16:00",
+                                CONST.CONF_END: "24:00",
+                                CONST.CONF_RATE: "Every day Peak",
+                            },
+                        ],
+                        CONST.CONF_EXPORT_SAME_ALL_DAY: False,
+                        # NOW is 10:00 (setUp) — this leaves it uncovered
+                        # while every import period still resolves fine.
+                        CONST.CONF_EXPORT_PERIODS: [
+                            {
+                                CONST.CONF_START: "14:00",
+                                CONST.CONF_END: "24:00",
+                                CONST.CONF_RATE: "Evening",
+                            },
+                        ],
+                    }
+                ],
+                CONST.CONF_EXPORT_RATES: [
+                    {CONST.CONF_NAME: "Evening", CONST.CONF_EXPORT_CENTS: 8.0},
+                ],
+            }
+        )
+        import_sensor = self.sensors(data).by_key("import_price")
+        export_sensor = self.added.by_key("export_price")
+        self.assertIsNotNone(import_sensor.native_value)
+        self.assertIsNone(export_sensor.native_value)
+        self.assertTrue(export_sensor.available)
+
+    def test_export_price_attributes_are_export_specific(self) -> None:
+        """P36. Used to share ImportPriceSensor's attributes wholesale —
+        rate, day_pattern and the forecast were all import's own facts.
+        """
+        data = options(
+            **{
+                CONST.CONF_DAY_PATTERNS: [
+                    {
+                        CONST.CONF_NAME: "Every day",
+                        CONST.CONF_DAYS: list(CONST.ALL_DAY_TOKENS),
+                        CONST.CONF_PERIODS: [
+                            {
+                                CONST.CONF_START: "00:00",
+                                CONST.CONF_END: "24:00",
+                                CONST.CONF_RATE: "Every day Off Peak",
+                            },
+                        ],
+                        CONST.CONF_EXPORT_SAME_ALL_DAY: False,
+                        CONST.CONF_EXPORT_PERIODS: [
+                            {
+                                CONST.CONF_START: "00:00",
+                                CONST.CONF_END: "24:00",
+                                CONST.CONF_RATE: "Evening",
+                            },
+                        ],
+                    }
+                ],
+                CONST.CONF_EXPORT_RATES: [
+                    {
+                        CONST.CONF_NAME: "Evening",
+                        CONST.CONF_EXPORT_CENTS: 8.0,
+                        CONST.CONF_EXPORT_ALLOWANCE_KWH: 5.0,
+                        CONST.CONF_EXPORT_FALLBACK_CENTS: 3.0,
+                    },
+                ],
+            }
+        )
+        sensor = self.sensors(data).by_key("export_price")
+        attributes = sensor.extra_state_attributes
+        self.assertEqual(attributes["rate_name"], "Evening")
+        self.assertEqual(attributes["period_start"], "00:00")
+        self.assertEqual(attributes["period_end"], "24:00")
+        self.assertEqual(attributes["day_pattern"], "Every day")
+        self.assertAlmostEqual(attributes["allowance_kwh"], 5.0)
+        self.assertAlmostEqual(attributes["fallback_per_kwh"], 0.03)
+        self.assertFalse(attributes["plan_expired"])
+        # None of these are import's facts, unlike the shared-attributes bug.
+        self.assertNotEqual(attributes["rate_name"], "Every day Off Peak")
+
+    def test_the_export_forecast_uses_export_prices_and_omits_gaps(self) -> None:
+        """P36. evcc's own Rate.Price is non-optional, so an unresolved
+        interval is left out of the list rather than sent as null.
+        """
+        data = options(
+            **{
+                CONST.CONF_DAY_PATTERNS: [
+                    {
+                        CONST.CONF_NAME: "Every day",
+                        CONST.CONF_DAYS: list(CONST.ALL_DAY_TOKENS),
+                        CONST.CONF_PERIODS: [
+                            {
+                                CONST.CONF_START: "00:00",
+                                CONST.CONF_END: "24:00",
+                                CONST.CONF_RATE: "Every day Off Peak",
+                            },
+                        ],
+                        CONST.CONF_EXPORT_SAME_ALL_DAY: False,
+                        CONST.CONF_EXPORT_PERIODS: [
+                            {
+                                CONST.CONF_START: "14:00",
+                                CONST.CONF_END: "24:00",
+                                CONST.CONF_RATE: "Evening",
+                            },
+                        ],
+                    }
+                ],
+                CONST.CONF_EXPORT_RATES: [
+                    {CONST.CONF_NAME: "Evening", CONST.CONF_EXPORT_CENTS: 8.0},
+                ],
+            }
+        )
+        import_sensor = self.sensors(data).by_key("import_price")
+        export_sensor = self.added.by_key("export_price")
+        import_forecast = import_sensor.extra_state_attributes["forecast"]
+        export_forecast = export_sensor.extra_state_attributes["forecast"]
+        # Every import interval resolves (one all-day rate), so its series
+        # is the full horizon. Export only resolves 14:00-24:00 each day,
+        # so its series is shorter — the gap is left out, not nulled.
+        self.assertLess(len(export_forecast), len(import_forecast))
+        self.assertTrue(export_forecast)
+        for entry in export_forecast:
+            self.assertAlmostEqual(entry["value"], 0.08)
+
     def test_rate_sensor_is_an_enum_of_the_plan(self) -> None:
         sensor = self.sensors().by_key("rate")
         self.assertEqual(sensor.native_value, "Every day Off Peak")

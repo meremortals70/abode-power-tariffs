@@ -128,6 +128,20 @@ class _PriceSensor(TariffEntity, SensorEntity):
         super().__init__(coordinator, key)
         self._attr_native_unit_of_measurement = f"{currency}{ENERGY_PRICE_SUFFIX}"
 
+
+class ImportPriceSensor(_PriceSensor):
+    """The price of imported energy right now."""
+
+    def __init__(self, coordinator: TariffCoordinator, currency: str) -> None:
+        """Initialise the import price sensor."""
+        super().__init__(coordinator, "import_price", currency)
+
+    @property
+    def native_value(self) -> float | None:
+        """Return dollars per kWh."""
+        rate = self.coordinator.state.effective_rate
+        return None if rate is None else round(rate.import_price, 6)
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the period, the rules in force, and the forward series."""
@@ -164,22 +178,9 @@ class _PriceSensor(TariffEntity, SensorEntity):
         series = self.coordinator.forward_intervals(
             DEFAULT_HOURS, DEFAULT_RESOLUTION_MINUTES
         )
-        attributes["forecast"] = [interval.as_evcc_entry() for interval in series]
+        forecast = [interval.as_evcc_entry() for interval in series]
+        attributes["forecast"] = [entry for entry in forecast if entry is not None]
         return attributes
-
-
-class ImportPriceSensor(_PriceSensor):
-    """The price of imported energy right now."""
-
-    def __init__(self, coordinator: TariffCoordinator, currency: str) -> None:
-        """Initialise the import price sensor."""
-        super().__init__(coordinator, "import_price", currency)
-
-    @property
-    def native_value(self) -> float | None:
-        """Return dollars per kWh."""
-        rate = self.coordinator.state.effective_rate
-        return None if rate is None else round(rate.import_price, 6)
 
 
 class ExportPriceSensor(_PriceSensor):
@@ -191,13 +192,73 @@ class ExportPriceSensor(_PriceSensor):
 
     @property
     def native_value(self) -> float | None:
-        """Return dollars per kWh."""
-        return round(self.coordinator.export_price_now(), 6)
+        """Return dollars per kWh, or None if nothing resolves.
+
+        A flat all-day price always resolves. A period-based export
+        timetable can fail the same way import can — no day pattern
+        matched, no period covers the minute, or the period names a rate
+        that does not exist — and those are no longer reported as a
+        fabricated $0.00. Mirrors ImportPriceSensor.native_value exactly.
+        """
+        price = self.coordinator.export_price_now()
+        return None if price is None else round(price, 6)
 
     @property
     def available(self) -> bool:
-        """A flat export price does not depend on an import period resolving."""
+        """Return True regardless of whether the import period resolves.
+
+        Import and export are separate flows (rule 5): an import period
+        failing to resolve says nothing about whether the export price did.
+        The base class ties availability to the import resolution, which
+        would wrongly couple the two if left unoverridden. Nothing resolving
+        on the export side is native_value returning None — HA shows that
+        as 'unknown', distinct from both a genuine price and 'unavailable'.
+        """
         return True
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the export period, the declared cap, and the forward series.
+
+        Sourced from export_resolution_now, not from the import-side
+        coordinator state this used to share with ImportPriceSensor —
+        rate, day_pattern and the forecast series were all import's facts,
+        mislabelled as this entity's own. ExportRate has no constraints,
+        no enforceable_constraints and no coasting_permitted (rule 5's
+        separate flows again), and nothing accumulates against an export
+        allowance the way an import one does, so allowance_exhausted and
+        allowance_counted have no export equivalent — omitted rather than
+        filled with an import answer or a fabricated one.
+        """
+        resolution = self.coordinator.export_resolution_now()
+        period = resolution.period if resolution else None
+        pricing = resolution.pricing if resolution else None
+
+        attributes: dict[str, Any] = {
+            "rate_name": period.rate if period else None,
+            "day_pattern": resolution.day_pattern.name if resolution else None,
+            "season": (
+                resolution.day_pattern.name
+                if resolution and resolution.day_pattern.is_seasonal
+                else None
+            ),
+            "period_start": format_time(period.start) if period else None,
+            "period_end": format_time(period.end) if period else None,
+            "allowance_kwh": pricing.allowance_kwh if pricing else None,
+            "fallback_per_kwh": pricing.fallback_price if pricing else None,
+            "plan_expired": self.coordinator.state.plan_expired,
+        }
+
+        # evcc reads a list of {start, end, value} from a named attribute.
+        # Filtered to intervals where the export side itself resolved —
+        # an interval exists whenever import resolved, which says nothing
+        # about whether export did in that same slice.
+        series = self.coordinator.forward_intervals(
+            DEFAULT_HOURS, DEFAULT_RESOLUTION_MINUTES
+        )
+        forecast = [interval.as_evcc_entry(export=True) for interval in series]
+        attributes["forecast"] = [entry for entry in forecast if entry is not None]
+        return attributes
 
 
 class RateSensor(TariffEntity, SensorEntity):

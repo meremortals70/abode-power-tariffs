@@ -1035,9 +1035,19 @@ class TestOptionsFlow(unittest.TestCase):
         driver.start()
         driver.choose("day_patterns_menu")
         driver.choose("day_pattern_duplicate")
-        driver.submit(source="Every day", name="Weekend")
+        result = driver.submit(source="Every day", name="Weekend")
+        # Nothing is created yet — day coverage is asked for first, same as
+        # a genuine add, not copied from the source (A1c: copying it
+        # verbatim produced two patterns that silently collided).
+        self.assertEqual(result["step_id"], "day_pattern_add")
+        self.assertEqual(len(driver.flow.working[CONST.CONF_DAY_PATTERNS]), 1)
+        driver.submit(
+            name="Weekend", same_every_day=False, days=["sat", "sun", "holiday"]
+        )
         patterns = driver.flow.working[CONST.CONF_DAY_PATTERNS]
         self.assertEqual(len(patterns), 2)
+        self.assertEqual(patterns[1][CONST.CONF_NAME], "Weekend")
+        self.assertEqual(set(patterns[1][CONST.CONF_DAYS]), {"sat", "sun", "holiday"})
         self.assertEqual(len(patterns[1][CONST.CONF_PERIODS]), 2)
 
     def test_editing_a_period(self) -> None:
@@ -1149,6 +1159,9 @@ class TestOptionsFlowBranches(unittest.TestCase):
         driver.choose("day_patterns_menu")
         driver.choose("day_pattern_duplicate")
         driver.submit(source="Every day", name="Weekend")
+        driver.submit(
+            name="Weekend", same_every_day=False, days=["sat", "sun", "holiday"]
+        )
         driver.result = run(driver.flow.async_step_init())
         result = driver.choose("periods_pick_day_pattern")
         self.assertEqual(result["step_id"], "periods_pick_day_pattern")
@@ -1441,6 +1454,7 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
         self.assertEqual(
             grouped[CONST.SECTION_ALLOWANCE],
             {
+                CONST.CONF_HAS_ALLOWANCE,
                 CONST.CONF_RATE_ALLOWANCE_KWH,
                 CONST.CONF_FALLBACK_RATE,
                 CONST.CONF_ALLOWANCE_PERIOD,
@@ -1483,18 +1497,22 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
         self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, fields)
 
     def test_the_edit_form_is_the_same_form_unfiltered(self) -> None:
-        """One definition. The setup form asking for less is the only difference."""
+        """One definition. The setup form asking for less is the only difference.
+
+        fallback_rate used to be the one field this test named as the
+        difference between an empty and a populated fallback_options list —
+        that was the P36 bug: the field was gated on sibling existence
+        rather than on whether the rate declares an allowance. It is now
+        present regardless, so setup and full carry the same field names for
+        any given fallback_options.
+        """
         setup = _ha_stubs.field_names(
             PKG.config_flow._rate_schema(
                 {}, [], fields=PKG.config_flow.SETUP_RATE_FIELDS
             )
         )
-        full = _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"]))
-        self.assertTrue(setup < full)
-        self.assertEqual(
-            full - setup,
-            {CONST.CONF_FALLBACK_RATE},
-        )
+        full = _ha_stubs.field_names(PKG.config_flow._rate_schema({}, []))
+        self.assertEqual(setup, full)
 
     def test_no_export_field_is_on_an_import_rate_form(self) -> None:
         """P32: import and export are separate flows on the forms as well."""
@@ -1554,20 +1572,40 @@ class TestCountingSitsWithTheCap(unittest.TestCase):
         self.assertEqual(marker.description, {"suggested_value": "sensor.grid_import"})
 
     def test_a_declared_cap_makes_the_meter_required(self) -> None:
-        """Rule 6's own test, replacing the old tickbox guard."""
+        """Rule 6's own test, replacing the old tickbox guard.
+
+        Reads has_allowance, not the typed magnitude — a magnitude alone,
+        with the box unchecked, declares nothing (the P36 fix: the box used
+        to be inferred from a nonzero number, so a rate that never touched
+        the field still got treated as if it had one). A checked box with a
+        zero typed is still a declared cap, symmetric with a demand charge
+        at a zero price.
+        """
         self.assertFalse(
             PKG.config_flow._meter_required_without_one(
-                {CONST.CONF_RATE_ALLOWANCE_KWH: 0.0}
+                {CONST.CONF_RATE_ALLOWANCE_KWH: 24.0}
             )
         )
         self.assertTrue(
             PKG.config_flow._meter_required_without_one(
-                {CONST.CONF_RATE_ALLOWANCE_KWH: 24.0}
+                {
+                    CONST.CONF_HAS_ALLOWANCE: True,
+                    CONST.CONF_RATE_ALLOWANCE_KWH: 0.0,
+                }
+            )
+        )
+        self.assertTrue(
+            PKG.config_flow._meter_required_without_one(
+                {
+                    CONST.CONF_HAS_ALLOWANCE: True,
+                    CONST.CONF_RATE_ALLOWANCE_KWH: 24.0,
+                }
             )
         )
         self.assertFalse(
             PKG.config_flow._meter_required_without_one(
                 {
+                    CONST.CONF_HAS_ALLOWANCE: True,
                     CONST.CONF_RATE_ALLOWANCE_KWH: 24.0,
                     CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
                 }

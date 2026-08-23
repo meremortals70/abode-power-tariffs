@@ -204,7 +204,7 @@ A plan where weekends are cheaper and the weekend feed-in is better:
 | Timetable | `Weekday`, Mon–Fri | `Weekend`, Sat, Sun, public holidays |
 | Rates | Off Peak, Shoulder, Peak → `weekday.off_peak`, `weekday.shoulder`, `weekday.peak` | Off Peak, Peak → `weekend.off_peak`, `weekend.peak` |
 | Time periods | 00:00–06:00 Off Peak, 06:00–16:00 Shoulder, 16:00–21:00 Peak, 21:00–00:00 Shoulder | 00:00–16:00 Off Peak, 16:00–00:00 Peak |
-| Feed-in | One price all day, 2.7 c | Switch off → `Weekend Daytime` 2.7 c, `Weekend Evening` 12 c → 00:00–16:00 Daytime, 16:00–00:00 Evening. Feed-in rates are not scoped to a timetable; they carry its name in front |
+| Feed-in | One price all day, 2.7 c | Switch off → `Daytime` 2.7 c, `Evening` 12 c → 00:00–16:00 Daytime, 16:00–00:00 Evening. Feed-in rates are scoped to their timetable the same way import rates are, so a Weekday Evening and a Weekend Evening can both just be called Evening |
 | Timetable complete | Add a timetable for other days | Finish |
 
 Five rates, two timetables, one plan.

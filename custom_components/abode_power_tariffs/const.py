@@ -89,6 +89,13 @@ SECTION_CONSTRAINTS: Final = "constraints_section"
 CONF_RATE_ALLOWANCE_KWH: Final = "rate_allowance_kwh"
 CONF_EXPORT_ALLOWANCE_KWH: Final = "export_allowance_kwh"
 CONF_FALLBACK_RATE: Final = "fallback_rate"
+# Declares an allowance the same way CONF_DEMAND_PERIOD declares a demand
+# charge — a flag, not inferred from whether the typed amount is zero. Unlike
+# demand, this is form-only: nothing in the tree needs a rate to distinguish
+# "no allowance" from "an allowance capped at exactly zero", so there is no
+# stored key to go with it, and Rate.has_allowance keeps deriving from
+# rate_allowance_kwh being not None, exactly as before.
+CONF_HAS_ALLOWANCE: Final = "has_allowance"
 # The export-side equivalent of fallback_rate. Export has no second named rate
 # to point at the way import does, so this is a bare price rather than a
 # lookup: the export price once the export allowance is spent. Declared, like

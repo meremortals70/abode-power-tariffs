@@ -26,6 +26,7 @@ import json
 import sys
 import types
 import unittest
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -135,6 +136,7 @@ def populated_options() -> dict[str, Any]:
         CONST.CONF_EXPORT_RATES: [
             {
                 CONST.CONF_NAME: "Every day Daytime",
+                CONST.CONF_TIMETABLE: "Every day",
                 CONST.CONF_EXPORT_CENTS: 5.0,
                 CONST.CONF_EXPORT_ALLOWANCE_KWH: 10.0,
                 CONST.CONF_EXPORT_FALLBACK_CENTS: 2.0,
@@ -346,6 +348,199 @@ class TestAnEditChangesOnlyWhatWasEdited(unittest.TestCase):
         self.assert_only(["daily_supply_charge_cents: 116.6 -> 120.0"])
 
 
+class TestExportRatesAreScopedByTimetable(unittest.TestCase):
+    """P37. Identified by the pair, the same fix rule 10 already got import."""
+
+    def setUp(self) -> None:
+        options = populated_options()
+        second = copy.deepcopy(options[CONST.CONF_DAY_PATTERNS][0])
+        second[CONST.CONF_NAME] = "Weekend"
+        options[CONST.CONF_DAY_PATTERNS].append(second)
+        self.driver = OptionsDriver(options)
+        self.driver.start()
+
+    def test_the_same_name_on_a_different_timetable_is_not_a_clash(self) -> None:
+        # populated_options() already has an export rate named
+        # "Every day Daytime" scoped to "Every day". The same bare name,
+        # scoped to "Weekend", must be accepted rather than refused.
+        self.driver.choose("export_menu")
+        self.driver.choose("export_rate_add")
+        self.driver.submit(
+            name="Every day Daytime",
+            timetable="Weekend",
+            export_cents=9.0,
+        )
+        self.assertNotIn("name", self.driver.result.get("errors") or {})
+        names_and_timetables = {
+            (rate[CONST.CONF_NAME], rate.get(CONST.CONF_TIMETABLE))
+            for rate in self.driver.flow.working[CONST.CONF_EXPORT_RATES]
+        }
+        self.assertIn(("Every day Daytime", "Weekend"), names_and_timetables)
+        self.assertIn(("Every day Daytime", "Every day"), names_and_timetables)
+
+    def test_the_same_name_on_the_same_timetable_is_still_a_clash(self) -> None:
+        self.driver.choose("export_menu")
+        self.driver.choose("export_rate_add")
+        self.driver.submit(
+            name="Every day Daytime",
+            timetable="Every day",
+            export_cents=9.0,
+        )
+        self.assertEqual(
+            (self.driver.result.get("errors") or {}).get("name"), "rate_exists"
+        )
+
+
+class TestDuplicatingATimetable(unittest.TestCase):
+    """P37 Part B. A1c: broken two ways, only one of which was named.
+
+    The duplicate used to copy days and season verbatim, so it collided
+    with its source and was never actually selected for any date — dead
+    since 44072ae (0.2.0 beta). Fixed by asking for day coverage the same
+    way a genuine add does, then duplicating rates and periods onto the
+    now-distinct timetable once it has a name and days of its own.
+    """
+
+    def setUp(self) -> None:
+        self.before = populated_options()
+        # "Every day" covering every day, including Saturday, would make
+        # the activation test meaningless — Saturday would match the source
+        # first regardless of whether the duplicate works. Weekday-only
+        # gives a genuinely non-overlapping source to duplicate from.
+        self.before[CONST.CONF_DAY_PATTERNS][0][CONST.CONF_DAYS] = [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri",
+        ]
+        self.driver = OptionsDriver(copy.deepcopy(self.before))
+        self.driver.start()
+        self.driver.choose("day_patterns_menu")
+        self.driver.choose("day_pattern_duplicate")
+        self.driver.submit(source="Every day", name="Weekend")
+        self.driver.submit(
+            name="Weekend", same_every_day=False, days=["sat", "sun", "holiday"]
+        )
+
+    def _plan(self) -> Any:
+        options = self.driver.flow.working
+        return PLAN.Plan.from_dict({**options, "name": "P"})
+
+    def test_the_duplicate_actually_activates(self) -> None:
+        """The direct test for the dead-on-arrival half of A1c."""
+        plan = self._plan()
+        saturday = date(2026, 8, 15)  # a date "Every day" would also match
+        pattern = plan.day_pattern_for(saturday, False)
+        assert pattern is not None
+        self.assertEqual(pattern.name, "Weekend")
+
+    def test_the_duplicates_periods_resolve_its_own_rates(self) -> None:
+        """Not the source's — checked by giving them different prices."""
+        rates = self.driver.flow.working[CONST.CONF_RATES]
+        for rate in rates:
+            if (
+                rate[CONST.CONF_NAME] == "Off Peak"
+                and rate.get(CONST.CONF_TIMETABLE) == "Weekend"
+            ):
+                rate[CONST.CONF_IMPORT_CENTS] = 99.0
+        plan = self._plan()
+        source_rate = plan.rate_by_name("Off Peak", "Every day")
+        copy_rate = plan.rate_by_name("Off Peak", "Weekend")
+        assert source_rate is not None and copy_rate is not None
+        self.assertAlmostEqual(source_rate.import_price, 0.198)
+        self.assertAlmostEqual(copy_rate.import_price, 0.99)
+
+    def test_a_duplicated_rates_fallback_resolves_within_its_own_timetable(
+        self,
+    ) -> None:
+        """No rewriting needed — the lookup was always scoped by timetable."""
+        plan = self._plan()
+        copied_peak = plan.rate_by_name("Peak", "Weekend")
+        assert copied_peak is not None
+        self.assertEqual(copied_peak.fallback_rate, "Off Peak")
+        fallback = plan.rate_by_name(copied_peak.fallback_rate, copied_peak.timetable)
+        assert fallback is not None
+        self.assertEqual(fallback.timetable, "Weekend")
+
+    def test_the_source_timetable_is_untouched_by_duplicating_it(self) -> None:
+        """Rule 14's own discipline: a creation derived from an edit must
+        not affect the thing it was derived from.
+        """
+        found = differences(
+            self.before[CONST.CONF_DAY_PATTERNS][0],
+            self.driver.flow.working[CONST.CONF_DAY_PATTERNS][0],
+        )
+        self.assertEqual(found, [], "\n".join(found))
+        source_rates = [
+            rate
+            for rate in self.driver.flow.working[CONST.CONF_RATES]
+            if rate.get(CONST.CONF_TIMETABLE) == "Every day"
+        ]
+        self.assertEqual(differences(self.before[CONST.CONF_RATES], source_rates), [])
+
+
+class TestDuplicatingPeriodBasedExport(unittest.TestCase):
+    """P37 Part B, verification item 4 — requires Part A to be landed,
+
+    which is itself the dependency proof: this cannot pass against export
+    rates that aren't scoped by timetable.
+    """
+
+    def _options(self) -> dict[str, Any]:
+        options = populated_options()
+        pattern = options[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "16:00",
+                CONST.CONF_RATE: "Daytime",
+            },
+            {
+                CONST.CONF_START: "16:00",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Evening",
+            },
+        ]
+        options[CONST.CONF_EXPORT_RATES] = [
+            {
+                CONST.CONF_NAME: "Daytime",
+                CONST.CONF_TIMETABLE: "Every day",
+                CONST.CONF_EXPORT_CENTS: 3.0,
+            },
+            {
+                CONST.CONF_NAME: "Evening",
+                CONST.CONF_TIMETABLE: "Every day",
+                CONST.CONF_EXPORT_CENTS: 8.0,
+            },
+        ]
+        return options
+
+    def test_period_based_export_duplicates_its_own_rates(self) -> None:
+        driver = OptionsDriver(self._options())
+        driver.start()
+        driver.choose("day_patterns_menu")
+        driver.choose("day_pattern_duplicate")
+        driver.submit(source="Every day", name="Weekend")
+        driver.submit(
+            name="Weekend", same_every_day=False, days=["sat", "sun", "holiday"]
+        )
+        options = driver.flow.working
+        plan = PLAN.Plan.from_dict({**options, "name": "P"})
+        weekend = next(p for p in plan.day_patterns if p.name == "Weekend")
+        self.assertFalse(weekend.export_same_all_day)
+        self.assertAlmostEqual(
+            plan.export_price_at(date(2026, 8, 15), 600, False), 0.03
+        )
+        self.assertAlmostEqual(
+            plan.export_price_at(date(2026, 8, 15), 1200, False), 0.08
+        )
+        # The source's own export rates are untouched, not repointed.
+        source_price = plan.export_price_at(date(2026, 8, 10), 600, False)
+        self.assertAlmostEqual(source_price, 0.03)
+
+
 class TestTheTimetableScreenOffersItsFeedInDeclaration(unittest.TestCase):
     """An all-day feed-in price, its cap, and what is paid past the cap.
 
@@ -456,7 +651,11 @@ def _setup_forms() -> list[tuple[str, Any]]:
     record(run(flow.async_step_feed_in()))
     record(run(flow.async_step_export_rates()))
     flow._export_rates = [
-        {CONST.CONF_NAME: "Every day Daytime", CONST.CONF_EXPORT_CENTS: 5.0}
+        {
+            CONST.CONF_NAME: "Every day Daytime",
+            CONST.CONF_TIMETABLE: "Every day",
+            CONST.CONF_EXPORT_CENTS: 5.0,
+        }
     ]
     record(run(flow.async_step_export_periods()))
     record(run(flow.async_step_setup_failure()))

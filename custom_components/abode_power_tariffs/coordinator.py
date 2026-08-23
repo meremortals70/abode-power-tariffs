@@ -59,7 +59,7 @@ from .const import (
     MINUTES_PER_DAY,
     SIGNAL_UPDATE,
 )
-from .plan import Plan, Rate, Resolution
+from .plan import ExportResolution, Plan, Rate, Resolution
 from .validate import validate_plan
 
 _LOGGER = logging.getLogger(__name__)
@@ -672,12 +672,24 @@ class TariffCoordinator:
 
     # ------------------------------------------------------------------ views
 
-    def export_price_now(self) -> float:
-        """Return the feed-in price in force, in dollars per kWh."""
+    def export_resolution_now(self) -> ExportResolution | None:
+        """Return the feed-in declaration in force right now, with context.
+
+        The one place this is computed. export_price_now and
+        ExportPriceSensor.extra_state_attributes both read it rather than
+        resolving separately, so the price and the day pattern or period
+        shown alongside it can never disagree about what moment they
+        describe.
+        """
         now = dt_util.now()
-        return self.plan.export_price_at(
+        return self.plan.export_resolve(
             now.date(), now.hour * 60 + now.minute, self.is_holiday(now.date())
         )
+
+    def export_price_now(self) -> float | None:
+        """Return the feed-in price in force, in dollars per kWh, or None."""
+        resolution = self.export_resolution_now()
+        return None if resolution is None else resolution.pricing.price
 
     def forward_intervals(
         self, hours: int, resolution_minutes: int

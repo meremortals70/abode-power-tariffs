@@ -18,6 +18,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import voluptuous as vol
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _ha_stubs
@@ -379,8 +381,8 @@ class TestTwoTimetables(unittest.TestCase):
             flat_export=None,
             export_rates=[("Daytime", 2.7), ("Evening", 12.0)],
             export_periods=[
-                ("00:00", "16:00", "Weekend Daytime"),
-                ("16:00", "00:00", "Weekend Evening"),
+                ("00:00", "16:00", "Daytime"),
+                ("16:00", "00:00", "Evening"),
             ],
         )
         self.assertEqual(self.driver.step, "timetable_done")
@@ -393,7 +395,7 @@ class TestTwoTimetables(unittest.TestCase):
         self.assertEqual(
             plan.qualified_rate_names, ("weekday.peak", "weekend.off_peak")
         )
-        self.assertEqual(plan.export_rate_names, ("Weekend Daytime", "Weekend Evening"))
+        self.assertEqual(plan.export_rate_names, ("Daytime", "Evening"))
 
     def test_feed_in_mode_differs_between_timetables(self) -> None:
         self.test_second_timetable_with_timed_feed_in()
@@ -640,6 +642,7 @@ class TestSetupChecksThePlanBeforeCreatingIt(unittest.TestCase):
         driver.submit(
             name="Peak",
             import_cents=30.0,
+            has_allowance=True,
             rate_allowance_kwh=10.0,
             import_energy_sensor="sensor.grid_import",
             on_submit=CONST.SUBMIT_ADD,
@@ -687,6 +690,80 @@ class TestSetupChecksThePlanBeforeCreatingIt(unittest.TestCase):
         self.assertEqual(result["type"], CREATE)
         plan = Plan.from_dict({**result["options"], "name": result["title"]})
         self.assertEqual(validate_plan(plan), [])
+
+    def test_a_typed_fallback_that_does_not_exist_yet_is_accepted_by_the_screen(
+        self,
+    ) -> None:
+        """P36. custom_value lets a single-rate timetable name a rate to add.
+
+        The screen itself never refuses this — nothing on it can know whether
+        the typed name will ever be created. validate_plan is what catches an
+        unresolved name, at finish, which is what the rest of this test
+        checks: the specific 'does not exist' message, not the generic
+        'no fallback' one _capped_rate_with_no_fallback already exercises.
+        """
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Capped")
+        driver.submit()
+        driver.submit(name="Every day", same_every_day=True)
+        driver.submit(
+            name="Peak",
+            import_cents=30.0,
+            has_allowance=True,
+            rate_allowance_kwh=10.0,
+            fallback_rate="Off Peak",
+            import_energy_sensor="sensor.grid_import",
+            on_submit=CONST.SUBMIT_ADD,
+        )
+        driver.submit(on_submit=CONST.SUBMIT_CONTINUE)
+        driver.submit(
+            start="00:00", end="00:00", rate="Peak", on_submit=CONST.SUBMIT_ADD
+        )
+        driver.submit(on_submit=CONST.SUBMIT_CONTINUE)
+        driver.submit(export_same_all_day=True, export_flat_cents=0.0)
+        self.assertEqual(driver.step, "timetable_done")
+
+        result = driver.choose("finish")
+        self.assertEqual(result["step_id"], "setup_invalid")
+        problems = result["description_placeholders"]["problems"]
+        self.assertIn("Off Peak", problems)
+        self.assertIn("does not exist", problems)
+
+        driver.submit()
+        self.assertEqual(driver.step, "rates")
+        driver.submit(
+            name="Off Peak", import_cents=15.0, on_submit=CONST.SUBMIT_CONTINUE
+        )
+        self.assertEqual(driver.step, "periods")
+        driver.submit(on_submit=CONST.SUBMIT_CONTINUE)
+        self.assertEqual(driver.step, "feed_in")
+        driver.submit(export_same_all_day=True, export_flat_cents=0.0)
+        self.assertEqual(driver.step, "timetable_done")
+
+        result = driver.choose("finish")
+        self.assertEqual(result["type"], CREATE)
+        plan = Plan.from_dict({**result["options"], "name": result["title"]})
+        self.assertEqual(validate_plan(plan), [])
+        self.assertEqual(len(plan.day_patterns), 1)
+
+    def test_an_uncapped_rate_with_a_sibling_is_never_forced_to_pick_a_fallback(
+        self,
+    ) -> None:
+        """P36. The other half of the same bug.
+
+        fallback_rate used to be vol.Required the moment a timetable had a
+        second rate, whether or not the rate being edited had an allowance —
+        the value was silently discarded afterwards by _rate_record, but the
+        form still forced an answer. This is a schema-marker check rather
+        than a submission check: a Required field with a default does not
+        fail a test-harness submission either way, so testing that the flow
+        merely succeeds would pass against the old code too.
+        """
+        schema = FLOW._rate_schema({}, ["Off Peak"], fields=FLOW.SETUP_RATE_FIELDS)
+        marker, _selector = _ha_stubs.field_for(schema, CONST.CONF_FALLBACK_RATE)
+        self.assertIsInstance(marker, vol.Optional)
+        self.assertNotIsInstance(marker, vol.Required)
 
 
 class TestBothRateFormsAskTheSameFilteredQuestion(unittest.TestCase):
