@@ -484,3 +484,85 @@ async def test_real_rate_survives_without_ever_reaching_save(hass) -> None:
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_setup_rates_defaults_to_continue_once_something_is_entered(
+    hass,
+) -> None:
+    """The exact reported bug: with rates already entered, leaving the next
+    rate screen untouched (blank name, 0 price) and hitting Submit must
+    move on to periods by default -- not demand a name. Only actually
+    typing a name commits a new rate; a genuinely blank screen is ignored,
+    per the standing rule, and now the submit default matches that instead
+    of silently requiring the user to flip a selector every time.
+    """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "plan_name": "Regression Test",
+            "plan_description": "",
+            "single_rate_plan": False,
+            "has_export": False,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "daily_supply_charge_cents": 0.0,
+            "monthly_charge": 0.0,
+            "billing_cycle_day": 0,
+            "prices_include_gst": True,
+            "gst_percent": 10.0,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"name": "Every day", "same_every_day": True, "days": []},
+    )
+    assert result["step_id"] == "rates"
+
+    from homeassistant.data_entry_flow import section as _section_type
+
+    def _defaults_for(schema):
+        submitted = {}
+        for key, value in schema.schema.items():
+            name = getattr(key, "schema", key)
+            if isinstance(value, _section_type):
+                submitted[name] = _defaults_for(value.schema)
+                continue
+            default = getattr(key, "default", vol.UNDEFINED)
+            if default is not vol.UNDEFINED and default is not None:
+                submitted[name] = default() if callable(default) else default
+        return submitted
+
+    # Enter one real rate first -- on_submit still defaults to "add" here,
+    # since nothing has been entered for this pattern yet.
+    payload = _defaults_for(result["data_schema"])
+    assert payload["on_submit"] == "add"
+    payload["name"] = "Off Peak"
+    payload["import_cents"] = 19.8
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["step_id"] == "rates"
+
+    # Now the screen for a would-be second rate. Leave it entirely blank
+    # and submit exactly what the frontend would send by default.
+    payload = _defaults_for(result["data_schema"])
+    assert payload["on_submit"] == "continue", (
+        f"on_submit still defaulted to 'add' with a rate already entered: "
+        f"{payload['on_submit']}"
+    )
+    assert payload["name"] == ""
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], payload
+    )
+    print("STEP AFTER BLANK SUBMIT:", result["step_id"], result.get("errors"))
+    assert result["step_id"] == "periods", (
+        "a blank screen with rates already entered should move on by "
+        "default, not demand a name"
+    )

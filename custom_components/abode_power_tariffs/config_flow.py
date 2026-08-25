@@ -1094,7 +1094,10 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 known_constraints=known_constraints(self._rates),
                 energy_sensor=self._energy_sensor,
             ).schema,
-            **on_submit("submit_rates"),
+            **on_submit(
+                "submit_rates",
+                SUBMIT_CONTINUE if self._pattern_rates() else SUBMIT_ADD,
+            ),
         }
 
         return self.async_show_form(
@@ -1342,7 +1345,10 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                             mode=selector.NumberSelectorMode.BOX,
                         )
                     ),
-                    **on_submit("submit_export_rates"),
+                    **on_submit(
+                        "submit_export_rates",
+                        SUBMIT_CONTINUE if self._pattern_export_rates() else SUBMIT_ADD,
+                    ),
                 }
             ),
             errors=errors,
