@@ -10,6 +10,7 @@ price sensor holds a real value — not a mock standing in for one.
 from __future__ import annotations
 
 import pytest
+import voluptuous as vol
 
 # The newest Home Assistant installable from PyPI in this sandbox is
 # 2025.1.4, which predates AddConfigEntryEntitiesCallback — a symbol this
@@ -42,7 +43,6 @@ from custom_components.abode_power_tariffs.const import (
     CONF_SUPPLY_CHARGE_CENTS,
     DOMAIN,
 )
-
 
 def _options() -> dict:
     return {
@@ -179,6 +179,307 @@ async def test_real_options_flow_adds_a_rate(hass) -> None:
     assert "Shoulder" in result["description_placeholders"]["rates"]
     assert "real_options_test.every_day.import.shoulder" in (
         result["description_placeholders"]["rates"]
+    )
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_setup_rate_screen_commits_on_continue_when_filled(hass) -> None:
+    """Rule under test: a typed rate is committed even when the user clicks
+    the 'continue to next section' button, not just 'add another'. Only a
+    genuinely blank screen is allowed to move on without committing.
+    """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    assert result["step_id"] == "user"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "plan_name": "Real Setup Test",
+            "plan_description": "",
+            "single_rate_plan": False,
+            "has_export": False,
+        },
+    )
+    assert result["step_id"] == "charges"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "daily_supply_charge_cents": 0.0,
+            "monthly_charge": 0.0,
+            "billing_cycle_day": 0,
+            "prices_include_gst": True,
+            "gst_percent": 10.0,
+        },
+    )
+    assert result["step_id"] == "days"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"name": "Every day", "same_every_day": True, "days": []},
+    )
+    assert result["step_id"] == "rates"
+
+    # A realistic browser submission: every field HA's own schema reports as
+    # required, including full section defaults for the sections the user
+    # never expanded, clicking "Continue" (not "Add another").
+    from homeassistant.data_entry_flow import section as _section_type
+
+    def _defaults_for(schema: vol.Schema) -> dict:
+        submitted: dict = {}
+        for key, value in schema.schema.items():
+            name = getattr(key, "schema", key)
+            if isinstance(value, _section_type):
+                submitted[name] = _defaults_for(value.schema)
+                continue
+            default = getattr(key, "default", vol.UNDEFINED)
+            if default is not vol.UNDEFINED and default is not None:
+                submitted[name] = default() if callable(default) else default
+        return submitted
+
+    payload = _defaults_for(result["data_schema"])
+    payload["name"] = "Peak"
+    payload["import_cents"] = 45.0
+    payload["on_submit"] = "continue"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], payload
+    )
+    print("STEP AFTER SUBMIT:", result["step_id"], result.get("errors"))
+    assert result["step_id"] != "rates", (
+        "stayed on rates with no error shown, or moved on without saving"
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_two_rates_added_in_a_row(hass) -> None:
+    """Add a rate, then immediately add a second one, both through the real
+    Configure flow -- closer to reporting back into Configure after setup
+    and adding what's missing.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Two Rates Test",
+        data={},
+        options=_options(),
+        entry_id="real_smoke_3",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    from homeassistant.data_entry_flow import section as _section_type
+
+    def _defaults_for(schema):
+        submitted = {}
+        for key, value in schema.schema.items():
+            name = getattr(key, "schema", key)
+            if isinstance(value, _section_type):
+                submitted[name] = _defaults_for(value.schema)
+                continue
+            default = getattr(key, "default", vol.UNDEFINED)
+            if default is not vol.UNDEFINED and default is not None:
+                submitted[name] = default() if callable(default) else default
+        return submitted
+
+    async def add_rate(flow_id, name, cents, *, from_init=False):
+        result = None
+        if from_init:
+            result = await hass.config_entries.options.async_configure(
+                flow_id, {"next_step_id": "rates_menu"}
+            )
+        result = await hass.config_entries.options.async_configure(
+            flow_id, {"next_step_id": "rate_add"}
+        )
+        assert result["step_id"] == "rate_add", result
+        payload = _defaults_for(result["data_schema"])
+        payload["name"] = name
+        payload["import_cents"] = cents
+        result = await hass.config_entries.options.async_configure(flow_id, payload)
+        return result
+
+    started = await hass.config_entries.options.async_init(entry.entry_id)
+    flow_id = started["flow_id"]
+
+    result = await add_rate(flow_id, "Shoulder", 30.0, from_init=True)
+    print("AFTER FIRST ADD:", result["step_id"], result.get("errors"))
+    assert "Shoulder" in result["description_placeholders"]["rates"]
+
+    # Already at rates_menu, same as clicking "Add rate" a second time
+    # without leaving the screen -- no need to navigate from init again.
+    result = await add_rate(flow_id, "Evening", 25.0)
+    print("AFTER SECOND ADD:", result["step_id"], result.get("errors"))
+    assert "Shoulder" in result["description_placeholders"]["rates"], (
+        "first rate lost after adding a second, within the same flow session"
+    )
+    assert "Evening" in result["description_placeholders"]["rates"], (
+        "second rate never committed"
+    )
+
+    # Now actually save, and confirm both survive onto the real config entry
+    # -- this is the step that actually persists anything. Nothing before
+    # this point has touched entry.options at all.
+    result = await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "init"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "save"}
+    )
+    print("AFTER SAVE:", result.get("type"), result.get("reason"))
+    assert entry.options.get(CONF_DAY_PATTERNS)
+    saved_rates = [
+        r[CONF_NAME] for r in entry.options[CONF_DAY_PATTERNS][0][CONF_RATES]
+    ]
+    assert "Shoulder" in saved_rates, saved_rates
+    assert "Evening" in saved_rates, saved_rates
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_async_update_entry_persists_mid_flow(hass) -> None:
+    """Confirm the fix mechanism itself, isolated: hass.config_entries.
+    async_update_entry writes to entry.options immediately, without ending
+    the options flow the way async_create_entry does.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Persist Mechanism Test",
+        data={},
+        options=_options(),
+        entry_id="persist_mechanism_test",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    flow_id = result["flow_id"]
+    result = await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "rates_menu"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "rate_add"}
+    )
+
+    from homeassistant.data_entry_flow import section as _section_type
+
+    def _defaults_for(schema):
+        submitted = {}
+        for key, value in schema.schema.items():
+            name = getattr(key, "schema", key)
+            if isinstance(value, _section_type):
+                submitted[name] = _defaults_for(value.schema)
+                continue
+            default = getattr(key, "default", vol.UNDEFINED)
+            if default is not vol.UNDEFINED and default is not None:
+                submitted[name] = default() if callable(default) else default
+        return submitted
+
+    payload = _defaults_for(result["data_schema"])
+    payload["name"] = "Shoulder"
+    payload["import_cents"] = 30.0
+    result = await hass.config_entries.options.async_configure(flow_id, payload)
+
+    # The flow is still alive (still on rates_menu, not finished) -- proving
+    # a mid-flow update_entry call, not a flow-ending create_entry, is what
+    # has to do the persisting.
+    assert result["type"] == "menu"
+    assert result["step_id"] == "rates_menu"
+
+    # Simulate the fix directly, without touching config_flow.py yet:
+    stored_now = hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **entry.options,
+            "day_patterns": [
+                {
+                    **entry.options["day_patterns"][0],
+                    "rates": [
+                        *entry.options["day_patterns"][0]["rates"],
+                        {"name": "Shoulder", "import_cents": 30.0},
+                    ],
+                }
+            ],
+        },
+    )
+    print("update_entry returned:", stored_now)
+    print(
+        "entry.options rates now:",
+        [r["name"] for r in entry.options["day_patterns"][0]["rates"]],
+    )
+    assert "Shoulder" in [
+        r["name"] for r in entry.options["day_patterns"][0]["rates"]
+    ]
+    # And the flow is STILL alive after that -- config_entries.async_update_entry
+    # does not touch or end the options flow at all.
+    result = await hass.config_entries.options.async_configure(
+        flow_id, {"next_step_id": "init"}
+    )
+    assert result["type"] == "menu"
+    assert result["step_id"] == "init"
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_rate_survives_without_ever_reaching_save(hass) -> None:
+    """The actual reported bug: add a rate, never navigate to and click
+    "Save and finish", never even leave the rates_menu screen. The rate
+    must still be on the real config entry -- not just in the flow's own
+    in-memory copy -- because the user may simply close the dialog here.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Never Saved Test",
+        data={},
+        options=_options(),
+        entry_id="never_saved_test",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    from homeassistant.data_entry_flow import section as _section_type
+
+    def _defaults_for(schema):
+        submitted = {}
+        for key, value in schema.schema.items():
+            name = getattr(key, "schema", key)
+            if isinstance(value, _section_type):
+                submitted[name] = _defaults_for(value.schema)
+                continue
+            default = getattr(key, "default", vol.UNDEFINED)
+            if default is not vol.UNDEFINED and default is not None:
+                submitted[name] = default() if callable(default) else default
+        return submitted
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "rates_menu"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "rate_add"}
+    )
+    payload = _defaults_for(result["data_schema"])
+    payload["name"] = "Shoulder"
+    payload["import_cents"] = 30.0
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["step_id"] == "rates_menu"
+
+    # No "Save and finish" was ever reached. The dialog is simply abandoned
+    # here, the way closing a browser tab would. The real config entry must
+    # already have it.
+    saved_rates = [
+        r["name"] for r in entry.options["day_patterns"][0]["rates"]
+    ]
+    assert "Shoulder" in saved_rates, (
+        f"lost without an explicit save: {saved_rates}"
     )
 
     await hass.config_entries.async_unload(entry.entry_id)

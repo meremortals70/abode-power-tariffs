@@ -1609,10 +1609,24 @@ type StepHandler = Callable[
 
 
 def guarded(func: StepHandler) -> StepHandler:
-    """Show the failure instead of an empty dialog.
+    """Show the failure instead of an empty dialog, and never lose an edit.
 
-    Without this, an exception anywhere in a step gives the user a dialog with
-    the word Error and nothing else, and the detail is only in the full log.
+    Without the failure handling, an exception anywhere in a step gives the
+    user a dialog with the word Error and nothing else, and the detail is
+    only in the full log.
+
+    Without the persisting: every step in this flow writes onto ``working``,
+    an in-memory copy, and the only thing that used to write it back to the
+    real config entry was reaching "Save and finish" from the top menu —
+    one specific button, several screens away from any of the actual add,
+    edit or remove screens that do the writing. Closing the dialog, or
+    simply never noticing that button, silently discarded everything typed.
+    The rule this flow is meant to honour — a typed entry is committed,
+    only a genuinely blank one is ignored — has to hold everywhere in the
+    flow, not just at the one button that used to be the sole way there.
+    So every step commits ``working`` to the real entry on its way out,
+    whether it is moving on, showing a validation error, or anything else.
+    A step that changed nothing writes back the same state it already had.
     """
 
     @functools.wraps(func)
@@ -1620,11 +1634,16 @@ def guarded(func: StepHandler) -> StepHandler:
         self: AbodePowerTariffsOptionsFlow, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         try:
-            return await func(self, user_input)
+            result = await func(self, user_input)
         except Exception:  # Deliberate: nothing may escape into an empty dialog
             _LOGGER.exception("Configuration step %s failed", func.__name__)
             self._failure = traceback.format_exc()
             return await self.async_step_failure()
+        if self._working is not None and result.get("type") != "create_entry":
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, options=self._stored()
+            )
+        return result
 
     return wrapper
 

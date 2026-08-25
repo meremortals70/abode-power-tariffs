@@ -173,6 +173,24 @@ class FakeConfig:
     time_zone = "Australia/Brisbane"
 
 
+class FakeConfigEntries:
+    """Enough of hass.config_entries for the options flow's mid-step persist.
+
+    Real Home Assistant's ConfigEntries.async_update_entry writes the new
+    options straight onto the entry and schedules a reload if they actually
+    changed. This just writes them — the entry object itself is what the
+    options flow's own driver already holds, so nothing else needs to know
+    a reload would have happened.
+    """
+
+    def async_update_entry(
+        self, entry: Any, *, options: dict[str, Any] | None = None
+    ) -> bool:
+        if options is not None:
+            entry.options = options
+        return True
+
+
 class FakeHass:
     """Enough of HomeAssistant for the coordinator and the entities."""
 
@@ -180,6 +198,7 @@ class FakeHass:
         self.states = FakeStates()
         self.services = FakeServices()
         self.config = FakeConfig()
+        self.config_entries = FakeConfigEntries()
         self.tasks: list[Any] = []
 
     def async_create_task(self, coro: Any) -> None:
