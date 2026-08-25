@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any
 
+from . import plan as plan_module
 from .const import MINUTES_PER_DAY
 from .plan import Plan, Resolution
 
@@ -265,15 +266,14 @@ def generate(
         nxt = cursor + step
         resolution = resolve_at(plan, cursor, zone, is_holiday)
         if resolution is not None:
-            # Asked of the rate, not of the day set it was resolved through.
-            # A rate belongs to a timetable and says so itself; validation and
-            # allowance.apply both look a fallback up that way, and a third
-            # answer here means the series can name a fallback validation
-            # never approved.
+            # Looked up in the same timetable the rate itself is nested in
+            # (Gap #1: a rate is nested inside exactly one timetable, so
+            # there is nowhere else its fallback could live). validate.py and
+            # allowance.apply both look a fallback up the same way, and a
+            # third answer here means the series could name a fallback
+            # validation never approved.
             fallback = (
-                plan.rate_by_name(
-                    resolution.rate.fallback_rate, resolution.rate.timetable
-                )
+                resolution.day_pattern.rate_by_name(resolution.rate.fallback_rate)
                 if resolution.rate.fallback_rate
                 else None
             )
@@ -283,11 +283,18 @@ def generate(
             # rate happens to be running alongside it.
             export_day, export_minutes = local_minutes(cursor, zone)
             export = plan.export_at(export_day, export_minutes, is_holiday(export_day))
+            fallback_qualified = (
+                None
+                if fallback is None
+                else plan_module.qualified_name(
+                    resolution.plan_name, resolution.day_pattern.name, fallback.name
+                )
+            )
             intervals.append(
                 Interval(
                     start=cursor.astimezone(zone),
                     end=nxt.astimezone(zone),
-                    rate=resolution.rate.qualified_name,
+                    rate=resolution.qualified_name,
                     import_price=resolution.rate.import_price,
                     export_price=None if export is None else export.price,
                     constraints=tuple(sorted(resolution.rate.constraints)),
@@ -296,7 +303,7 @@ def generate(
                     ),
                     coasting_permitted=resolution.rate.coasting_permitted,
                     allowance_kwh=resolution.rate.rate_allowance_kwh,
-                    fallback_rate=None if fallback is None else fallback.qualified_name,
+                    fallback_rate=fallback_qualified,
                     fallback_per_kwh=None
                     if fallback is None
                     else round(fallback.import_price, 6),

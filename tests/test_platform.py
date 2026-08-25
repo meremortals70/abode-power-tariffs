@@ -72,7 +72,8 @@ SENSOR = sys.modules[f"{PACKAGE}.sensor"]
 BINARY = sys.modules[f"{PACKAGE}.binary_sensor"]
 DIAG = sys.modules[f"{PACKAGE}.diagnostics"]
 COORD = sys.modules[f"{PACKAGE}.coordinator"]
-Plan = sys.modules[f"{PACKAGE}.plan"].Plan
+PLAN = sys.modules[f"{PACKAGE}.plan"]
+Plan = PLAN.Plan
 
 BRISBANE = ZoneInfo("Australia/Brisbane")
 
@@ -83,23 +84,22 @@ def run(coro: Any) -> Any:
 
 def options(**extra: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
-        CONST.CONF_RATES: [
-            {
-                CONST.CONF_NAME: "Every day Off Peak",
-                CONST.CONF_IMPORT_CENTS: 19.8,
-                CONST.CONF_CONSTRAINTS: ["grid_charge_battery"],
-                CONST.CONF_COASTING_PERMITTED: False,
-            },
-            {
-                CONST.CONF_NAME: "Every day Peak",
-                CONST.CONF_IMPORT_CENTS: 56.88,
-                CONST.CONF_CONSTRAINTS: ["no_grid_import"],
-            },
-        ],
         CONST.CONF_DAY_PATTERNS: [
             {
                 CONST.CONF_NAME: "Every day",
                 CONST.CONF_DAYS: list(CONST.ALL_DAY_TOKENS),
+                CONST.CONF_RATES: [
+                    {
+                        CONST.CONF_NAME: "Every day Off Peak",
+                        CONST.CONF_IMPORT_CENTS: 19.8,
+                        CONST.CONF_CONSTRAINTS: ["grid_charge_battery"],
+                    },
+                    {
+                        CONST.CONF_NAME: "Every day Peak",
+                        CONST.CONF_IMPORT_CENTS: 56.88,
+                        CONST.CONF_CONSTRAINTS: ["no_grid_import"],
+                    },
+                ],
                 CONST.CONF_PERIODS: [
                     {
                         CONST.CONF_START: "00:00",
@@ -120,6 +120,36 @@ def options(**extra: Any) -> dict[str, Any]:
     }
     base.update(extra)
     return base
+
+
+def rate_in(options: dict[str, Any], index: int, pattern: int = 0) -> dict[str, Any]:
+    """Return one rate's own stored dict, nested inside its day pattern.
+
+    Rates moved off the plan and onto the day pattern that owns them (Gap
+    #1), so a fixture reaching a stored rate has one more level to go
+    through than it used to.
+    """
+    return options[CONST.CONF_DAY_PATTERNS][pattern][CONST.CONF_RATES][index]
+
+
+def peak_name(coordinator: Any, timetable: str = "Every day") -> str:
+    """Return the qualified identifier of the sample plan's Peak rate."""
+    day_pattern = coordinator.plan.day_pattern_by_name(timetable)
+    if day_pattern is not None:
+        for rate in day_pattern.rates:
+            if rate.name == "Every day Peak":
+                return PLAN.qualified_name(coordinator.plan.name, timetable, rate.name)
+    raise AssertionError("no Peak rate on that timetable")
+
+
+def off_peak_name(coordinator: Any, timetable: str = "Every day") -> str:
+    """Return the qualified identifier of the sample plan's Off Peak rate."""
+    day_pattern = coordinator.plan.day_pattern_by_name(timetable)
+    if day_pattern is not None:
+        for rate in day_pattern.rates:
+            if rate.name == "Every day Off Peak":
+                return PLAN.qualified_name(coordinator.plan.name, timetable, rate.name)
+    raise AssertionError("no Off Peak rate on that timetable")
 
 
 def a_coordinator(data: dict[str, Any] | None = None) -> Any:
@@ -221,7 +251,7 @@ class TestSensorPlatform(PlatformCase):
     def test_price_attributes(self) -> None:
         sensor = self.sensors().by_key("import_price")
         attributes = sensor.extra_state_attributes
-        self.assertEqual(attributes["rate"], "Every day Off Peak")
+        self.assertEqual(attributes["rate"], off_peak_name(self.coordinator))
         self.assertEqual(attributes["period_start"], "00:00")
         self.assertEqual(attributes["period_end"], "16:00")
         self.assertEqual(attributes["day_pattern"], "Every day")
@@ -256,6 +286,16 @@ class TestSensorPlatform(PlatformCase):
                     {
                         CONST.CONF_NAME: "Every day",
                         CONST.CONF_DAYS: list(CONST.ALL_DAY_TOKENS),
+                        CONST.CONF_RATES: [
+                            {
+                                CONST.CONF_NAME: "Every day Off Peak",
+                                CONST.CONF_IMPORT_CENTS: 19.8,
+                            },
+                            {
+                                CONST.CONF_NAME: "Every day Peak",
+                                CONST.CONF_IMPORT_CENTS: 56.88,
+                            },
+                        ],
                         CONST.CONF_PERIODS: [
                             {
                                 CONST.CONF_START: "00:00",
@@ -278,10 +318,10 @@ class TestSensorPlatform(PlatformCase):
                                 CONST.CONF_RATE: "Evening",
                             },
                         ],
+                        CONST.CONF_EXPORT_RATES: [
+                            {CONST.CONF_NAME: "Evening", CONST.CONF_EXPORT_CENTS: 8.0},
+                        ],
                     }
-                ],
-                CONST.CONF_EXPORT_RATES: [
-                    {CONST.CONF_NAME: "Evening", CONST.CONF_EXPORT_CENTS: 8.0},
                 ],
             }
         )
@@ -301,6 +341,12 @@ class TestSensorPlatform(PlatformCase):
                     {
                         CONST.CONF_NAME: "Every day",
                         CONST.CONF_DAYS: list(CONST.ALL_DAY_TOKENS),
+                        CONST.CONF_RATES: [
+                            {
+                                CONST.CONF_NAME: "Every day Off Peak",
+                                CONST.CONF_IMPORT_CENTS: 19.8,
+                            }
+                        ],
                         CONST.CONF_PERIODS: [
                             {
                                 CONST.CONF_START: "00:00",
@@ -316,15 +362,15 @@ class TestSensorPlatform(PlatformCase):
                                 CONST.CONF_RATE: "Evening",
                             },
                         ],
+                        CONST.CONF_EXPORT_RATES: [
+                            {
+                                CONST.CONF_NAME: "Evening",
+                                CONST.CONF_EXPORT_CENTS: 8.0,
+                                CONST.CONF_EXPORT_ALLOWANCE_KWH: 5.0,
+                                CONST.CONF_EXPORT_FALLBACK_CENTS: 3.0,
+                            },
+                        ],
                     }
-                ],
-                CONST.CONF_EXPORT_RATES: [
-                    {
-                        CONST.CONF_NAME: "Evening",
-                        CONST.CONF_EXPORT_CENTS: 8.0,
-                        CONST.CONF_EXPORT_ALLOWANCE_KWH: 5.0,
-                        CONST.CONF_EXPORT_FALLBACK_CENTS: 3.0,
-                    },
                 ],
             }
         )
@@ -350,6 +396,12 @@ class TestSensorPlatform(PlatformCase):
                     {
                         CONST.CONF_NAME: "Every day",
                         CONST.CONF_DAYS: list(CONST.ALL_DAY_TOKENS),
+                        CONST.CONF_RATES: [
+                            {
+                                CONST.CONF_NAME: "Every day Off Peak",
+                                CONST.CONF_IMPORT_CENTS: 19.8,
+                            },
+                        ],
                         CONST.CONF_PERIODS: [
                             {
                                 CONST.CONF_START: "00:00",
@@ -365,10 +417,10 @@ class TestSensorPlatform(PlatformCase):
                                 CONST.CONF_RATE: "Evening",
                             },
                         ],
+                        CONST.CONF_EXPORT_RATES: [
+                            {CONST.CONF_NAME: "Evening", CONST.CONF_EXPORT_CENTS: 8.0},
+                        ],
                     }
-                ],
-                CONST.CONF_EXPORT_RATES: [
-                    {CONST.CONF_NAME: "Evening", CONST.CONF_EXPORT_CENTS: 8.0},
                 ],
             }
         )
@@ -386,11 +438,11 @@ class TestSensorPlatform(PlatformCase):
 
     def test_rate_sensor_is_an_enum_of_the_plan(self) -> None:
         sensor = self.sensors().by_key("rate")
-        self.assertEqual(sensor.native_value, "Every day Off Peak")
-        self.assertEqual(sensor._attr_options, ["Every day Off Peak", "Every day Peak"])
-        self.assertEqual(
-            sensor.extra_state_attributes["scheduled_rate"], "Every day Off Peak"
-        )
+        off_peak = off_peak_name(self.coordinator)
+        peak = peak_name(self.coordinator)
+        self.assertEqual(sensor.native_value, off_peak)
+        self.assertEqual(sensor._attr_options, [off_peak, peak])
+        self.assertEqual(sensor.extra_state_attributes["scheduled_rate"], off_peak)
 
     def test_next_rate_change_is_the_boundary(self) -> None:
         sensor = self.sensors().by_key("next_rate_change")
@@ -438,8 +490,8 @@ class TestSensorPlatform(PlatformCase):
 
     def _capped(self, **extra: Any) -> dict[str, Any]:
         data = options(**extra)
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         return data
 
     def test_a_declared_cap_is_counted(self) -> None:
@@ -506,8 +558,8 @@ class TestSensorPlatform(PlatformCase):
 
     def test_the_allowance_sensor_appears_when_configured(self) -> None:
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         sensor = self.sensors(data).by_key("allowance_remaining_kwh")
         self.assertAlmostEqual(sensor.native_value, 24.0)
         self.assertTrue(sensor.available)
@@ -515,17 +567,17 @@ class TestSensorPlatform(PlatformCase):
     def test_remaining_is_none_if_the_rate_is_unqualified(self) -> None:
         """The rate-is-None branch: the rate has been edited away from under it."""
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         sensor = self.sensors(data).by_key("allowance_remaining_kwh")
-        sensor._qualified_name = "no.such.rate"
+        sensor._rate_name = "No Such Rate"
         self.assertIsNone(sensor.native_value)
 
     def test_the_allowance_is_restored_across_a_restart(self) -> None:
         """The used sensor is what restores now; remaining is derived from it."""
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         added = self.sensors(data)
         used = added.by_key("allowance_used_kwh")
         used.hass = self.coordinator.hass
@@ -546,8 +598,8 @@ class TestSensorPlatform(PlatformCase):
     def test_a_count_from_another_slot_is_not_restored(self) -> None:
         """The allowance is the slot's. A figure from another one says nothing."""
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         added = self.sensors(data)
         used = added.by_key("allowance_used_kwh")
         used.hass = self.coordinator.hass
@@ -579,8 +631,8 @@ class TestSensorPlatform(PlatformCase):
     def test_the_used_sensor_reads_zero_before_any_energy_is_recorded(self) -> None:
         """The fixture refreshes on construction, so a ledger exists at zero."""
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         added = self.sensors(data)
         used = added.by_key("allowance_used_kwh")
         self.assertEqual(used.native_value, 0.0)
@@ -588,8 +640,8 @@ class TestSensorPlatform(PlatformCase):
     def test_the_used_sensor_is_none_if_the_rate_is_unqualified(self) -> None:
         """The ledger-is-None branch: no such rate, so no ledger to read."""
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         added = self.sensors(data)
         used = added.by_key("allowance_used_kwh")
         used._qualified_name = "no.such.rate"
@@ -597,8 +649,8 @@ class TestSensorPlatform(PlatformCase):
 
     def test_the_used_sensor_reads_the_ledger_once_one_exists(self) -> None:
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         added = self.sensors(data)
         used = added.by_key("allowance_used_kwh")
         self.coordinator.async_refresh()
@@ -608,9 +660,9 @@ class TestSensorPlatform(PlatformCase):
 
     def test_the_used_sensors_attributes_name_the_declaration(self) -> None:
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
-        data[CONST.CONF_RATES][0][CONST.CONF_ALLOWANCE_PERIOD] = "month"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_ALLOWANCE_PERIOD] = "month"
         added = self.sensors(data)
         used = added.by_key("allowance_used_kwh")
         self.coordinator.async_refresh()
@@ -623,8 +675,8 @@ class TestSensorPlatform(PlatformCase):
     def test_the_used_sensor_ignores_a_restore_with_no_stored_value(self) -> None:
         """`_restored_value` returns None when there is nothing to read."""
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         added = self.sensors(data)
         used = added.by_key("allowance_used_kwh")
         used.hass = self.coordinator.hass
@@ -640,8 +692,8 @@ class TestSensorPlatform(PlatformCase):
         self,
     ) -> None:
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         added = self.sensors(data)
         used = added.by_key("allowance_used_kwh")
         used.hass = self.coordinator.hass
@@ -659,8 +711,8 @@ class TestSensorPlatform(PlatformCase):
     def test_the_used_sensor_ignores_a_restore_with_no_matching_rate(self) -> None:
         """The ledger-is-None branch: the rate no longer exists to restore onto."""
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         added = self.sensors(data)
         used = added.by_key("allowance_used_kwh")
         used.hass = self.coordinator.hass
@@ -677,8 +729,8 @@ class TestSensorPlatform(PlatformCase):
 class TestDemandSensors(PlatformCase):
     def _demand_data(self) -> dict[str, Any]:
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
-        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 20.0
+        rate_in(data, 1)[CONST.CONF_DEMAND_PERIOD] = True
+        rate_in(data, 1)[CONST.CONF_DEMAND_RATE] = 20.0
         return data
 
     def test_the_demand_sensors_appear_only_for_a_rate_that_declares_one(self) -> None:
@@ -729,7 +781,7 @@ class TestDemandSensors(PlatformCase):
         """If the rate is edited away from under it, the entity says so."""
         added = self.sensors(self._demand_data())
         sensor = added.by_key("demand_peak_kw")
-        sensor._qualified_name = "no.such.rate"
+        sensor._rate_name = "No Such Rate"
         self.assertFalse(sensor.available)
 
     def test_the_peak_restores_when_it_belongs_to_the_current_cycle(self) -> None:
@@ -832,7 +884,7 @@ class TestDemandSensors(PlatformCase):
     ) -> None:
         added = self.sensors(self._demand_data())
         sensor = added.by_key("demand_peak_kw")
-        sensor._qualified_name = "no.such.rate"
+        sensor._rate_name = "No Such Rate"
         attrs = sensor.extra_state_attributes
         self.assertNotIn("demand_interval", attrs)
 
@@ -853,8 +905,8 @@ class TestBillingCycleSensor(PlatformCase):
     def test_progress_is_none_if_the_cycle_has_no_length(self) -> None:
         """The guard branch: days_in_cycle at its unset default."""
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         added = self.sensors(data)
         sensor = added.by_key("billing_cycle_progress")
         self.coordinator.state.days_in_cycle = 0
@@ -862,8 +914,8 @@ class TestBillingCycleSensor(PlatformCase):
 
     def test_progress_appears_when_the_plan_accounts(self) -> None:
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         added = self.sensors(data)
         sensor = added.by_key("billing_cycle_progress")
         self.coordinator.state.days_elapsed = 10
@@ -873,8 +925,8 @@ class TestBillingCycleSensor(PlatformCase):
 
     def test_progress_attributes_carry_the_cycle_dates(self) -> None:
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         added = self.sensors(data)
         sensor = added.by_key("billing_cycle_progress")
         self.coordinator.async_refresh()
@@ -962,9 +1014,7 @@ class TestBinarySensorPlatform(PlatformCase):
     def test_the_rule_says_whether_it_is_enforceable(self) -> None:
         """A declaration about what the rate means. Nothing is enforced here."""
         data = options()
-        data[CONST.CONF_RATES][1][CONST.CONF_ENFORCEABLE_CONSTRAINTS] = [
-            "no_grid_import"
-        ]
+        rate_in(data, 1)[CONST.CONF_ENFORCEABLE_CONSTRAINTS] = ["no_grid_import"]
         self.coordinator = a_coordinator(data)
         self.entry.runtime_data = self.coordinator
         added = self._added()
@@ -989,8 +1039,8 @@ class TestBinarySensorPlatform(PlatformCase):
 
     def test_the_demand_sensor_appears_when_a_rate_has_one(self) -> None:
         data = options()
-        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
-        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 18.4
+        rate_in(data, 1)[CONST.CONF_DEMAND_PERIOD] = True
+        rate_in(data, 1)[CONST.CONF_DEMAND_RATE] = 18.4
         self.coordinator = a_coordinator(data)
         self.entry.runtime_data = self.coordinator
         keys = {entity._key for entity in self._added().entities}
@@ -1005,8 +1055,8 @@ class TestBinarySensorPlatform(PlatformCase):
         has something to say about itself.
         """
         data = options()
-        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
-        data[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 18.4
+        rate_in(data, 1)[CONST.CONF_DEMAND_PERIOD] = True
+        rate_in(data, 1)[CONST.CONF_DEMAND_RATE] = 18.4
         self.coordinator = a_coordinator(data)
         self.entry.runtime_data = self.coordinator
         demand = self._added().by_key("demand_period_active")
@@ -1031,8 +1081,8 @@ class TestBinarySensorPlatform(PlatformCase):
 
     def test_data_complete_appears_when_the_plan_accounts(self) -> None:
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         self.coordinator = a_coordinator(data)
         self.entry.runtime_data = self.coordinator
         sensor = self._added().by_key("data_complete")
@@ -1097,7 +1147,18 @@ class TestSetupAndUnload(PlatformCase):
     def test_an_unreadable_plan_defers_setup(self) -> None:
         logging.disable(logging.CRITICAL)
         self.addCleanup(logging.disable, logging.NOTSET)
-        entry = FakeEntry({CONST.CONF_RATES: [{CONST.CONF_IMPORT_CENTS: 1}]})
+        entry = FakeEntry(
+            {
+                CONST.CONF_DAY_PATTERNS: [
+                    {
+                        CONST.CONF_NAME: "Every day",
+                        CONST.CONF_DAYS: list(CONST.ALL_DAY_TOKENS),
+                        # No name: Rate.from_dict raises PlanError.
+                        CONST.CONF_RATES: [{CONST.CONF_IMPORT_CENTS: 1}],
+                    }
+                ]
+            }
+        )
         not_ready = sys.modules["homeassistant.exceptions"].ConfigEntryNotReady
         with self.assertRaises(not_ready):
             run(PKG.async_setup_entry(self.coordinator.hass, entry))
@@ -1144,7 +1205,9 @@ class TestTheAction(PlatformCase):
     def test_it_returns_the_forward_series(self) -> None:
         response = self._call(**{CONST.ATTR_CONFIG_ENTRY_ID: "entry1"})
         self.assertEqual(len(response["intervals"]), 12)
-        self.assertEqual(response["intervals"][0]["rate"], "Every day Off Peak")
+        self.assertEqual(
+            response["intervals"][0]["rate"], off_peak_name(self.coordinator)
+        )
 
     def test_an_unknown_entry_is_a_validation_error(self) -> None:
         error = sys.modules["homeassistant.exceptions"].ServiceValidationError
@@ -1176,7 +1239,7 @@ class TestDiagnostics(PlatformCase):
         ):
             self.assertIn(key, payload)
         self.assertEqual(payload["problems"], [])
-        self.assertEqual(payload["current"]["rate"], "Every day Off Peak")
+        self.assertEqual(payload["current"]["rate"], off_peak_name(self.coordinator))
         self.assertNotIn("rates", payload["options"])
 
 

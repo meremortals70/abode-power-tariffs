@@ -7,7 +7,7 @@ bar drifted against the clock by hours on some browsers. A visual you cannot
 read against the clock is worse than none.
 
 So this renders the plan as plain text, which is exact everywhere, and the
-picture is left to Home Assistant. `sensor.<name>_rate` is an enum, so a
+picture is left to Home Assistant. `sensor.<n>_rate` is an enum, so a
 built-in history-graph card draws it as a coloured timeline with a real time
 axis. See the README.
 
@@ -19,7 +19,7 @@ identifier the second block existed to show is now a column of the first.
 
 from __future__ import annotations
 
-from .plan import DayPattern, Plan, format_time
+from .plan import DayPattern, Plan, format_time, qualified_name
 from .validate import validate_periods
 
 # "00:00-24:00".
@@ -40,11 +40,21 @@ def column_widths(plan: Plan) -> tuple[int, int]:
     for day_pattern in plan.day_patterns:
         for period in (*day_pattern.periods, *day_pattern.export_periods):
             names = max(names, len(period.rate))
-    for rate in plan.rates:
+    for day_pattern, rate in plan.rates_with_pattern():
         names = max(names, len(rate.name))
-        identifiers = max(identifiers, len(rate.qualified_name))
-    for export_rate in plan.export_rates:
+        identifiers = max(
+            identifiers, len(qualified_name(plan.name, day_pattern.name, rate.name))
+        )
+    for day_pattern, export_rate in plan.export_rates_with_pattern():
         names = max(names, len(export_rate.name))
+        identifiers = max(
+            identifiers,
+            len(
+                qualified_name(
+                    plan.name, day_pattern.name, export_rate.name, export=True
+                )
+            ),
+        )
     return names, identifiers
 
 
@@ -84,12 +94,17 @@ def render_export_row(
 
     lines = ["  Feed-in:"]
     for period in day_pattern.sorted_export_periods():
-        rate = plan.export_rate_by_name(period.rate, day_pattern.name)
+        rate = day_pattern.export_rate_by_name(period.rate)
+        identifier = (
+            ""
+            if rate is None
+            else qualified_name(plan.name, day_pattern.name, rate.name, export=True)
+        )
         lines.append(
             _row(
                 f"{format_time(period.start)}-{format_time(period.end)}",
                 period.rate,
-                "",
+                identifier,
                 MISSING if rate is None else _price(rate.price * 100),
                 columns,
                 indent="    ",
@@ -114,12 +129,17 @@ def render_day_pattern(
 
     lines = [f"{day_pattern.name}{season}"]
     for period in day_pattern.sorted_periods():
-        rate = plan.rate_by_name(period.rate, day_pattern.name)
+        rate = day_pattern.rate_by_name(period.rate)
+        identifier = (
+            ""
+            if rate is None
+            else qualified_name(plan.name, day_pattern.name, rate.name)
+        )
         lines.append(
             _row(
                 f"{format_time(period.start)}-{format_time(period.end)}",
                 period.rate,
-                "" if rate is None else rate.qualified_name,
+                identifier,
                 MISSING if rate is None else _price(rate.import_price * 100),
                 columns,
             )
@@ -152,13 +172,14 @@ def render_unscheduled(plan: Plan, widths: tuple[int, int]) -> str:
     }
     rows = [
         _row(
-            "", rate.name, rate.qualified_name, _price(rate.import_price * 100), widths
+            "",
+            rate.name,
+            qualified_name(plan.name, day_pattern.name, rate.name),
+            _price(rate.import_price * 100),
+            widths,
         )
-        for rate in plan.rates
-        if not any(
-            name == rate.name and (rate.timetable in (timetable, None))
-            for timetable, name in scheduled
-        )
+        for day_pattern, rate in plan.rates_with_pattern()
+        if (day_pattern.name, rate.name) not in scheduled
     ]
     return "\n".join(rows)
 
@@ -166,20 +187,12 @@ def render_unscheduled(plan: Plan, widths: tuple[int, int]) -> str:
 def render_plan(plan: Plan) -> str:
     """Render every timetable in the plan as one table each."""
     if not plan.rates:
+        # Also covers there being no timetables at all: with rates nested
+        # inside DayPattern (Gap #1), a plan with no timetables can never
+        # have a rate either, so the two used-to-be-separate empty states
+        # collapse into this one now.
         return "No rates entered yet."
     widths = column_widths(plan)
-    if not plan.day_patterns:
-        rows = "\n".join(
-            _row(
-                "",
-                rate.name,
-                rate.qualified_name,
-                _price(rate.import_price * 100),
-                widths,
-            )
-            for rate in plan.rates
-        )
-        return f"No day patterns configured yet.\n{rows}"
     body = "\n\n".join(
         render_day_pattern(plan, day_pattern, widths)
         for day_pattern in plan.day_patterns
@@ -201,7 +214,7 @@ def render_rate_plan_card(plan: Plan) -> str:
         lines.extend([plan.description, ""])
 
     if plan.prices_include_gst:
-        lines.append(f"Prices include GST at {plan.gst_percent:g}%.")
+        lines.append(f"Prices include tax at {plan.gst_percent:g}%.")
     else:
         lines.append("Prices exclude tax.")
     lines.append(f"Daily supply charge: {plan.daily_supply_charge * 100:.2f} c/day")
@@ -223,16 +236,17 @@ def render_rate_plan_card(plan: Plan) -> str:
                 f" to {day_pattern.season_to[1]:02d}/{day_pattern.season_to[0]:02d}"
             )
         for period in day_pattern.sorted_periods():
-            rate = plan.rate_by_name(period.rate, day_pattern.name)
+            rate = day_pattern.rate_by_name(period.rate)
             if rate is None:
                 lines.append(
                     f"  {format_time(period.start)}-{format_time(period.end)}"
                     f"  {period.rate}  ({MISSING})"
                 )
                 continue
+            identifier = qualified_name(plan.name, day_pattern.name, rate.name)
             lines.append(
                 f"  {format_time(period.start)}-{format_time(period.end)}"
-                f"  {rate.qualified_name:<12}"
+                f"  {identifier:<12}"
                 f"  buy {rate.import_price:.4f}/kWh"
             )
         lines.append(f"  {render_export_row(plan, day_pattern).strip()}")

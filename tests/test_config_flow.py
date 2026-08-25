@@ -230,7 +230,11 @@ class TestOneTimetable(unittest.TestCase):
         self.assertEqual(len(plan.day_patterns), 1)
         self.assertEqual(plan.rate_names, ("Off Peak", "Peak"))
         self.assertEqual(
-            plan.qualified_rate_names, ("every_day.off_peak", "every_day.peak")
+            plan.qualified_rate_names,
+            (
+                "ovo_original.every_day.import.off_peak",
+                "ovo_original.every_day.import.peak",
+            ),
         )
         self.assertEqual(validate_plan(plan), [])
 
@@ -315,7 +319,7 @@ class TestSingleRatePlan(unittest.TestCase):
     def test_nothing_counts_yet(self) -> None:
         """Rule 7, revoked: there is no tickbox left to be false."""
         result = self._finish()
-        self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, result["options"])
+        self.assertNotIn("count_allowance", result["options"])
         self.assertIsNone(result["options"].get(CONST.CONF_IMPORT_ENERGY_SENSOR))
 
 
@@ -393,7 +397,11 @@ class TestTwoTimetables(unittest.TestCase):
         self.assertEqual(plan.day_pattern_names, ("Weekday", "Weekend"))
         self.assertEqual(plan.rate_names, ("Peak", "Off Peak"))
         self.assertEqual(
-            plan.qualified_rate_names, ("weekday.peak", "weekend.off_peak")
+            plan.qualified_rate_names,
+            (
+                "two_timetables.weekday.import.peak",
+                "two_timetables.weekend.import.off_peak",
+            ),
         )
         self.assertEqual(plan.export_rate_names, ("Daytime", "Evening"))
 
@@ -428,8 +436,14 @@ class TestTwoTimetables(unittest.TestCase):
         self.assertEqual(weekend.name, "Peak")
         self.assertAlmostEqual(weekday.import_price, 0.5688)
         self.assertAlmostEqual(weekend.import_price, 0.30)
-        self.assertEqual(weekday.qualified_name, "weekday.peak")
-        self.assertEqual(weekend.qualified_name, "weekend.peak")
+        self.assertEqual(
+            PKG.plan.qualified_name(plan.name, "Weekday", weekday.name),
+            "two_timetables.weekday.import.peak",
+        )
+        self.assertEqual(
+            PKG.plan.qualified_name(plan.name, "Weekend", weekend.name),
+            "two_timetables.weekend.import.peak",
+        )
         self.assertEqual(validate_plan(plan), [])
 
 

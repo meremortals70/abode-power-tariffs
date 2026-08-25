@@ -14,7 +14,7 @@ from . import TariffConfigEntry
 from .const import KEY_DATA_COMPLETE
 from .coordinator import TariffCoordinator
 from .entity import RateTariffEntity, TariffEntity
-from .plan import Rate, format_time
+from .plan import DayPattern, ExportRate, Rate, format_time
 
 PARALLEL_UPDATES = 0
 
@@ -35,9 +35,18 @@ async def async_setup_entry(
     # in force and had nothing to say about a demand window on any other rate
     # while a different one was active. Its unique id changes with that — the
     # one genuine break in this change, alongside the allowance sensor.
-    for rate in coordinator.plan.rates:
+    for day_pattern, rate in coordinator.plan.rates_with_pattern():
         if rate.demand_period:
-            entities.append(DemandPeriodBinarySensor(coordinator, rate))
+            entities.append(DemandPeriodBinarySensor(coordinator, day_pattern, rate))
+    # The export mirror (Gaps #2, #3): an export rate can now declare a
+    # demand charge of its own.
+    for day_pattern, export_rate in coordinator.plan.export_rates_with_pattern():
+        if export_rate.demand_period:
+            entities.append(
+                DemandPeriodBinarySensor(
+                    coordinator, day_pattern, export_rate, export=True
+                )
+            )
     if coordinator.accounts:
         entities.append(DataCompleteBinarySensor(coordinator))
     async_add_entities(entities)
@@ -79,7 +88,7 @@ class ConstraintBinarySensor(TariffEntity, BinarySensorEntity):
         return {
             "constraint": self._constraint,
             "enforceable": self.enforceable,
-            "rate": resolution.rate.qualified_name,
+            "rate": resolution.qualified_name,
             "period_start": format_time(resolution.period.start),
             "period_end": format_time(resolution.period.end),
         }
@@ -100,9 +109,18 @@ class DemandPeriodBinarySensor(RateTariffEntity, BinarySensorEntity):
     reimplementing 'is this rate in force right now' itself.
     """
 
-    def __init__(self, coordinator: TariffCoordinator, rate: Rate) -> None:
+    def __init__(
+        self,
+        coordinator: TariffCoordinator,
+        day_pattern: DayPattern,
+        rate: Rate | ExportRate,
+        *,
+        export: bool = False,
+    ) -> None:
         """Initialise the demand period sensor for one rate."""
-        super().__init__(coordinator, "demand_period_active", rate)
+        super().__init__(
+            coordinator, "demand_period_active", day_pattern, rate, export=export
+        )
 
     @property
     def is_on(self) -> bool:

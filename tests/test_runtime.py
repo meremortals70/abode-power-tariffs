@@ -90,23 +90,22 @@ def at(hour: int, minute: int = 0, day: int = 14) -> datetime:
 
 def sample_options() -> dict[str, Any]:
     return {
-        CONST.CONF_RATES: [
-            {
-                CONST.CONF_NAME: "Every day Off Peak",
-                CONST.CONF_IMPORT_CENTS: 19.8,
-                CONST.CONF_CONSTRAINTS: ["grid_charge_battery"],
-                CONST.CONF_COASTING_PERMITTED: False,
-            },
-            {
-                CONST.CONF_NAME: "Every day Peak",
-                CONST.CONF_IMPORT_CENTS: 56.88,
-                CONST.CONF_CONSTRAINTS: ["no_grid_import"],
-            },
-        ],
         CONST.CONF_DAY_PATTERNS: [
             {
                 CONST.CONF_NAME: "Every day",
                 CONST.CONF_DAYS: list(CONST.ALL_DAY_TOKENS),
+                CONST.CONF_RATES: [
+                    {
+                        CONST.CONF_NAME: "Every day Off Peak",
+                        CONST.CONF_IMPORT_CENTS: 19.8,
+                        CONST.CONF_CONSTRAINTS: ["grid_charge_battery"],
+                    },
+                    {
+                        CONST.CONF_NAME: "Every day Peak",
+                        CONST.CONF_IMPORT_CENTS: 56.88,
+                        CONST.CONF_CONSTRAINTS: ["no_grid_import"],
+                    },
+                ],
                 CONST.CONF_PERIODS: [
                     {
                         CONST.CONF_START: "00:00",
@@ -136,12 +135,27 @@ def a_coordinator(options: dict[str, Any] | None = None) -> Any:
     return TariffCoordinator(hass, "entry1", plan, data)
 
 
-def peak_name(coordinator: Any, timetable: str | None = None) -> str:
+def peak_name(coordinator: Any, timetable: str = "Every day") -> str:
     """Return the qualified identifier of the sample plan's Peak rate."""
-    for rate in coordinator.plan.rates:
-        if rate.name == "Every day Peak" and rate.timetable == timetable:
-            return rate.qualified_name
+    day_pattern = coordinator.plan.day_pattern_by_name(timetable)
+    if day_pattern is not None:
+        for rate in day_pattern.rates:
+            if rate.name == "Every day Peak":
+                return PKG.plan.qualified_name(
+                    coordinator.plan.name, timetable, rate.name
+                )
     raise AssertionError("no Peak rate on that timetable")
+
+
+def rate_in(options: dict[str, Any], index: int, pattern: int = 0) -> dict[str, Any]:
+    """Return one rate's own stored dict, nested inside its day pattern.
+
+    A test-only navigation helper: rates moved off the plan and onto the
+    day pattern that owns them (Gap #1), so a fixture that used to reach a
+    stored rate with ``options[CONF_RATES][index]`` now has one more level
+    to go through — the day pattern that nests it.
+    """
+    return options[CONST.CONF_DAY_PATTERNS][pattern][CONST.CONF_RATES][index]
 
 
 class CoordinatorCase(unittest.TestCase):
@@ -340,10 +354,9 @@ class TestHolidays(CoordinatorCase):
 class TestAllowanceAccounting(CoordinatorCase):
     def _capped(self) -> Any:
         options = sample_options()
-        options[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        options[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(options, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(options, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
-        options[CONST.CONF_COUNT_ALLOWANCE] = True
         coordinator = a_coordinator(options)
         coordinator.hass.states.set("sensor.grid_import", "100.0")
         coordinator._seed_energy_total()
@@ -421,7 +434,7 @@ class TestAllowanceAccounting(CoordinatorCase):
         resolution = coordinator.state.resolution
         assert resolution is not None
         self.assertIn(str(resolution.period.start), slot)
-        self.assertIn(resolution.rate.qualified_name, slot)
+        self.assertIn(resolution.qualified_name, slot)
         PKG.coordinator.dt_util.NOW = None
 
 
@@ -430,9 +443,9 @@ class TestDemandAccumulation(CoordinatorCase):
 
     def _demand(self, **rate_extra: Any) -> Any:
         opts = sample_options()
-        opts[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
-        opts[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 20.0
-        opts[CONST.CONF_RATES][1].update(rate_extra)
+        rate_in(opts, 1)[CONST.CONF_DEMAND_PERIOD] = True
+        rate_in(opts, 1)[CONST.CONF_DEMAND_RATE] = 20.0
+        rate_in(opts, 1).update(rate_extra)
         opts[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(opts)
         coordinator.hass.states.set("sensor.grid_import", "0.0")
@@ -487,20 +500,49 @@ class TestDemandAccumulation(CoordinatorCase):
 
     def test_two_rates_on_two_timetables_keep_separate_peaks(self) -> None:
         """The strip.py failure, asserted in the new place it could recur."""
-        opts = sample_options()
-        opts[CONST.CONF_RATES][1][CONST.CONF_TIMETABLE] = "Weekday"
-        opts[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
-        opts[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 20.0
-        opts[CONST.CONF_RATES].append(
-            {
-                CONST.CONF_NAME: "Every day Peak",
-                CONST.CONF_TIMETABLE: "Weekend",
-                CONST.CONF_IMPORT_CENTS: 40.0,
-                CONST.CONF_DEMAND_PERIOD: True,
-                CONST.CONF_DEMAND_RATE: 20.0,
-            }
-        )
-        opts[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        opts = {
+            CONST.CONF_DAY_PATTERNS: [
+                {
+                    CONST.CONF_NAME: "Weekday",
+                    CONST.CONF_DAYS: ["mon", "tue", "wed", "thu", "fri"],
+                    CONST.CONF_RATES: [
+                        {
+                            CONST.CONF_NAME: "Every day Peak",
+                            CONST.CONF_IMPORT_CENTS: 56.88,
+                            CONST.CONF_DEMAND_PERIOD: True,
+                            CONST.CONF_DEMAND_RATE: 20.0,
+                        }
+                    ],
+                    CONST.CONF_PERIODS: [
+                        {
+                            CONST.CONF_START: "00:00",
+                            CONST.CONF_END: "24:00",
+                            CONST.CONF_RATE: "Every day Peak",
+                        }
+                    ],
+                },
+                {
+                    CONST.CONF_NAME: "Weekend",
+                    CONST.CONF_DAYS: ["sat", "sun", "holiday"],
+                    CONST.CONF_RATES: [
+                        {
+                            CONST.CONF_NAME: "Every day Peak",
+                            CONST.CONF_IMPORT_CENTS: 40.0,
+                            CONST.CONF_DEMAND_PERIOD: True,
+                            CONST.CONF_DEMAND_RATE: 20.0,
+                        }
+                    ],
+                    CONST.CONF_PERIODS: [
+                        {
+                            CONST.CONF_START: "00:00",
+                            CONST.CONF_END: "24:00",
+                            CONST.CONF_RATE: "Every day Peak",
+                        }
+                    ],
+                },
+            ],
+            CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
+        }
         coordinator = a_coordinator(opts)
         coordinator.hass.states.set("sensor.grid_import", "0.0")
         coordinator._seed_energy_total()
@@ -543,13 +585,16 @@ class TestDemandAccumulation(CoordinatorCase):
 class TestBillingCycle(CoordinatorCase):
     """Rule 11, reinstated: the supply charge accumulates."""
 
-    def test_the_supply_charge_accrues_across_the_day(self) -> None:
+    def test_the_supply_charge_lands_in_full_at_midnight(self) -> None:
+        """Gap #5: the full charge lands the moment the day begins, no proration."""
         coordinator = a_coordinator()
-        PKG.coordinator.dt_util.NOW = at(12, 0, day=14)  # half the day gone
+        PKG.coordinator.dt_util.NOW = at(0, 0, day=14)
         coordinator.async_refresh()
-        self.assertAlmostEqual(
-            coordinator.state.supply_charge_today, 1.166 / 2, places=3
-        )
+        self.assertAlmostEqual(coordinator.state.supply_charge_today, 1.166, places=3)
+        # Still the same figure at noon: it does not grow across the day.
+        PKG.coordinator.dt_util.NOW = at(12, 0, day=14)
+        coordinator.async_refresh()
+        self.assertAlmostEqual(coordinator.state.supply_charge_today, 1.166, places=3)
         PKG.coordinator.dt_util.NOW = None
 
     def test_the_cycle_accrual_adds_the_closed_days(self) -> None:
@@ -558,16 +603,19 @@ class TestBillingCycle(CoordinatorCase):
         coordinator = a_coordinator(options)
         PKG.coordinator.dt_util.NOW = at(0, 0, day=14)  # third day of the cycle
         coordinator.async_refresh()
-        # Two whole days closed (the 12th, the 13th) plus a sliver of the 14th.
-        self.assertGreaterEqual(coordinator.state.supply_charge_cycle, 1.166 * 2)
-        self.assertLess(coordinator.state.supply_charge_cycle, 1.166 * 3)
+        # Three whole days landed this cycle (the 12th, 13th, 14th) — today's
+        # own charge lands in full the moment today begins (Gap #5), not
+        # partway through it.
+        self.assertAlmostEqual(
+            coordinator.state.supply_charge_cycle, 1.166 * 3, places=3
+        )
         PKG.coordinator.dt_util.NOW = None
 
     def test_a_new_billing_cycle_clears_every_ledgers_peak(self) -> None:
         options = sample_options()
         options[CONST.CONF_BILLING_CYCLE_DAY] = 12
-        options[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
-        options[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 20.0
+        rate_in(options, 1)[CONST.CONF_DEMAND_PERIOD] = True
+        rate_in(options, 1)[CONST.CONF_DEMAND_RATE] = 20.0
         options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(options)
         PKG.coordinator.dt_util.NOW = at(17, 0, day=14)  # inside the Aug 12 cycle
@@ -587,8 +635,8 @@ class TestGapDetection(CoordinatorCase):
 
     def _capped_with_meter(self) -> Any:
         options = sample_options()
-        options[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        options[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(options, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(options, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(options)
         coordinator.hass.states.set("sensor.grid_import", "100.0")
@@ -662,8 +710,8 @@ class TestGapDetection(CoordinatorCase):
 
     def test_every_ledgers_incomplete_flag_is_set_by_a_gap(self) -> None:
         options = sample_options()
-        options[CONST.CONF_RATES][1][CONST.CONF_DEMAND_PERIOD] = True
-        options[CONST.CONF_RATES][1][CONST.CONF_DEMAND_RATE] = 20.0
+        rate_in(options, 1)[CONST.CONF_DEMAND_PERIOD] = True
+        rate_in(options, 1)[CONST.CONF_DEMAND_RATE] = 20.0
         options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(options)
         coordinator.hass.states.set("sensor.grid_import", "0.0")
@@ -709,11 +757,15 @@ class TestForwardSeriesIsHeld(CoordinatorCase):
         self.assertIsNot(day, hour)
         self.assertEqual(len(hour), 1)
 
-    def test_a_new_plan_rebuilds_it(self) -> None:
+    def test_a_reload_rebuilds_it(self) -> None:
+        """A7: apply_plan was dead in production — a reload replaces the whole
+        coordinator, which is what actually resets this cache, not a method
+        called on a live instance.
+        """
         coordinator = a_coordinator()
         first = coordinator.forward_intervals(24, 30)
-        coordinator.apply_plan(coordinator.plan, coordinator.options)
-        self.assertIsNot(first, coordinator.forward_intervals(24, 30))
+        reloaded = a_coordinator()
+        self.assertIsNot(first, reloaded.forward_intervals(24, 30))
 
 
 class TestForwardSeriesAcrossTheFallBack(CoordinatorCase):
@@ -772,10 +824,9 @@ class TestTheTraceHoldsStill(CoordinatorCase):
 
     def _capped(self) -> Any:
         data = sample_options()
-        data[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
-        data[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        rate_in(data, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(data, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
         data[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
-        data[CONST.CONF_COUNT_ALLOWANCE] = True
         coordinator = a_coordinator(data)
         coordinator.hass.states.set("sensor.grid_import", "100.0")
         coordinator._seed_energy_total()
@@ -832,10 +883,14 @@ class TestTheOneWrite(CoordinatorCase):
 
     def test_the_select_is_set_to_the_rate_in_force(self) -> None:
         coordinator = self._linked()
+        off_peak = peak_name(coordinator).replace(
+            "import.every_day_peak", "import.every_day_off_peak"
+        )
+        peak = peak_name(coordinator)
         coordinator.hass.states.set(
             "select.meter_tariff",
-            "Every day Peak",
-            options=["Every day Off Peak", "Every day Peak"],
+            peak,
+            options=[off_peak, peak],
         )
         coordinator.async_refresh()
         self.assertEqual(
@@ -846,7 +901,7 @@ class TestTheOneWrite(CoordinatorCase):
                     "select_option",
                     {
                         "entity_id": "select.meter_tariff",
-                        "option": "Every day Off Peak",
+                        "option": off_peak,
                     },
                 )
             ],
@@ -854,10 +909,14 @@ class TestTheOneWrite(CoordinatorCase):
 
     def test_it_is_not_written_twice_for_the_same_rate(self) -> None:
         coordinator = self._linked()
+        off_peak = peak_name(coordinator).replace(
+            "import.every_day_peak", "import.every_day_off_peak"
+        )
+        peak = peak_name(coordinator)
         coordinator.hass.states.set(
             "select.meter_tariff",
-            "Every day Peak",
-            options=["Every day Off Peak", "Every day Peak"],
+            peak,
+            options=[off_peak, peak],
         )
         coordinator.async_refresh()
         coordinator.async_refresh()
@@ -892,7 +951,12 @@ class TestForwardIntervals(CoordinatorCase):
         coordinator = a_coordinator()
         series = coordinator.forward_intervals(6, 30)
         self.assertEqual(len(series), 12)
-        self.assertEqual(series[0].rate, "Every day Off Peak")
+        self.assertEqual(
+            series[0].rate,
+            peak_name(coordinator).replace(
+                "import.every_day_peak", "import.every_day_off_peak"
+            ),
+        )
 
     def test_the_service_shape(self) -> None:
         coordinator = a_coordinator()
@@ -1011,14 +1075,8 @@ class TestOptionsFlow(unittest.TestCase):
         driver.start()
         driver.choose("rates_menu")
         driver.choose("rate_pick")
-        # An older rate carries no timetable. Editing it keeps it that way
-        # rather than renaming its entity out from under the user.
-        driver.submit(name="Every day Peak")
-        driver.submit(
-            name="Every day Evening",
-            import_cents=56.88,
-            timetable=PKG.config_flow.UNSCOPED_TIMETABLE,
-        )
+        driver.submit(name="test_plan.every_day.import.every_day_peak")
+        driver.submit(name="Every day Evening", import_cents=56.88)
         periods = driver.flow.working[CONST.CONF_DAY_PATTERNS][0][CONST.CONF_PERIODS]
         self.assertEqual(periods[1][CONST.CONF_RATE], "Every day Evening")
 
@@ -1027,7 +1085,7 @@ class TestOptionsFlow(unittest.TestCase):
         driver.start()
         driver.choose("rates_menu")
         driver.choose("rate_remove")
-        driver.submit(name="Every day Peak")
+        driver.submit(name="test_plan.every_day.import.every_day_peak")
         self.assertEqual(driver.result["errors"].get("name"), "rate_in_use")
 
     def test_duplicating_a_timetable_copies_its_periods(self) -> None:
@@ -1074,7 +1132,7 @@ class TestOptionsFlow(unittest.TestCase):
         result = driver.choose("rate_plan_card")
         card = result["description_placeholders"]["card"]
         self.assertIn("buy", card)
-        self.assertIn("Every day Peak", card)
+        self.assertIn("test_plan.every_day.import.every_day_peak", card)
 
     def test_a_failing_step_shows_the_traceback(self) -> None:
         logging.disable(logging.CRITICAL)
@@ -1115,7 +1173,7 @@ class TestOptionsFlowBranches(unittest.TestCase):
         driver.choose("rate_add")
         driver.submit(name="Spare", import_cents=1.0)
         driver.choose("rate_remove")
-        driver.submit(name="every_day.spare")
+        driver.submit(name="test_plan.every_day.import.spare")
         self.assertEqual(driver.step, "rates_menu")
         self.assertNotIn("Spare", driver.result["description_placeholders"]["rates"])
 
@@ -1199,12 +1257,12 @@ class TestOptionsFlowBranches(unittest.TestCase):
         driver.submit(name="Evening")
         driver.submit(name="Evening peak", export_cents=14.0)
         self.assertEqual(
-            driver.flow.working[CONST.CONF_EXPORT_RATES][0][CONST.CONF_NAME],
+            driver.flow._export_rates()[0][CONST.CONF_NAME],
             "Evening peak",
         )
         driver.choose("export_rate_remove")
         driver.submit(name="Evening peak")
-        self.assertEqual(driver.flow.working[CONST.CONF_EXPORT_RATES], [])
+        self.assertEqual(driver.flow._export_rates(), [])
 
     def test_a_duplicate_feed_in_rate_is_refused(self) -> None:
         driver = OptionsDriver()
@@ -1284,7 +1342,7 @@ class TestRuleLists(unittest.TestCase):
         return driver
 
     def _last_rate(self, driver: OptionsDriver) -> dict[str, Any]:
-        rates: list[dict[str, Any]] = driver.flow.working[CONST.CONF_RATES]
+        rates: list[dict[str, Any]] = driver.flow._rates()
         return rates[-1]
 
     def test_both_lists_are_on_the_form_and_seeded(self) -> None:
@@ -1383,7 +1441,7 @@ class TestRuleLists(unittest.TestCase):
             enforceable_constraints=["no_grid_import"],
         )
         driver.choose("rate_pick")
-        driver.submit(name="every_day.night")
+        driver.submit(name="test_plan.every_day.import.night")
         info_key, _ = self._field(driver, CONST.CONF_INFORMATION_CONSTRAINTS)
         enf_key, _ = self._field(driver, CONST.CONF_ENFORCEABLE_CONSTRAINTS)
         self.assertEqual(info_key.default(), ["precool_opportunity"])
@@ -1392,12 +1450,12 @@ class TestRuleLists(unittest.TestCase):
     def test_a_plan_written_before_the_distinction_loads_as_information(self) -> None:
         """Existing rules keep the meaning they had rather than being promoted."""
         data = sample_options()
-        data[CONST.CONF_RATES][0].pop(CONST.CONF_ENFORCEABLE_CONSTRAINTS, None)
+        rate_in(data, 0).pop(CONST.CONF_ENFORCEABLE_CONSTRAINTS, None)
         driver = OptionsDriver(data)
         driver.start()
         driver.choose("rates_menu")
         driver.choose("rate_pick")
-        driver.submit(name="Every day Off Peak")
+        driver.submit(name="test_plan.every_day.import.every_day_off_peak")
         info_key, _ = self._field(driver, CONST.CONF_INFORMATION_CONSTRAINTS)
         enf_key, _ = self._field(driver, CONST.CONF_ENFORCEABLE_CONSTRAINTS)
         self.assertEqual(info_key.default(), ["grid_charge_battery"])
@@ -1472,7 +1530,7 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
     def test_coasting_is_a_rule_and_not_a_field(self) -> None:
         """P29: it says what the other rules say, so it is declared like them."""
         self.assertNotIn(
-            CONST.CONF_COASTING_PERMITTED,
+            "coasting_permitted",
             _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"])),
         )
         self.assertIn(CONST.CONSTRAINT_COASTING_PERMITTED, CONST.KNOWN_CONSTRAINTS)
@@ -1494,7 +1552,7 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
         self.assertIn(CONST.CONF_FALLBACK_RATE, fields)
         self.assertIn(CONST.CONF_ALLOWANCE_PERIOD, fields)
         self.assertIn(CONST.CONF_IMPORT_ENERGY_SENSOR, fields)
-        self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, fields)
+        self.assertNotIn("count_allowance", fields)
 
     def test_the_edit_form_is_the_same_form_unfiltered(self) -> None:
         """One definition. The setup form asking for less is the only difference.
@@ -1555,7 +1613,7 @@ class TestCountingSitsWithTheCap(unittest.TestCase):
     def test_the_tickbox_is_gone(self) -> None:
         """Rule 7, inverted. There is no opt-in field left to find."""
         fields = _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"]))
-        self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, fields)
+        self.assertNotIn("count_allowance", fields)
 
     def test_the_rate_form_carries_the_allowance_period_and_the_meter(self) -> None:
         fields = _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"]))
@@ -1638,7 +1696,7 @@ class TestCountingSitsWithTheCap(unittest.TestCase):
             }
         )
         self.assertNotIn(CONST.CONF_IMPORT_ENERGY_SENSOR, record)
-        self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, record)
+        self.assertNotIn("count_allowance", record)
 
 
 class TestTheDemandRateSitsOnTheRate(unittest.TestCase):
@@ -1808,33 +1866,22 @@ class TestTheBillingCycleDay(unittest.TestCase):
 
 
 def scoped_options() -> dict[str, Any]:
-    """Two timetables, each with its own rates, scoped the way P4 scopes them.
-
-    ``sample_options`` predates the scoping and its rates carry no timetable,
-    so it cannot show what happens to a rate that belongs to one.
-    """
+    """Two timetables, each with its own rates, nested inside it (Gap #1)."""
     return {
-        CONST.CONF_RATES: [
-            {
-                CONST.CONF_NAME: "Off Peak",
-                CONST.CONF_TIMETABLE: "Weekday",
-                CONST.CONF_IMPORT_CENTS: 19.8,
-            },
-            {
-                CONST.CONF_NAME: "Peak",
-                CONST.CONF_TIMETABLE: "Weekday",
-                CONST.CONF_IMPORT_CENTS: 56.88,
-            },
-            {
-                CONST.CONF_NAME: "Peak",
-                CONST.CONF_TIMETABLE: "Weekend",
-                CONST.CONF_IMPORT_CENTS: 30.0,
-            },
-        ],
         CONST.CONF_DAY_PATTERNS: [
             {
                 CONST.CONF_NAME: "Weekday",
                 CONST.CONF_DAYS: ["mon", "tue", "wed", "thu", "fri", "holiday"],
+                CONST.CONF_RATES: [
+                    {
+                        CONST.CONF_NAME: "Off Peak",
+                        CONST.CONF_IMPORT_CENTS: 19.8,
+                    },
+                    {
+                        CONST.CONF_NAME: "Peak",
+                        CONST.CONF_IMPORT_CENTS: 56.88,
+                    },
+                ],
                 CONST.CONF_PERIODS: [
                     {
                         CONST.CONF_START: "00:00",
@@ -1853,6 +1900,12 @@ def scoped_options() -> dict[str, Any]:
             {
                 CONST.CONF_NAME: "Weekend",
                 CONST.CONF_DAYS: ["sat", "sun"],
+                CONST.CONF_RATES: [
+                    {
+                        CONST.CONF_NAME: "Peak",
+                        CONST.CONF_IMPORT_CENTS: 30.0,
+                    },
+                ],
                 CONST.CONF_PERIODS: [
                     {
                         CONST.CONF_START: "00:00",
@@ -1884,7 +1937,7 @@ class TestATimetableRenameTakesItsRates(unittest.TestCase):
         driver = self._rename("Weekday", "Week day")
         scoped = {
             rate[CONST.CONF_NAME]: rate.get(CONST.CONF_TIMETABLE)
-            for rate in driver.flow.working[CONST.CONF_RATES]
+            for rate in driver.flow._rates()
             if rate.get(CONST.CONF_TIMETABLE) != "Weekend"
         }
         self.assertEqual(scoped, {"Off Peak": "Week day", "Peak": "Week day"})
@@ -1900,33 +1953,16 @@ class TestATimetableRenameTakesItsRates(unittest.TestCase):
         resolution = plan.resolve(date(2026, 8, 20), 18 * 60, False)
         self.assertIsNotNone(resolution)
         assert resolution is not None
-        self.assertEqual(resolution.rate.qualified_name, "week_day.peak")
+        self.assertEqual(resolution.qualified_name, "test_plan.week_day.import.peak")
 
     def test_the_other_timetables_rates_are_left_alone(self) -> None:
         driver = self._rename("Weekday", "Week day")
         weekend = [
             rate
-            for rate in driver.flow.working[CONST.CONF_RATES]
+            for rate in driver.flow._rates()
             if rate.get(CONST.CONF_TIMETABLE) == "Weekend"
         ]
         self.assertEqual(len(weekend), 1)
-
-    def test_an_unscoped_rate_is_not_pulled_into_the_timetable(self) -> None:
-        """A rate stored before the scoping belongs to none and resolves in any."""
-        options = sample_options()
-        driver = OptionsDriver(options)
-        driver.start()
-        driver.choose("day_patterns_menu")
-        driver.choose("day_pattern_pick")
-        driver.submit(name="Every day")
-        driver.submit(name="All week")
-        self.assertEqual(
-            [
-                rate.get(CONST.CONF_TIMETABLE)
-                for rate in driver.flow.working[CONST.CONF_RATES]
-            ],
-            [None, None],
-        )
 
 
 class TestThePeriodScreenIsScopedToItsTimetable(unittest.TestCase):
@@ -1945,17 +1981,23 @@ class TestThePeriodScreenIsScopedToItsTimetable(unittest.TestCase):
 
     def test_the_weekend_is_offered_only_its_own_rate(self) -> None:
         driver = self._period_form("Weekend")
-        self.assertEqual(self._offered(driver), ["weekend.peak"])
+        self.assertEqual(self._offered(driver), ["test_plan.weekend.import.peak"])
 
     def test_the_weekday_is_offered_only_its_own_rates(self) -> None:
         driver = self._period_form("Weekday")
         self.assertEqual(
-            sorted(self._offered(driver)), ["weekday.off_peak", "weekday.peak"]
+            sorted(self._offered(driver)),
+            [
+                "test_plan.weekday.import.off_peak",
+                "test_plan.weekday.import.peak",
+            ],
         )
 
     def test_a_chosen_identifier_is_stored_as_the_rate_name(self) -> None:
         driver = self._period_form("Weekend")
-        driver.submit(start="00:00:00", end="12:00:00", rate="weekend.peak")
+        driver.submit(
+            start="00:00:00", end="12:00:00", rate="test_plan.weekend.import.peak"
+        )
         weekend = driver.flow.working[CONST.CONF_DAY_PATTERNS][1]
         self.assertEqual(
             [period[CONST.CONF_RATE] for period in weekend[CONST.CONF_PERIODS]],
@@ -1991,7 +2033,7 @@ class TestTheRateFormIsSectioned(unittest.TestCase):
         driver = self._at_rate_form()
         driver.submit(name="Shoulder", import_cents=32.1)
         self.assertEqual(driver.step, "rates_menu")
-        stored = driver.flow.working[CONST.CONF_RATES][-1]
+        stored = driver.flow._rates()[-1]
         self.assertEqual(stored[CONST.CONF_NAME], "Shoulder")
 
     def test_the_payload_arrives_nested_and_is_read_anyway(self) -> None:
@@ -2035,7 +2077,7 @@ class TestTheRateFormIsSectioned(unittest.TestCase):
                 CONST.CONF_IMPORT_ENERGY_SENSOR,
             ):
                 self.assertNotIn("not yet implemented", labels[field], (root, field))
-            self.assertNotIn(CONST.CONF_COUNT_ALLOWANCE, labels, root)
+            self.assertNotIn("count_allowance", labels, root)
 
     def test_coasting_declared_as_a_rule_reaches_the_published_rate(self) -> None:
         driver = self._at_rate_form()
@@ -2058,6 +2100,6 @@ class TestTheRateFormIsSectioned(unittest.TestCase):
 
     def test_a_rate_without_the_rule_does_not_permit_coasting(self) -> None:
         plan = Plan.from_dict({**sample_options(), CONST.CONF_NAME: "Test Plan"})
-        rate = plan.rate_by_name("Every day Peak")
+        rate = plan.rate_by_name("Every day Peak", "Every day")
         assert rate is not None
         self.assertFalse(rate.coasting_permitted)

@@ -39,7 +39,8 @@ from .const import (
 )
 from .coordinator import TariffCoordinator
 from .entity import RateTariffEntity, TariffEntity
-from .plan import Rate, format_time
+from .plan import DayPattern, ExportRate, Rate, format_time
+from .plan import qualified_name as build_qualified_name
 
 # Said on every accumulating entity. What this component publishes from
 # counting is an estimate it measured itself: it is taken from a meter the
@@ -98,16 +99,61 @@ async def async_setup_entry(
     # if it is too many is entity_registry_enabled_default on the derived
     # ones, not fewer facts.
     if coordinator.counting_allowance:
-        for rate in coordinator.plan.rates:
+        for day_pattern, rate in coordinator.plan.rates_with_pattern():
             if rate.has_allowance:
-                entities.append(AllowanceUsedSensor(coordinator, rate))
-                entities.append(AllowanceRemainingSensor(coordinator, rate))
+                entities.append(AllowanceUsedSensor(coordinator, day_pattern, rate))
+                entities.append(
+                    AllowanceRemainingSensor(coordinator, day_pattern, rate)
+                )
             if rate.has_demand_charge:
-                entities.append(DemandNowSensor(coordinator, rate))
-                entities.append(DemandPeakSensor(coordinator, rate))
-                entities.append(DemandPeakAtSensor(coordinator, rate))
-                entities.append(DemandCostToDateSensor(coordinator, rate, currency))
-                entities.append(DemandCostProjectedSensor(coordinator, rate, currency))
+                entities.append(DemandNowSensor(coordinator, day_pattern, rate))
+                entities.append(DemandPeakSensor(coordinator, day_pattern, rate))
+                entities.append(DemandPeakAtSensor(coordinator, day_pattern, rate))
+                entities.append(
+                    DemandCostToDateSensor(coordinator, day_pattern, rate, currency)
+                )
+                entities.append(
+                    DemandCostProjectedSensor(coordinator, day_pattern, rate, currency)
+                )
+
+    # The export mirror of the block above (Gaps #2, #3, #4): an export rate
+    # can now declare the same things an import rate can, and gets the same
+    # per-rate accumulating entities when it does.
+    if coordinator.counting_export_allowance:
+        for day_pattern, export_rate in coordinator.plan.export_rates_with_pattern():
+            if export_rate.has_allowance:
+                entities.append(
+                    AllowanceUsedSensor(
+                        coordinator, day_pattern, export_rate, export=True
+                    )
+                )
+                entities.append(
+                    AllowanceRemainingSensor(
+                        coordinator, day_pattern, export_rate, export=True
+                    )
+                )
+            if export_rate.has_demand_charge:
+                entities.append(
+                    DemandNowSensor(coordinator, day_pattern, export_rate, export=True)
+                )
+                entities.append(
+                    DemandPeakSensor(coordinator, day_pattern, export_rate, export=True)
+                )
+                entities.append(
+                    DemandPeakAtSensor(
+                        coordinator, day_pattern, export_rate, export=True
+                    )
+                )
+                entities.append(
+                    DemandCostToDateSensor(
+                        coordinator, day_pattern, export_rate, currency, export=True
+                    )
+                )
+                entities.append(
+                    DemandCostProjectedSensor(
+                        coordinator, day_pattern, export_rate, currency, export=True
+                    )
+                )
 
     async_add_entities(entities)
 
@@ -150,7 +196,13 @@ class ImportPriceSensor(_PriceSensor):
         rate = state.effective_rate
 
         attributes: dict[str, Any] = {
-            "rate": rate.qualified_name if rate else None,
+            "rate": (
+                build_qualified_name(
+                    self.coordinator.plan.name, resolution.day_pattern.name, rate.name
+                )
+                if rate and resolution
+                else None
+            ),
             "rate_name": rate.name if rate else None,
             "day_pattern": resolution.day_pattern.name if resolution else None,
             "season": (
@@ -274,17 +326,22 @@ class RateSensor(TariffEntity, SensorEntity):
     @property
     def native_value(self) -> str | None:
         """Return the rate name."""
+        resolution = self.coordinator.state.resolution
         rate = self.coordinator.state.effective_rate
-        return None if rate is None else rate.qualified_name
+        if resolution is None or rate is None:
+            return None
+        return build_qualified_name(
+            self.coordinator.plan.name, resolution.day_pattern.name, rate.name
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the scheduled rate, which differs when an allowance is spent."""
         resolution = self.coordinator.state.resolution
         return {
-            "scheduled_rate": (resolution.rate.qualified_name if resolution else None),
+            "scheduled_rate": (resolution.qualified_name if resolution else None),
             "rate_name": resolution.rate.name if resolution else None,
-            "timetable": resolution.rate.timetable if resolution else None,
+            "timetable": resolution.day_pattern.name if resolution else None,
             "allowance_exhausted": self.coordinator.state.allowance_exhausted,
         }
 
@@ -403,9 +460,18 @@ class AllowanceUsedSensor(_AccumulatingSensor):
     _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
     _attr_suggested_display_precision = 2
 
-    def __init__(self, coordinator: TariffCoordinator, rate: Rate) -> None:
+    def __init__(
+        self,
+        coordinator: TariffCoordinator,
+        day_pattern: DayPattern,
+        rate: Rate | ExportRate,
+        *,
+        export: bool = False,
+    ) -> None:
         """Initialise the allowance used sensor for one rate."""
-        super().__init__(coordinator, KEY_ALLOWANCE_USED, rate)
+        super().__init__(
+            coordinator, KEY_ALLOWANCE_USED, day_pattern, rate, export=export
+        )
 
     async def async_added_to_hass(self) -> None:
         """Restore the count, but only if it belongs to the period running now."""
@@ -469,9 +535,18 @@ class AllowanceRemainingSensor(_AccumulatingSensor):
     _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
     _attr_suggested_display_precision = 2
 
-    def __init__(self, coordinator: TariffCoordinator, rate: Rate) -> None:
+    def __init__(
+        self,
+        coordinator: TariffCoordinator,
+        day_pattern: DayPattern,
+        rate: Rate | ExportRate,
+        *,
+        export: bool = False,
+    ) -> None:
         """Initialise the allowance remaining sensor for one rate."""
-        super().__init__(coordinator, KEY_ALLOWANCE_REMAINING, rate)
+        super().__init__(
+            coordinator, KEY_ALLOWANCE_REMAINING, day_pattern, rate, export=export
+        )
 
     @property
     def native_value(self) -> float | None:
@@ -491,9 +566,18 @@ class DemandNowSensor(_AccumulatingSensor):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_suggested_display_precision = 3
 
-    def __init__(self, coordinator: TariffCoordinator, rate: Rate) -> None:
+    def __init__(
+        self,
+        coordinator: TariffCoordinator,
+        day_pattern: DayPattern,
+        rate: Rate | ExportRate,
+        *,
+        export: bool = False,
+    ) -> None:
         """Initialise the demand-in-progress sensor for one rate."""
-        super().__init__(coordinator, KEY_DEMAND_NOW_KW, rate)
+        super().__init__(
+            coordinator, KEY_DEMAND_NOW_KW, day_pattern, rate, export=export
+        )
 
     @property
     def native_value(self) -> float | None:
@@ -520,9 +604,18 @@ class DemandPeakSensor(_AccumulatingSensor):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_suggested_display_precision = 3
 
-    def __init__(self, coordinator: TariffCoordinator, rate: Rate) -> None:
+    def __init__(
+        self,
+        coordinator: TariffCoordinator,
+        day_pattern: DayPattern,
+        rate: Rate | ExportRate,
+        *,
+        export: bool = False,
+    ) -> None:
         """Initialise the demand peak sensor for one rate."""
-        super().__init__(coordinator, KEY_DEMAND_PEAK_KW, rate)
+        super().__init__(
+            coordinator, KEY_DEMAND_PEAK_KW, day_pattern, rate, export=export
+        )
 
     async def async_added_to_hass(self) -> None:
         """Restore the peak, but only if it was set inside this cycle."""
@@ -572,9 +665,18 @@ class DemandPeakAtSensor(RateTariffEntity, SensorEntity):
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
-    def __init__(self, coordinator: TariffCoordinator, rate: Rate) -> None:
+    def __init__(
+        self,
+        coordinator: TariffCoordinator,
+        day_pattern: DayPattern,
+        rate: Rate | ExportRate,
+        *,
+        export: bool = False,
+    ) -> None:
         """Initialise the peak timestamp sensor for one rate."""
-        super().__init__(coordinator, KEY_DEMAND_PEAK_AT, rate)
+        super().__init__(
+            coordinator, KEY_DEMAND_PEAK_AT, day_pattern, rate, export=export
+        )
 
     @property
     def native_value(self) -> datetime | None:
@@ -590,10 +692,17 @@ class _DemandCostSensor(_AccumulatingSensor):
     _attr_suggested_display_precision = 2
 
     def __init__(
-        self, coordinator: TariffCoordinator, rate: Rate, key: str, currency: str
+        self,
+        coordinator: TariffCoordinator,
+        day_pattern: DayPattern,
+        rate: Rate | ExportRate,
+        key: str,
+        currency: str,
+        *,
+        export: bool = False,
     ) -> None:
         """Initialise a demand cost sensor for one rate."""
-        super().__init__(coordinator, key, rate)
+        super().__init__(coordinator, key, day_pattern, rate, export=export)
         self._attr_native_unit_of_measurement = currency
 
     def _cost(self, days: int) -> float | None:
@@ -610,10 +719,23 @@ class DemandCostToDateSensor(_DemandCostSensor):
     """What the peak has cost so far, on the declared basis."""
 
     def __init__(
-        self, coordinator: TariffCoordinator, rate: Rate, currency: str
+        self,
+        coordinator: TariffCoordinator,
+        day_pattern: DayPattern,
+        rate: Rate | ExportRate,
+        currency: str,
+        *,
+        export: bool = False,
     ) -> None:
         """Initialise the cost-to-date sensor for one rate."""
-        super().__init__(coordinator, rate, KEY_DEMAND_COST_TO_DATE, currency)
+        super().__init__(
+            coordinator,
+            day_pattern,
+            rate,
+            KEY_DEMAND_COST_TO_DATE,
+            currency,
+            export=export,
+        )
 
     @property
     def native_value(self) -> float | None:
@@ -625,10 +747,23 @@ class DemandCostProjectedSensor(_DemandCostSensor):
     """What the bill says if nothing beats the peak."""
 
     def __init__(
-        self, coordinator: TariffCoordinator, rate: Rate, currency: str
+        self,
+        coordinator: TariffCoordinator,
+        day_pattern: DayPattern,
+        rate: Rate | ExportRate,
+        currency: str,
+        *,
+        export: bool = False,
     ) -> None:
         """Initialise the projected cost sensor for one rate."""
-        super().__init__(coordinator, rate, KEY_DEMAND_COST_PROJECTED, currency)
+        super().__init__(
+            coordinator,
+            day_pattern,
+            rate,
+            KEY_DEMAND_COST_PROJECTED,
+            currency,
+            export=export,
+        )
 
     @property
     def native_value(self) -> float | None:

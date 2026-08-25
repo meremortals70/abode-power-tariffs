@@ -7,7 +7,8 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from . import TariffConfigEntry
-from .serialise import periods_to_csv, rates_to_csv
+from .plan import qualified_name as build_qualified_name
+from .serialise import export_rates_to_csv, periods_to_csv, rates_to_csv
 from .strip import render_plan, render_rate_plan_card
 from .validate import validate_plan
 
@@ -23,16 +24,23 @@ async def async_get_config_entry_diagnostics(
     return {
         "plan": plan.as_dict(),
         "rates_csv": rates_to_csv(plan),
+        "export_rates_csv": export_rates_to_csv(plan),
         "periods_csv": periods_to_csv(plan),
         "strip": render_plan(plan),
         "rate_plan_card": render_rate_plan_card(plan),
         "problems": [str(problem) for problem in validate_plan(plan)],
         "current": {
             "rate": (
-                state.effective_rate.qualified_name if state.effective_rate else None
+                build_qualified_name(
+                    plan.name,
+                    state.resolution.day_pattern.name,
+                    state.effective_rate.name,
+                )
+                if state.effective_rate and state.resolution
+                else None
             ),
             "scheduled_rate": (
-                state.resolution.rate.qualified_name if state.resolution else None
+                state.resolution.qualified_name if state.resolution else None
             ),
             "day_pattern": state.resolution.day_pattern.name
             if state.resolution
@@ -40,6 +48,11 @@ async def async_get_config_entry_diagnostics(
             "next_change": state.next_change.isoformat() if state.next_change else None,
             "allowance_used_kwh": state.allowance_used_kwh,
             "allowance_remaining_kwh": state.allowance_remaining_kwh,
+            "export_rate": state.export_resolution.qualified_name
+            if state.export_resolution
+            else None,
+            "export_allowance_used_kwh": state.export_allowance_used_kwh,
+            "export_allowance_remaining_kwh": state.export_allowance_remaining_kwh,
             "plan_expired": state.plan_expired,
             "trace": list(state.trace),
         },

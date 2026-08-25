@@ -90,64 +90,49 @@ def run(coro: Any) -> Any:
 def populated_options() -> dict[str, Any]:
     return {
         CONST.CONF_PLAN_DESCRIPTION: "Everything filled in",
-        CONST.CONF_RATES: [
-            {
-                CONST.CONF_NAME: "Off Peak",
-                CONST.CONF_TIMETABLE: "Every day",
-                CONST.CONF_IMPORT_CENTS: 19.8,
-                # Vestigial, and stored. A rate edit must not quietly drop it.
-                CONST.CONF_EXPORT_CENTS: 3.3,
-                # Stored sorted: a rate's rules are a set, and the plan reads
-                # them back sorted either way.
-                CONST.CONF_CONSTRAINTS: ["coasting_permitted", "grid_charge_battery"],
-                CONST.CONF_ENFORCEABLE_CONSTRAINTS: ["grid_charge_battery"],
-                CONST.CONF_RATE_ALLOWANCE_KWH: None,
-                CONST.CONF_FALLBACK_RATE: None,
-                CONST.CONF_DEMAND_PERIOD: False,
-                CONST.CONF_DEMAND_RATE: 0.0,
-                CONST.CONF_DEMAND_INTERVAL: 30,
-                CONST.CONF_DEMAND_BASIS: "day",
-                CONST.CONF_ALLOWANCE_PERIOD: "slot",
-                # Stored, never written by a screen, never read at runtime.
-                # Exactly the kind of field a rebuild loses silently.
-                CONST.CONF_COMPONENTS: {"network": 8.5},
-            },
-            {
-                CONST.CONF_NAME: "Peak",
-                CONST.CONF_TIMETABLE: "Every day",
-                CONST.CONF_IMPORT_CENTS: 56.88,
-                CONST.CONF_EXPORT_CENTS: 0.0,
-                CONST.CONF_CONSTRAINTS: ["no_grid_import"],
-                CONST.CONF_ENFORCEABLE_CONSTRAINTS: ["no_grid_import"],
-                CONST.CONF_RATE_ALLOWANCE_KWH: 12.0,
-                CONST.CONF_FALLBACK_RATE: "Off Peak",
-                CONST.CONF_DEMAND_PERIOD: True,
-                CONST.CONF_DEMAND_RATE: 14.5,
-                # Deliberately not the defaults. A screen that rebuilt the
-                # record from its own idea of the key set would put these
-                # back to 30 and 'day' and silently change what the money
-                # means.
-                CONST.CONF_DEMAND_INTERVAL: 15,
-                CONST.CONF_DEMAND_BASIS: "period",
-                CONST.CONF_ALLOWANCE_PERIOD: "month",
-                CONST.CONF_COMPONENTS: {},
-            },
-        ],
-        CONST.CONF_EXPORT_RATES: [
-            {
-                CONST.CONF_NAME: "Every day Daytime",
-                CONST.CONF_TIMETABLE: "Every day",
-                CONST.CONF_EXPORT_CENTS: 5.0,
-                CONST.CONF_EXPORT_ALLOWANCE_KWH: 10.0,
-                CONST.CONF_EXPORT_FALLBACK_CENTS: 2.0,
-            }
-        ],
         CONST.CONF_DAY_PATTERNS: [
             {
                 CONST.CONF_NAME: "Every day",
                 CONST.CONF_DAYS: list(CONST.ALL_DAY_TOKENS),
                 CONST.CONF_SEASON_FROM: None,
                 CONST.CONF_SEASON_TO: None,
+                CONST.CONF_RATES: [
+                    {
+                        CONST.CONF_NAME: "Off Peak",
+                        CONST.CONF_IMPORT_CENTS: 19.8,
+                        # Stored sorted: a rate's rules are a set, and the
+                        # plan reads them back sorted either way.
+                        CONST.CONF_CONSTRAINTS: [
+                            "coasting_permitted",
+                            "grid_charge_battery",
+                        ],
+                        CONST.CONF_ENFORCEABLE_CONSTRAINTS: ["grid_charge_battery"],
+                        CONST.CONF_RATE_ALLOWANCE_KWH: None,
+                        CONST.CONF_FALLBACK_RATE: None,
+                        CONST.CONF_DEMAND_PERIOD: False,
+                        CONST.CONF_DEMAND_RATE: 0.0,
+                        CONST.CONF_DEMAND_INTERVAL: 30,
+                        CONST.CONF_DEMAND_BASIS: "day",
+                        CONST.CONF_ALLOWANCE_PERIOD: "slot",
+                    },
+                    {
+                        CONST.CONF_NAME: "Peak",
+                        CONST.CONF_IMPORT_CENTS: 56.88,
+                        CONST.CONF_CONSTRAINTS: ["no_grid_import"],
+                        CONST.CONF_ENFORCEABLE_CONSTRAINTS: ["no_grid_import"],
+                        CONST.CONF_RATE_ALLOWANCE_KWH: 12.0,
+                        CONST.CONF_FALLBACK_RATE: "Off Peak",
+                        CONST.CONF_DEMAND_PERIOD: True,
+                        CONST.CONF_DEMAND_RATE: 14.5,
+                        # Deliberately not the defaults. A screen that
+                        # rebuilt the record from its own idea of the key
+                        # set would put these back to 30 and 'day' and
+                        # silently change what the money means.
+                        CONST.CONF_DEMAND_INTERVAL: 15,
+                        CONST.CONF_DEMAND_BASIS: "period",
+                        CONST.CONF_ALLOWANCE_PERIOD: "month",
+                    },
+                ],
                 CONST.CONF_PERIODS: [
                     {
                         CONST.CONF_START: "00:00",
@@ -159,6 +144,20 @@ def populated_options() -> dict[str, Any]:
                         CONST.CONF_END: "24:00",
                         CONST.CONF_RATE: "Peak",
                     },
+                ],
+                CONST.CONF_EXPORT_RATES: [
+                    {
+                        CONST.CONF_NAME: "Every day Daytime",
+                        CONST.CONF_EXPORT_CENTS: 5.0,
+                        CONST.CONF_EXPORT_ALLOWANCE_KWH: 10.0,
+                        CONST.CONF_EXPORT_FALLBACK_CENTS: 2.0,
+                        CONST.CONF_CONSTRAINTS: [],
+                        CONST.CONF_ENFORCEABLE_CONSTRAINTS: [],
+                        CONST.CONF_DEMAND_PERIOD: False,
+                        CONST.CONF_DEMAND_RATE: 0.0,
+                        CONST.CONF_DEMAND_INTERVAL: 30,
+                        CONST.CONF_DEMAND_BASIS: "day",
+                    }
                 ],
                 CONST.CONF_EXPORT_PERIODS: [],
                 CONST.CONF_EXPORT_SAME_ALL_DAY: True,
@@ -176,7 +175,7 @@ def populated_options() -> dict[str, Any]:
         CONST.CONF_VALID_FROM: None,
         CONST.CONF_VALID_TO: None,
         CONST.CONF_HOLIDAY_SENSOR: None,
-        CONST.CONF_COUNT_ALLOWANCE: False,
+        CONST.CONF_EXPORT_ENERGY_SENSOR: None,
         CONST.CONF_IMPORT_ENERGY_SENSOR: None,
     }
 
@@ -227,10 +226,20 @@ def differences(before: Any, after: Any, path: str = "") -> list[str]:
     A whole-structure comparison on purpose. Asserting on named fields only
     finds what the person writing the test already thought of, and the fault
     this guards against is precisely a field nobody thought of.
+
+    ``timetable`` is skipped everywhere. It is not a stored field any more
+    (Gap #1) — ``_rates()``/``_export_rates()`` write it onto a rate dict as
+    scratch bookkeeping, refreshed on every read, purely so the rest of the
+    options flow can keep asking a bare rate dict which timetable it is in
+    without every call site being handed the owning pattern too. Whether that
+    scratch key happens to be present at the moment a test inspects
+    ``working`` depends on which screens were rendered along the way, not on
+    anything the person actually changed, so it would otherwise show up as a
+    false "added" line unrelated to what a test is checking.
     """
     if isinstance(before, dict) and isinstance(after, dict):
         found: list[str] = []
-        for key in sorted(set(before) | set(after)):
+        for key in sorted((set(before) | set(after)) - {CONST.CONF_TIMETABLE}):
             here = f"{path}.{key}" if path else str(key)
             if key not in before:
                 found.append(f"{here}: added ({after[key]!r})")
@@ -288,9 +297,9 @@ class TestAnEditChangesOnlyWhatWasEdited(unittest.TestCase):
     def test_changing_a_rates_price_keeps_the_rest_of_the_rate(self) -> None:
         self.driver.choose("rates_menu")
         self.driver.choose("rate_pick")
-        self.driver.submit(name="every_day.off_peak")
+        self.driver.submit(name="test_plan.every_day.import.off_peak")
         self.driver.submit(import_cents=21.0)
-        self.assert_only(["rates[0].import_cents: 19.8 -> 21.0"])
+        self.assert_only(["day_patterns[0].rates[0].import_cents: 19.8 -> 21.0"])
 
     def test_a_plan_stored_before_the_new_fields_gains_them_at_their_defaults(
         self,
@@ -305,7 +314,7 @@ class TestAnEditChangesOnlyWhatWasEdited(unittest.TestCase):
         deletion would be waved through.
         """
         before = populated_options()
-        for rate in before[CONST.CONF_RATES]:
+        for rate in before[CONST.CONF_DAY_PATTERNS][0][CONST.CONF_RATES]:
             for key in (
                 CONST.CONF_DEMAND_INTERVAL,
                 CONST.CONF_DEMAND_BASIS,
@@ -316,15 +325,15 @@ class TestAnEditChangesOnlyWhatWasEdited(unittest.TestCase):
         driver.start()
         driver.choose("rates_menu")
         driver.choose("rate_pick")
-        driver.submit(name="every_day.off_peak")
+        driver.submit(name="test_plan.every_day.import.off_peak")
         driver.submit(import_cents=21.0)
         self.assertEqual(
             differences(before, driver.flow.working),
             [
-                "rates[0].allowance_period: added ('slot')",
-                "rates[0].demand_basis: added ('day')",
-                "rates[0].demand_interval: added (30)",
-                "rates[0].import_cents: 19.8 -> 21.0",
+                "day_patterns[0].rates[0].allowance_period: added ('slot')",
+                "day_patterns[0].rates[0].demand_basis: added ('day')",
+                "day_patterns[0].rates[0].demand_interval: added (30)",
+                "day_patterns[0].rates[0].import_cents: 19.8 -> 21.0",
             ],
         )
 
@@ -333,7 +342,7 @@ class TestAnEditChangesOnlyWhatWasEdited(unittest.TestCase):
         self.driver.choose("export_rate_pick")
         self.driver.submit(name="Every day Daytime")
         self.driver.submit(export_cents=6.5)
-        self.assert_only(["export_rates[0].export_cents: 5.0 -> 6.5"])
+        self.assert_only(["day_patterns[0].export_rates[0].export_cents: 5.0 -> 6.5"])
 
     def test_changing_a_time_period_keeps_the_rest_of_the_timetable(self) -> None:
         self.driver.choose("periods_pick_day_pattern")
@@ -355,6 +364,12 @@ class TestExportRatesAreScopedByTimetable(unittest.TestCase):
         options = populated_options()
         second = copy.deepcopy(options[CONST.CONF_DAY_PATTERNS][0])
         second[CONST.CONF_NAME] = "Weekend"
+        # A blank slate of its own — deep-copying "Every day" would also
+        # duplicate its rates onto "Weekend" now that a rate is nested
+        # inside its timetable (Gap #1), pre-empting the very clash this
+        # test exists to check.
+        second[CONST.CONF_RATES] = []
+        second[CONST.CONF_EXPORT_RATES] = []
         options[CONST.CONF_DAY_PATTERNS].append(second)
         self.driver = OptionsDriver(options)
         self.driver.start()
@@ -373,7 +388,7 @@ class TestExportRatesAreScopedByTimetable(unittest.TestCase):
         self.assertNotIn("name", self.driver.result.get("errors") or {})
         names_and_timetables = {
             (rate[CONST.CONF_NAME], rate.get(CONST.CONF_TIMETABLE))
-            for rate in self.driver.flow.working[CONST.CONF_EXPORT_RATES]
+            for rate in self.driver.flow._export_rates()
         }
         self.assertIn(("Every day Daytime", "Weekend"), names_and_timetables)
         self.assertIn(("Every day Daytime", "Every day"), names_and_timetables)
@@ -437,7 +452,7 @@ class TestDuplicatingATimetable(unittest.TestCase):
 
     def test_the_duplicates_periods_resolve_its_own_rates(self) -> None:
         """Not the source's — checked by giving them different prices."""
-        rates = self.driver.flow.working[CONST.CONF_RATES]
+        rates = self.driver.flow._rates()
         for rate in rates:
             if (
                 rate[CONST.CONF_NAME] == "Off Peak"
@@ -459,9 +474,11 @@ class TestDuplicatingATimetable(unittest.TestCase):
         copied_peak = plan.rate_by_name("Peak", "Weekend")
         assert copied_peak is not None
         self.assertEqual(copied_peak.fallback_rate, "Off Peak")
-        fallback = plan.rate_by_name(copied_peak.fallback_rate, copied_peak.timetable)
+        fallback = plan.rate_by_name(copied_peak.fallback_rate, "Weekend")
         assert fallback is not None
-        self.assertEqual(fallback.timetable, "Weekend")
+        weekend = plan.day_pattern_by_name("Weekend")
+        assert weekend is not None
+        self.assertIn(fallback, weekend.rates)
 
     def test_the_source_timetable_is_untouched_by_duplicating_it(self) -> None:
         """Rule 14's own discipline: a creation derived from an edit must
@@ -472,12 +489,6 @@ class TestDuplicatingATimetable(unittest.TestCase):
             self.driver.flow.working[CONST.CONF_DAY_PATTERNS][0],
         )
         self.assertEqual(found, [], "\n".join(found))
-        source_rates = [
-            rate
-            for rate in self.driver.flow.working[CONST.CONF_RATES]
-            if rate.get(CONST.CONF_TIMETABLE) == "Every day"
-        ]
-        self.assertEqual(differences(self.before[CONST.CONF_RATES], source_rates), [])
 
 
 class TestDuplicatingPeriodBasedExport(unittest.TestCase):
@@ -503,15 +514,13 @@ class TestDuplicatingPeriodBasedExport(unittest.TestCase):
                 CONST.CONF_RATE: "Evening",
             },
         ]
-        options[CONST.CONF_EXPORT_RATES] = [
+        pattern[CONST.CONF_EXPORT_RATES] = [
             {
                 CONST.CONF_NAME: "Daytime",
-                CONST.CONF_TIMETABLE: "Every day",
                 CONST.CONF_EXPORT_CENTS: 3.0,
             },
             {
                 CONST.CONF_NAME: "Evening",
-                CONST.CONF_TIMETABLE: "Every day",
                 CONST.CONF_EXPORT_CENTS: 8.0,
             },
         ]
@@ -602,9 +611,13 @@ class TestStoredRecordsKeepTheModelsShape(unittest.TestCase):
         driver.start()
         driver.choose("rates_menu")
         driver.choose("rate_pick")
-        driver.submit(name="every_day.off_peak")
+        driver.submit(name="test_plan.every_day.import.off_peak")
         driver.submit(import_cents=21.0)
-        record = driver.flow.working[CONST.CONF_RATES][0]
+        # What would actually be persisted (async_step_save), not the live
+        # in-progress working copy — CONF_TIMETABLE is scratch bookkeeping
+        # the flow keeps on a rate dict while editing (Gap #1) and strips
+        # again before storage, the same way _stored() does.
+        record = driver.flow._stored()[CONST.CONF_DAY_PATTERNS][0][CONST.CONF_RATES][0]
         self.assertEqual(set(record), self._canonical(PLAN.Rate, record))
 
     def test_an_edited_export_rate_has_every_key(self) -> None:
@@ -614,7 +627,9 @@ class TestStoredRecordsKeepTheModelsShape(unittest.TestCase):
         driver.choose("export_rate_pick")
         driver.submit(name="Every day Daytime")
         driver.submit(export_cents=6.5)
-        record = driver.flow.working[CONST.CONF_EXPORT_RATES][0]
+        record = driver.flow._stored()[CONST.CONF_DAY_PATTERNS][0][
+            CONST.CONF_EXPORT_RATES
+        ][0]
         self.assertEqual(set(record), self._canonical(PLAN.ExportRate, record))
 
 

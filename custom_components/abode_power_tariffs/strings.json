@@ -29,7 +29,7 @@
         },
         "data_description": {
           "daily_supply_charge_cents": "The fixed charge per day. Zero if you do not have one.",
-          "prices_include_gst": "Australian bills quote prices with GST included. Most European and US rate sheets quote them without.",
+          "prices_include_gst": "Bills quote prices with tax included in some countries — Australian ones with GST, for instance — and without it in most European and US rate sheets.",
           "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
           "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
         },
@@ -431,15 +431,17 @@
           "valid_from": "Plan valid from",
           "valid_to": "Plan valid to",
           "holiday_sensor": "Public holiday sensor",
+          "export_energy_sensor": "Export energy sensor",
           "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
           "monthly_charge": "Monthly charge",
           "billing_cycle_day": "Billing cycle starts on day of month (0 for none)"
         },
         "data_description": {
-          "prices_include_gst": "Australian bills quote prices with GST included. Most European and US rate sheets quote them without.",
+          "prices_include_gst": "Bills quote prices with tax included in some countries — Australian ones with GST, for instance — and without it in most European and US rate sheets.",
           "valid_from": "Optional. Leave empty unless you are recording a plan that started on a known date.",
           "valid_to": "Optional. When your retailer reprices, set this and add a new channel for the new plan, so past costs stay correct against the price that was actually in force.",
           "holiday_sensor": "Optional. A Workday sensor from Home Assistant's built-in Workday integration, which is off on a public holiday. Needed only if holidays are priced differently.",
+          "export_energy_sensor": "Optional. The household's total exported energy, cumulative and increasing. Needed only if an export rate declares a demand charge or an allowance — nothing counts against either without it.",
           "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here.",
           "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
           "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
@@ -525,6 +527,7 @@
       "name_required": "A name is needed.",
       "rate_exists": "A rate with that name already exists.",
       "rate_in_use": "That rate is used by a time period. Change the time period first.",
+      "timetable_required": "Choose which timetable this rate belongs to.",
       "days_required": "Choose at least one day.",
       "end_before_start": "The end must be after the start.",
       "bad_time": "That is not a valid time.",
@@ -662,6 +665,10 @@
     "input_data_gap": {
       "title": "An input for {title} is unreadable",
       "description": "{reason}, since {since}. Consumption in this gap is not being counted, so the current cycle's figures will read low until it closes. Reconnecting the input does not recover what was missed."
+    },
+    "plan_expired": {
+      "title": "The tariff plan for {title} has expired",
+      "description": "This plan's valid_to ({valid_to}) has passed and no successor plan is set up to replace it. The prices this integration reports can no longer be trusted as current. Archive this plan properly by leaving valid_to as it is once the replacement is in place, or set up the new plan's own service under the same device."
     }
   },
   "exceptions": {

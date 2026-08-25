@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from .const import ALL_DAY_TOKENS, MAX_BILLING_CYCLE_DAY, MINUTES_PER_DAY
-from .plan import DayPattern, Plan, Rate, format_time
+from .plan import DayPattern, ExportRate, Plan, Rate, format_time, qualified_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,8 +135,35 @@ def _season_probe_dates(plan: Plan) -> list[date]:
 
 
 def validate_export(plan: Plan) -> list[Problem]:
-    """Check the export side when it is not a single all-day price."""
+    """Check the export side: rate identity, references, allowance fallbacks.
+
+    Mirrors validate_rates on the import side (Gaps #2, #3): export rates now
+    carry the same declarations import rates do, so they need the same
+    checks — a stray enforceable constraint, an allowance with nowhere to
+    fall back to. Time-period coverage is checked only when the timetable is
+    not on one flat price all day.
+    """
     problems: list[Problem] = []
+
+    export_pairs = [
+        (day_pattern.name, rate.name)
+        for day_pattern, rate in plan.export_rates_with_pattern()
+    ]
+    if len(set(export_pairs)) != len(export_pairs):
+        problems.append(
+            Problem("", "two export rates in the same timetable share a name")
+        )
+
+    for day_pattern, rate in plan.export_rates_with_pattern():
+        stray = rate.enforceable_constraints - rate.constraints
+        if stray:
+            problems.append(
+                Problem(
+                    f"{day_pattern.name} export {rate.name}",
+                    "declares rules enforceable that it does not carry: "
+                    f"{', '.join(sorted(stray))}",
+                )
+            )
 
     for pattern in plan.day_patterns:
         if pattern.export_same_all_day:
@@ -147,7 +174,7 @@ def validate_export(plan: Plan) -> list[Problem]:
             continue
         cursor = 0
         for period in periods:
-            if plan.export_rate_by_name(period.rate, pattern.name) is None:
+            if pattern.export_rate_by_name(period.rate) is None:
                 problems.append(
                     Problem(
                         f"{pattern.name} export",
@@ -190,14 +217,19 @@ def validate_rates(plan: Plan) -> list[Problem]:
 
     # A rate is identified by its timetable and its name together, so two
     # timetables can each have a Peak at a different price.
-    pairs = [(rate.timetable, rate.name) for rate in plan.rates]
+    pairs = [
+        (day_pattern.name, rate.name) for day_pattern, rate in plan.rates_with_pattern()
+    ]
     if len(set(pairs)) != len(pairs):
         problems.append(Problem("", "two rates in the same timetable share a name"))
 
     # The qualified form is what entities and utility meter tariffs are named
     # by, so it has to be unique even when the names it is built from are not
     # identical. 'Off Peak' and 'off-peak' both reduce to off_peak.
-    identifiers = [rate.qualified_name for rate in plan.rates]
+    identifiers = [
+        qualified_name(plan.name, day_pattern.name, rate.name)
+        for day_pattern, rate in plan.rates_with_pattern()
+    ]
     clashing = sorted({name for name in identifiers if identifiers.count(name) > 1})
     if clashing:
         problems.append(
@@ -215,7 +247,7 @@ def validate_rates(plan: Plan) -> list[Problem]:
                 )
             )
 
-    for rate in plan.rates:
+    for day_pattern, rate in plan.rates_with_pattern():
         if rate.has_allowance:
             if not rate.fallback_rate:
                 problems.append(
@@ -225,9 +257,10 @@ def validate_rates(plan: Plan) -> list[Problem]:
                     )
                 )
             else:
-                # A fallback is looked up in the rate's own timetable first,
-                # so a weekday rate falls back to the weekday's rate.
-                fallback = plan.rate_by_name(rate.fallback_rate, rate.timetable)
+                # A fallback is looked up in the rate's own timetable — a
+                # rate is nested inside exactly one now (Gap #1), so there is
+                # nowhere else it could mean.
+                fallback = day_pattern.rate_by_name(rate.fallback_rate)
                 if fallback is None:
                     problems.append(
                         Problem(
@@ -247,7 +280,7 @@ def validate_rates(plan: Plan) -> list[Problem]:
 
     for day_pattern in plan.day_patterns:
         for period in day_pattern.periods:
-            if plan.rate_by_name(period.rate, day_pattern.name) is None:
+            if day_pattern.rate_by_name(period.rate) is None:
                 problems.append(
                     Problem(
                         day_pattern.name,
@@ -317,7 +350,33 @@ def rates_capped_across_midnight(plan: Plan) -> list[Rate]:
         }
         starts = {period.rate for period in day_pattern.periods if period.start == 0}
         for name in sorted(ends & starts):
-            rate = plan.rate_by_name(name, day_pattern.name)
+            rate = day_pattern.rate_by_name(name)
+            if rate is not None and rate.has_allowance and rate not in found:
+                found.append(rate)
+    return found
+
+
+def export_rates_capped_across_midnight(plan: Plan) -> list[ExportRate]:
+    """Return capped export rates that run through midnight.
+
+    The export equivalent of ``rates_capped_across_midnight`` (Gaps #2, #3):
+    an export rate can now declare an allowance of its own, so the same
+    midnight-wrap warning applies to it.
+    """
+    found: list[ExportRate] = []
+    for day_pattern in plan.day_patterns:
+        if day_pattern.export_same_all_day:
+            continue
+        ends = {
+            period.rate
+            for period in day_pattern.export_periods
+            if period.end == MINUTES_PER_DAY
+        }
+        starts = {
+            period.rate for period in day_pattern.export_periods if period.start == 0
+        }
+        for name in sorted(ends & starts):
+            rate = day_pattern.export_rate_by_name(name)
             if rate is not None and rate.has_allowance and rate not in found:
                 found.append(rate)
     return found
@@ -335,6 +394,16 @@ def plan_warnings(plan: Plan) -> list[Problem]:
         warnings.append(
             Problem(
                 rate.name,
+                "is capped and is entered as two periods either side of "
+                "midnight. The allowance belongs to the slot, so each of the "
+                "two gets its own — one unbroken stretch will be given its "
+                "full allowance twice. Check how your retailer counts it.",
+            )
+        )
+    for export_rate in export_rates_capped_across_midnight(plan):
+        warnings.append(
+            Problem(
+                f"export {export_rate.name}",
                 "is capped and is entered as two periods either side of "
                 "midnight. The allowance belongs to the slot, so each of the "
                 "two gets its own — one unbroken stretch will be given its "

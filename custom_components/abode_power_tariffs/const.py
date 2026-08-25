@@ -9,13 +9,10 @@ DOMAIN: Final = "abode_power_tariffs"
 # Config entry data
 CONF_PLAN_NAME: Final = "plan_name"
 CONF_PLAN_DESCRIPTION: Final = "plan_description"
-CONF_ADD_ANOTHER: Final = "add_another"
-CONF_GO_BACK: Final = "go_back"
 CONF_ON_SUBMIT: Final = "on_submit"
 SUBMIT_ADD: Final = "add"
 SUBMIT_CONTINUE: Final = "continue"
 SUBMIT_ADD_PATTERN: Final = "add_pattern"
-SUBMIT_BACK: Final = "back"
 
 # Config entry options — top level
 CONF_RATES: Final = "rates"
@@ -34,10 +31,12 @@ CONF_VALID_FROM: Final = "valid_from"
 CONF_VALID_TO: Final = "valid_to"
 CONF_HOLIDAY_SENSOR: Final = "holiday_sensor"
 CONF_IMPORT_ENERGY_SENSOR: Final = "import_energy_sensor"
-# Counting usage against a cap is a separate, opt-in thing. The plan always
-# declares the cap and what is paid past it; whether this component keeps a
-# running total is the user's choice, and it is an estimate either way.
-CONF_COUNT_ALLOWANCE: Final = "count_allowance"
+# The export equivalent of the import meter (Gap #4 / ARCHITECTURE.md: "Two
+# energy sensors are inputs"). Optional even though the import one is now
+# mandatory (Gap #7): a plan can export without any export rate declaring a
+# demand charge or an allowance, in which case there is nothing for this
+# meter to be measured against and nothing is lost by leaving it unset.
+CONF_EXPORT_ENERGY_SENSOR: Final = "export_energy_sensor"
 CONF_TARIFF_SELECTS: Final = "tariff_selects"
 CONF_SOURCE_ENERGY_SENSOR: Final = "source_energy_sensor"
 
@@ -79,7 +78,6 @@ KNOWN_CONSTRAINTS: Final = (
     CONSTRAINT_NO_GRID_IMPORT,
     CONSTRAINT_PRECOOL_OPPORTUNITY,
 )
-CONF_COASTING_PERMITTED: Final = "coasting_permitted"
 
 # The rate form's collapsible groups. Two unrelated declarations used to run
 # together in one undivided list of fields; each now opens on its own.
@@ -102,7 +100,6 @@ CONF_HAS_ALLOWANCE: Final = "has_allowance"
 # everything else about an allowance, not applied to export_price_at().
 CONF_EXPORT_FALLBACK_CENTS: Final = "export_fallback_cents"
 CONF_DEMAND_PERIOD: Final = "demand_period"
-CONF_COMPONENTS: Final = "price_components"
 
 # How the meter averages a demand charge. Not a property of when the rate is
 # in force — the timetable already carries that — but of how the retailer
@@ -145,7 +142,6 @@ DEFAULT_ALLOWANCE_PERIOD: Final = ALLOWANCE_PERIOD_SLOT
 DEFAULT_BILLING_CYCLE_DAY: Final = 1
 
 # Accumulating entity keys. Per rate, qualified by the rate's identifier.
-KEY_DEMAND_PERIOD_ACTIVE: Final = "demand_period_active"
 KEY_DEMAND_NOW_KW: Final = "demand_now_kw"
 KEY_DEMAND_PEAK_KW: Final = "demand_peak_kw"
 KEY_DEMAND_PEAK_AT: Final = "demand_peak_at"
@@ -170,6 +166,10 @@ ATTR_QUALIFIED_RATE: Final = "rate"
 
 # The repair issue raised the moment an input gap opens.
 ISSUE_DATA_GAP: Final = "input_data_gap"
+# Raised the moment a plan runs past valid_to with no successor in place.
+# Architecture: this is a truth failure the same way a missing input is one,
+# and gets the same treatment.
+ISSUE_PLAN_EXPIRED: Final = "plan_expired"
 
 # Front-page setup shortcuts. Both are asked once, before any rate.
 CONF_SINGLE_RATE: Final = "single_rate_plan"
@@ -181,7 +181,6 @@ CONF_DAYS: Final = "days"
 CONF_SEASON_FROM: Final = "season_from"
 CONF_SEASON_TO: Final = "season_to"
 CONF_PERIODS: Final = "periods"
-CONF_SAME_EVERY_DAY: Final = "same_every_day"
 
 # Utility meter creation
 UTILITY_METER_DOMAIN: Final = "utility_meter"

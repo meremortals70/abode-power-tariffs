@@ -10,7 +10,8 @@ from homeassistant.helpers.entity import Entity
 from .accounting import RateLedger
 from .const import DOMAIN, SIGNAL_UPDATE
 from .coordinator import TariffCoordinator
-from .plan import Rate
+from .plan import DayPattern, ExportRate, Rate
+from .plan import qualified_name as build_qualified_name
 
 
 class TariffEntity(Entity):
@@ -82,21 +83,34 @@ class TariffEntity(Entity):
 class RateTariffEntity(TariffEntity):
     """An entity belonging to one rate rather than to the plan.
 
-    One set per ``weekday.peak``, never one per ``peak``. Two timetables can
-    each carry a rate called Peak at different prices with different demand
-    charges, and anything keyed on the bare name collapses the two together —
-    which has already happened once, in strip.py, and turned two timetables
-    into one colour.
+    One set per ``plan.timetable.import.peak`` (or ``...export.peak``), never
+    one per ``peak``. Two timetables can each carry a rate called Peak at
+    different prices with different demand charges, and an import rate can
+    share a name with an export rate on the very same timetable — anything
+    keyed on the bare name collapses them together, which has already
+    happened once, in strip.py, and turned two timetables into one colour.
     """
 
-    def __init__(self, coordinator: TariffCoordinator, key: str, rate: Rate) -> None:
-        """Initialise an entity scoped to one rate."""
-        super().__init__(coordinator, key, qualified_name=rate.qualified_name)
+    def __init__(
+        self,
+        coordinator: TariffCoordinator,
+        key: str,
+        day_pattern: DayPattern,
+        rate: Rate | ExportRate,
+        *,
+        export: bool = False,
+    ) -> None:
+        """Initialise an entity scoped to one rate, on one side of one timetable."""
+        identifier = build_qualified_name(
+            coordinator.plan.name, day_pattern.name, rate.name, export=export
+        )
+        super().__init__(coordinator, key, qualified_name=identifier)
         self._rate_name = rate.name
-        self._rate_timetable = rate.timetable
+        self._timetable = day_pattern.name
+        self._export = export
 
     @property
-    def rate(self) -> Rate | None:
+    def rate(self) -> Rate | ExportRate | None:
         """Return this entity's rate as the plan currently holds it.
 
         Looked up rather than held, so a price edited in Configure is picked
@@ -104,10 +118,12 @@ class RateTariffEntity(TariffEntity):
         nothing and makes the entity independent of that happening.
         """
         assert self._qualified_name is not None
-        for rate in self.coordinator.plan.rates:
-            if rate.qualified_name == self._qualified_name:
-                return rate
-        return None
+        pattern = self.coordinator.plan.day_pattern_by_name(self._timetable)
+        if pattern is None:
+            return None
+        if self._export:
+            return pattern.export_rate_by_name(self._rate_name)
+        return pattern.rate_by_name(self._rate_name)
 
     @property
     def ledger(self) -> RateLedger | None:
@@ -118,10 +134,15 @@ class RateTariffEntity(TariffEntity):
     @property
     def in_force(self) -> bool:
         """Return whether this rate is the one in force right now."""
+        if self._export:
+            resolution = self.coordinator.state.export_resolution
+            return (
+                resolution is not None
+                and resolution.qualified_name == self._qualified_name
+            )
         resolution = self.coordinator.state.resolution
         return (
-            resolution is not None
-            and resolution.rate.qualified_name == self._qualified_name
+            resolution is not None and resolution.qualified_name == self._qualified_name
         )
 
     @property

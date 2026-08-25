@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .plan import Plan, Rate
+from .plan import DayPattern, Rate
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,8 +42,13 @@ class AllowanceState:
         return "within the allowance"
 
 
-def apply(plan: Plan, rate: Rate, used_kwh: float) -> AllowanceState:
-    """Return the rate actually in force given this slot's consumption so far."""
+def apply(day_pattern: DayPattern, rate: Rate, used_kwh: float) -> AllowanceState:
+    """Return the rate actually in force given this slot's consumption so far.
+
+    ``day_pattern`` is the timetable ``rate`` is nested in — the fallback, if
+    any, is looked up there. A rate is nested inside exactly one timetable
+    now (Gap #1), so there is nowhere else a fallback of its own could live.
+    """
     if not rate.has_allowance:
         return AllowanceState(
             rate=rate, exhausted=False, used_kwh=used_kwh, remaining_kwh=None
@@ -57,12 +62,8 @@ def apply(plan: Plan, rate: Rate, used_kwh: float) -> AllowanceState:
             rate=rate, exhausted=False, used_kwh=used_kwh, remaining_kwh=remaining
         )
 
-    # Looked up in the rate's own timetable first, so a weekday rate falls back
-    # to the weekday's rate and not to a weekend rate of the same name.
     fallback = (
-        plan.rate_by_name(rate.fallback_rate, rate.timetable)
-        if rate.fallback_rate
-        else None
+        day_pattern.rate_by_name(rate.fallback_rate) if rate.fallback_rate else None
     )
     # Validation guarantees a fallback exists, but a plan can be loaded from
     # storage written by an older version, so fall back to the rate itself.

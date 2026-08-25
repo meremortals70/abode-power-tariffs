@@ -5,6 +5,7 @@ python3 -m unittest discover -s tests -p "test_core.py"
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 import unittest
 from datetime import UTC, date, datetime, timedelta
@@ -49,6 +50,22 @@ def never_holiday(_: date) -> bool:
     return False
 
 
+def with_rates(
+    day_pattern: DayPattern,
+    rates: tuple[Any, ...] = (),
+    export_rates: tuple[Any, ...] = (),
+) -> DayPattern:
+    """Return a day pattern carrying these rates, for building test fixtures.
+
+    Gap #1 moved rates onto ``DayPattern`` (nested, not a plan-wide list), so
+    a fixture that used to hand ``Plan`` a flat ``rates=`` tuple alongside its
+    day patterns now attaches the same rates to the pattern that owns them
+    instead. This is a test-only convenience — production code never builds
+    a ``DayPattern`` this way, it round-trips through ``as_dict``/``from_dict``.
+    """
+    return dataclasses.replace(day_pattern, rates=rates, export_rates=export_rates)
+
+
 def sample_plan() -> Plan:
     """A six-period, four-rate plan on one day set."""
     rates = (
@@ -71,8 +88,7 @@ def sample_plan() -> Plan:
     )
     return Plan(
         name="Ovo",
-        rates=rates,
-        day_patterns=(DayPattern("Every day", ALL_DAYS, periods),),
+        day_patterns=(with_rates(DayPattern("Every day", ALL_DAYS, periods), rates),),
         daily_supply_charge=1.25,
     )
 
@@ -151,9 +167,11 @@ class TestResolution(unittest.TestCase):
     def test_unknown_rate_resolves_to_nothing(self) -> None:
         broken = Plan(
             name="Broken",
-            rates=(Rate("a", 0.1),),
             day_patterns=(
-                DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "missing"),)),
+                with_rates(
+                    DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "missing"),)),
+                    (Rate("a", 0.1),),
+                ),
             ),
         )
         self.assertIsNone(broken.resolve(date(2026, 8, 14), 60, False))
@@ -161,15 +179,21 @@ class TestResolution(unittest.TestCase):
 
 class TestDayPatterns(unittest.TestCase):
     def test_weekday_and_weekend(self) -> None:
-        weekday = DayPattern(
-            "Weekday",
-            frozenset({"mon", "tue", "wed", "thu", "fri"}),
-            (Period(0, 1440, "a"),),
+        weekday = with_rates(
+            DayPattern(
+                "Weekday",
+                frozenset({"mon", "tue", "wed", "thu", "fri"}),
+                (Period(0, 1440, "a"),),
+            ),
+            (Rate("a", 0.1),),
         )
-        weekend = DayPattern(
-            "Weekend", frozenset({"sat", "sun", "holiday"}), (Period(0, 1440, "b"),)
+        weekend = with_rates(
+            DayPattern(
+                "Weekend", frozenset({"sat", "sun", "holiday"}), (Period(0, 1440, "b"),)
+            ),
+            (Rate("b", 0.2),),
         )
-        plan = Plan("P", (Rate("a", 0.1), Rate("b", 0.2)), (weekday, weekend))
+        plan = Plan("P", day_patterns=(weekday, weekend))
         friday = plan.resolve(date(2026, 8, 14), 600, False)
         saturday = plan.resolve(date(2026, 8, 15), 600, False)
         holiday = plan.resolve(date(2026, 8, 14), 600, True)
@@ -187,11 +211,14 @@ class TestDayPatterns(unittest.TestCase):
         self.assertFalse(summer.covers_date(date(2026, 7, 1)))
 
     def test_seasonal_beats_year_round(self) -> None:
-        summer = DayPattern(
-            "Summer", ALL_DAYS, (Period(0, 1440, "a"),), (11, 1), (3, 31)
+        summer = with_rates(
+            DayPattern("Summer", ALL_DAYS, (Period(0, 1440, "a"),), (11, 1), (3, 31)),
+            (Rate("a", 0.1),),
         )
-        year_round = DayPattern("Rest", ALL_DAYS, (Period(0, 1440, "b"),))
-        plan = Plan("P", (Rate("a", 0.1), Rate("b", 0.2)), (summer, year_round))
+        year_round = with_rates(
+            DayPattern("Rest", ALL_DAYS, (Period(0, 1440, "b"),)), (Rate("b", 0.2),)
+        )
+        plan = Plan("P", day_patterns=(summer, year_round))
         in_summer = plan.resolve(date(2026, 12, 25), 600, False)
         out_of_summer = plan.resolve(date(2026, 7, 1), 600, False)
         assert in_summer is not None and out_of_summer is not None
@@ -235,8 +262,12 @@ class TestValidation(unittest.TestCase):
     def test_uncovered_day_type(self) -> None:
         plan = Plan(
             "P",
-            (Rate("a", 0.1),),
-            (DayPattern("Weekday", frozenset({"mon"}), (Period(0, 1440, "a"),)),),
+            day_patterns=(
+                with_rates(
+                    DayPattern("Weekday", frozenset({"mon"}), (Period(0, 1440, "a"),)),
+                    (Rate("a", 0.1),),
+                ),
+            ),
         )
         problems = validate_day_coverage(plan)
         self.assertTrue(any("sun" in p.message for p in problems))
@@ -244,10 +275,15 @@ class TestValidation(unittest.TestCase):
     def test_day_type_claimed_twice(self) -> None:
         plan = Plan(
             "P",
-            (Rate("a", 0.1),),
-            (
-                DayPattern("One", ALL_DAYS, (Period(0, 1440, "a"),)),
-                DayPattern("Two", ALL_DAYS, (Period(0, 1440, "a"),)),
+            day_patterns=(
+                with_rates(
+                    DayPattern("One", ALL_DAYS, (Period(0, 1440, "a"),)),
+                    (Rate("a", 0.1),),
+                ),
+                with_rates(
+                    DayPattern("Two", ALL_DAYS, (Period(0, 1440, "a"),)),
+                    (Rate("a", 0.1),),
+                ),
             ),
         )
         self.assertTrue(
@@ -257,27 +293,43 @@ class TestValidation(unittest.TestCase):
     def test_missing_rate_reference(self) -> None:
         plan = Plan(
             "P",
-            (Rate("a", 0.1),),
-            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "nope"),)),),
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "nope"),)),
+                    (Rate("a", 0.1),),
+                ),
+            ),
         )
         self.assertTrue(any("does not exist" in p.message for p in validate_plan(plan)))
 
     def test_allowance_needs_a_fallback(self) -> None:
         plan = Plan(
             "P",
-            (Rate("free", 0.0, rate_allowance_kwh=24.0),),
-            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "free"),)),),
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "free"),)),
+                    (Rate("free", 0.0, rate_allowance_kwh=24.0),),
+                ),
+            ),
         )
         self.assertTrue(any("fallback" in p.message for p in validate_plan(plan)))
 
     def test_fallback_cannot_itself_have_an_allowance(self) -> None:
         plan = Plan(
             "P",
-            (
-                Rate("free", 0.0, rate_allowance_kwh=24.0, fallback_rate="also"),
-                Rate("also", 0.3, rate_allowance_kwh=10.0, fallback_rate="free"),
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "free"),)),
+                    (
+                        Rate(
+                            "free", 0.0, rate_allowance_kwh=24.0, fallback_rate="also"
+                        ),
+                        Rate(
+                            "also", 0.3, rate_allowance_kwh=10.0, fallback_rate="free"
+                        ),
+                    ),
+                ),
             ),
-            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "free"),)),),
         )
         self.assertTrue(
             any("itself has an allowance" in p.message for p in validate_plan(plan))
@@ -286,8 +338,12 @@ class TestValidation(unittest.TestCase):
     def test_validity_backwards(self) -> None:
         plan = Plan(
             "P",
-            (Rate("a", 0.1),),
-            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "a"),)),),
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "a"),)),
+                    (Rate("a", 0.1),),
+                ),
+            ),
             valid_from=date(2026, 7, 1),
             valid_to=date(2026, 1, 1),
         )
@@ -296,13 +352,15 @@ class TestValidation(unittest.TestCase):
         )
 
     def test_seasonal_pair_covering_the_year_is_valid(self) -> None:
-        summer = DayPattern(
-            "Summer", ALL_DAYS, (Period(0, 1440, "a"),), (11, 1), (3, 31)
+        summer = with_rates(
+            DayPattern("Summer", ALL_DAYS, (Period(0, 1440, "a"),), (11, 1), (3, 31)),
+            (Rate("a", 0.1),),
         )
-        winter = DayPattern(
-            "Winter", ALL_DAYS, (Period(0, 1440, "b"),), (4, 1), (10, 31)
+        winter = with_rates(
+            DayPattern("Winter", ALL_DAYS, (Period(0, 1440, "b"),), (4, 1), (10, 31)),
+            (Rate("b", 0.2),),
         )
-        plan = Plan("P", (Rate("a", 0.1), Rate("b", 0.2)), (summer, winter))
+        plan = Plan("P", day_patterns=(summer, winter))
         self.assertTrue(is_valid(plan), [str(p) for p in validate_plan(plan)])
 
 
@@ -322,10 +380,10 @@ class TestIntervals(unittest.TestCase):
         start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
         series = intervals.generate(self.plan, start, BRISBANE, never_holiday, hours=6)
         by_hour = {i.start.astimezone(BRISBANE).hour: i.rate for i in series}
-        self.assertEqual(by_hour[10], "standard")
-        self.assertEqual(by_hour[11], "free")
-        self.assertEqual(by_hour[13], "free")
-        self.assertEqual(by_hour[14], "standard")
+        self.assertEqual(by_hour[10], "ovo.every_day.import.standard")
+        self.assertEqual(by_hour[11], "ovo.every_day.import.free")
+        self.assertEqual(by_hour[13], "ovo.every_day.import.free")
+        self.assertEqual(by_hour[14], "ovo.every_day.import.standard")
 
     def test_service_shape(self) -> None:
         start = datetime(2026, 8, 14, 16, 0, tzinfo=BRISBANE)
@@ -346,7 +404,7 @@ class TestIntervals(unittest.TestCase):
         ):
             self.assertIn(key, payload)
         self.assertEqual(payload["duration"], 30)
-        self.assertEqual(payload["rate"], "peak")
+        self.assertEqual(payload["rate"], "ovo.every_day.import.peak")
         self.assertFalse(payload["forecast"])
 
     def test_evcc_shape_is_local(self) -> None:
@@ -472,7 +530,7 @@ class TestDaylightSaving(unittest.TestCase):
                 sum(
                     (i.end.astimezone(UTC) - i.start.astimezone(UTC)).total_seconds()
                     for i in self._series(start)
-                    if i.rate == "cheap"
+                    if i.rate == "ovo.every_day.import.cheap"
                 )
                 / 3600
             )
@@ -548,16 +606,18 @@ class TestBoundariesAcrossTheFallBack(unittest.TestCase):
         # Boundaries at 02:00 and 02:30, both inside the repeated hour.
         return Plan(
             "P",
-            (Rate("A", 0.10), Rate("B", 0.20), Rate("C", 0.30)),
-            (
-                DayPattern(
-                    "D",
-                    ALL_DAYS,
-                    (
-                        Period(0, 120, "A"),
-                        Period(120, 150, "B"),
-                        Period(150, 1440, "C"),
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "D",
+                        ALL_DAYS,
+                        (
+                            Period(0, 120, "A"),
+                            Period(120, 150, "B"),
+                            Period(150, 1440, "C"),
+                        ),
                     ),
+                    (Rate("A", 0.10), Rate("B", 0.20), Rate("C", 0.30)),
                 ),
             ),
         )
@@ -608,11 +668,17 @@ class TestTheCapIsDeclaredEvenWhenNothingCountsIt(unittest.TestCase):
     def _plan(self) -> Plan:
         return Plan(
             "P",
-            (
-                Rate("Free", 0.0, rate_allowance_kwh=24.0, fallback_rate="Peak"),
-                Rate("Peak", 0.5688),
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "Free"),)),
+                    (
+                        Rate(
+                            "Free", 0.0, rate_allowance_kwh=24.0, fallback_rate="Peak"
+                        ),
+                        Rate("Peak", 0.5688),
+                    ),
+                ),
             ),
-            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "Free"),)),),
         )
 
     def test_the_interval_carries_the_cap_and_the_fallback(self) -> None:
@@ -623,14 +689,18 @@ class TestTheCapIsDeclaredEvenWhenNothingCountsIt(unittest.TestCase):
             0
         ].as_dict()
         self.assertEqual(payload["allowance_kwh"], 24.0)
-        self.assertEqual(payload["fallback_rate"], "Peak")
+        self.assertEqual(payload["fallback_rate"], "p.d.import.peak")
         self.assertAlmostEqual(payload["fallback_per_kwh"], 0.5688)
 
     def test_an_uncapped_rate_carries_neither(self) -> None:
         plan = Plan(
             "P",
-            (Rate("Peak", 0.5688),),
-            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "Peak"),)),),
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.5688),),
+                ),
+            ),
         )
         start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
         payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
@@ -652,20 +722,22 @@ class TestTheIntervalCarriesTheDemandCharge(unittest.TestCase):
     def _plan(self) -> Plan:
         return Plan(
             "P",
-            (
-                Rate(
-                    "Peak",
-                    0.5688,
-                    demand_period=True,
-                    demand_rate_per_kw_month=18.40,
-                ),
-                Rate("Off Peak", 0.198),
-            ),
-            (
-                DayPattern(
-                    "D",
-                    ALL_DAYS,
-                    (Period(0, 960, "Off Peak"), Period(960, 1440, "Peak")),
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "D",
+                        ALL_DAYS,
+                        (Period(0, 960, "Off Peak"), Period(960, 1440, "Peak")),
+                    ),
+                    (
+                        Rate(
+                            "Peak",
+                            0.5688,
+                            demand_period=True,
+                            demand_rate_per_kw_month=18.40,
+                        ),
+                        Rate("Off Peak", 0.198),
+                    ),
                 ),
             ),
         )
@@ -677,7 +749,7 @@ class TestTheIntervalCarriesTheDemandCharge(unittest.TestCase):
         payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
             0
         ].as_dict()
-        self.assertEqual(payload["rate"], "Peak")
+        self.assertEqual(payload["rate"], "p.d.import.peak")
         self.assertTrue(payload["demand_period"])
         self.assertAlmostEqual(payload["demand_rate_per_kw_month"], 18.40)
 
@@ -687,7 +759,7 @@ class TestTheIntervalCarriesTheDemandCharge(unittest.TestCase):
         payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
             0
         ].as_dict()
-        self.assertEqual(payload["rate"], "Off Peak")
+        self.assertEqual(payload["rate"], "p.d.import.off_peak")
         self.assertFalse(payload["demand_period"])
         self.assertEqual(payload["demand_rate_per_kw_month"], 0.0)
 
@@ -704,22 +776,26 @@ class TestTheIntervalCarriesTheExportAllowance(unittest.TestCase):
         """Feed-in priced by period: the declaration is on the export rate."""
         return Plan(
             "P",
-            (Rate("Peak", 0.30),),
-            (
-                DayPattern(
-                    "D",
-                    ALL_DAYS,
-                    (Period(0, 1440, "Peak"),),
-                    export_periods=(
-                        Period(0, 720, "Morning"),
-                        Period(720, 1440, "Afternoon"),
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "D",
+                        ALL_DAYS,
+                        (Period(0, 1440, "Peak"),),
+                        export_periods=(
+                            Period(0, 720, "Morning"),
+                            Period(720, 1440, "Afternoon"),
+                        ),
+                        export_same_all_day=False,
                     ),
-                    export_same_all_day=False,
+                    (Rate("Peak", 0.30),),
+                    (
+                        ExportRate(
+                            "Morning", 0.08, allowance_kwh=10.0, fallback_price=0.02
+                        ),
+                        ExportRate("Afternoon", 0.05),
+                    ),
                 ),
-            ),
-            export_rates=(
-                ExportRate("Morning", 0.08, allowance_kwh=10.0, fallback_price=0.02),
-                ExportRate("Afternoon", 0.05),
             ),
         )
 
@@ -727,15 +803,17 @@ class TestTheIntervalCarriesTheExportAllowance(unittest.TestCase):
         """One feed-in price all day: the declaration is on the timetable."""
         return Plan(
             "P",
-            (Rate("Peak", 0.30),),
-            (
-                DayPattern(
-                    "D",
-                    ALL_DAYS,
-                    (Period(0, 1440, "Peak"),),
-                    export_flat_price=0.08,
-                    export_allowance_kwh=10.0,
-                    export_fallback_price=0.02,
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "D",
+                        ALL_DAYS,
+                        (Period(0, 1440, "Peak"),),
+                        export_flat_price=0.08,
+                        export_allowance_kwh=10.0,
+                        export_fallback_price=0.02,
+                    ),
+                    (Rate("Peak", 0.30),),
                 ),
             ),
         )
@@ -771,8 +849,12 @@ class TestTheIntervalCarriesTheExportAllowance(unittest.TestCase):
     def test_an_uncapped_export_declares_none(self) -> None:
         plan = Plan(
             "P",
-            (Rate("Peak", 0.5688),),
-            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "Peak"),)),),
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.5688),),
+                ),
+            ),
         )
         payload = self._payload(plan, 10)
         self.assertIsNone(payload["export_allowance_kwh"])
@@ -810,7 +892,13 @@ class TestTheMidnightWarning(unittest.TestCase):
             else (Period(0, 240, "Night"), Period(240, 1440, "Day"))
         )
         return Plan(
-            "P", (night, Rate("Day", 0.33)), (DayPattern("D", ALL_DAYS, periods),)
+            "P",
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, periods),
+                    (night, Rate("Day", 0.33)),
+                ),
+            ),
         )
 
     def test_a_capped_rate_through_midnight_warns(self) -> None:
@@ -852,18 +940,22 @@ class TestRateScoping(unittest.TestCase):
     def _plan(self) -> Plan:
         return Plan(
             "P",
-            (
-                Rate("Peak", 0.5688, timetable="Weekday"),
-                Rate("Off Peak", 0.198, timetable="Weekday"),
-                Rate("Peak", 0.30, timetable="Weekend"),
-            ),
-            (
-                DayPattern(
-                    "Weekday",
-                    self.WEEKDAYS,
-                    (Period(0, 960, "Off Peak"), Period(960, 1440, "Peak")),
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "Weekday",
+                        self.WEEKDAYS,
+                        (Period(0, 960, "Off Peak"), Period(960, 1440, "Peak")),
+                    ),
+                    (
+                        Rate("Peak", 0.5688),
+                        Rate("Off Peak", 0.198),
+                    ),
                 ),
-                DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+                with_rates(
+                    DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.30),),
+                ),
             ),
         )
 
@@ -877,7 +969,11 @@ class TestRateScoping(unittest.TestCase):
     def test_the_identifier_is_qualified(self) -> None:
         self.assertEqual(
             self._plan().qualified_rate_names,
-            ("weekday.peak", "weekday.off_peak", "weekend.peak"),
+            (
+                "p.weekday.import.peak",
+                "p.weekday.import.off_peak",
+                "p.weekend.import.peak",
+            ),
         )
 
     def test_each_timetable_resolves_to_its_own_rate(self) -> None:
@@ -907,11 +1003,12 @@ class TestRateScoping(unittest.TestCase):
     def test_the_same_name_twice_in_one_timetable_is_refused(self) -> None:
         plan = Plan(
             "P",
-            (
-                Rate("Peak", 0.5, timetable="Weekday"),
-                Rate("Peak", 0.6, timetable="Weekday"),
+            day_patterns=(
+                with_rates(
+                    DayPattern("Weekday", ALL_DAYS, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.5), Rate("Peak", 0.6)),
+                ),
             ),
-            (DayPattern("Weekday", ALL_DAYS, (Period(0, 1440, "Peak"),)),),
         )
         self.assertTrue(any("share a name" in p.message for p in validate_plan(plan)))
 
@@ -919,20 +1016,23 @@ class TestRateScoping(unittest.TestCase):
         """'Off Peak' and 'off-peak' both come out as off_peak."""
         plan = Plan(
             "P",
-            (
-                Rate("Off Peak", 0.2, timetable="Weekday"),
-                Rate("off-peak", 0.3, timetable="Weekday"),
+            day_patterns=(
+                with_rates(
+                    DayPattern("Weekday", ALL_DAYS, (Period(0, 1440, "Off Peak"),)),
+                    (Rate("Off Peak", 0.2), Rate("off-peak", 0.3)),
+                ),
             ),
-            (DayPattern("Weekday", ALL_DAYS, (Period(0, 1440, "Off Peak"),)),),
         )
         self.assertTrue(any("the same id" in p.message for p in validate_plan(plan)))
 
     def test_a_period_naming_another_timetables_rate_is_refused(self) -> None:
         plan = Plan(
             "P",
-            (Rate("Peak", 0.5, timetable="Weekday"),),
-            (
-                DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Peak"),)),
+            day_patterns=(
+                with_rates(
+                    DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.5),),
+                ),
                 DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
             ),
         )
@@ -941,45 +1041,60 @@ class TestRateScoping(unittest.TestCase):
     def test_a_fallback_resolves_within_its_own_timetable(self) -> None:
         plan = Plan(
             "P",
-            (
-                Rate(
-                    "Free",
-                    0.0,
-                    timetable="Weekday",
-                    rate_allowance_kwh=24.0,
-                    fallback_rate="Peak",
+            day_patterns=(
+                with_rates(
+                    DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Free"),)),
+                    (
+                        Rate(
+                            "Free",
+                            0.0,
+                            rate_allowance_kwh=24.0,
+                            fallback_rate="Peak",
+                        ),
+                        Rate("Peak", 0.5688),
+                    ),
                 ),
-                Rate("Peak", 0.5688, timetable="Weekday"),
-                Rate("Peak", 0.30, timetable="Weekend"),
-            ),
-            (
-                DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Free"),)),
-                DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+                with_rates(
+                    DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.30),),
+                ),
             ),
         )
         self.assertTrue(is_valid(plan), [str(p) for p in validate_plan(plan)])
-        spent = allowance.apply(plan, plan.rates[0], 30.0)
+        weekday = plan.day_pattern_by_name("Weekday")
+        assert weekday is not None
+        free_rate = weekday.rate_by_name("Free")
+        assert free_rate is not None
+        spent = allowance.apply(weekday, free_rate, 30.0)
         self.assertTrue(spent.exhausted)
-        self.assertEqual(spent.rate.qualified_name, "weekday.peak")
+        self.assertEqual(
+            _pkg.plan.qualified_name("P", "Weekday", spent.rate.name),
+            "p.weekday.import.peak",
+        )
 
-    def test_an_older_plan_keeps_the_names_and_ids_it_had(self) -> None:
-        """No timetable field, prefixed names, already unique. Nothing moves."""
+    def test_the_qualified_name_reflects_current_nesting(self) -> None:
+        """No stored pointer field (Gap #1): identity comes from nesting alone.
+
+        The old shape kept a ``timetable`` field on the rate itself, with a
+        pre-scoping fallback for plans stored before it existed. Nothing is
+        in production, so that field and its fallback are simply gone rather
+        than migrated — identity is computed fresh from wherever the rate is
+        nested, every time.
+        """
         plan = Plan(
             "P",
-            (Rate("Every day Peak", 0.5688),),
-            (DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "Every day Peak"),)),),
+            day_patterns=(
+                with_rates(
+                    DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.5688),),
+                ),
+            ),
         )
         self.assertTrue(is_valid(plan), [str(p) for p in validate_plan(plan)])
-        self.assertEqual(plan.qualified_rate_names, ("Every day Peak",))
+        self.assertEqual(plan.qualified_rate_names, ("p.every_day.import.peak",))
         resolved = plan.resolve(date(2026, 8, 14), 600, False)
         assert resolved is not None
-        self.assertEqual(resolved.rate.qualified_name, "Every day Peak")
-
-    def test_the_timetable_survives_storage(self) -> None:
-        original = Rate("Peak", 0.5688, timetable="Weekday")
-        rebuilt = Rate.from_dict(original.as_dict())
-        self.assertEqual(rebuilt.timetable, "Weekday")
-        self.assertEqual(rebuilt.qualified_name, "weekday.peak")
+        self.assertEqual(resolved.qualified_name, "p.every_day.import.peak")
 
     def test_slugging(self) -> None:
         for raw, expected in (
@@ -1038,21 +1153,35 @@ class TestEnforceableRules(unittest.TestCase):
     def test_enforceable_must_be_a_rule_the_rate_carries(self) -> None:
         plan = Plan(
             "P",
-            (self._rate(enforceable_constraints=frozenset({"no_grid_import"})),),
-            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "peak"),)),),
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "peak"),)),
+                    (
+                        self._rate(
+                            enforceable_constraints=frozenset({"no_grid_import"})
+                        ),
+                    ),
+                ),
+            ),
         )
         self.assertTrue(any("does not carry" in p.message for p in validate_plan(plan)))
 
     def test_the_interval_publishes_both(self) -> None:
         plan = Plan(
             "P",
-            (
-                self._rate(
-                    constraints=frozenset({"no_grid_import", "precool_opportunity"}),
-                    enforceable_constraints=frozenset({"no_grid_import"}),
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "peak"),)),
+                    (
+                        self._rate(
+                            constraints=frozenset(
+                                {"no_grid_import", "precool_opportunity"}
+                            ),
+                            enforceable_constraints=frozenset({"no_grid_import"}),
+                        ),
+                    ),
                 ),
             ),
-            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "peak"),)),),
         )
         self.assertTrue(is_valid(plan), [str(p) for p in validate_plan(plan)])
         start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
@@ -1076,26 +1205,25 @@ class TestExportBoundaries(unittest.TestCase):
 
     def _plan(self, *, timed: bool) -> Plan:
         ExportRate = _pkg.plan.ExportRate
-        pattern = DayPattern(
-            "Every day",
-            ALL_DAYS,
-            (Period(0, 1440, "flat"),),
-            None,
-            None,
-            (
-                Period(0, 540, "night"),
-                Period(540, 960, "day"),
-                Period(960, 1440, "night"),
+        pattern = with_rates(
+            DayPattern(
+                "Every day",
+                ALL_DAYS,
+                (Period(0, 1440, "flat"),),
+                None,
+                None,
+                (
+                    Period(0, 540, "night"),
+                    Period(540, 960, "day"),
+                    Period(960, 1440, "night"),
+                ),
+                not timed,
+                0.05,
             ),
-            not timed,
-            0.05,
-        )
-        return Plan(
-            "P",
             (Rate("flat", 0.30),),
-            (pattern,),
-            export_rates=(ExportRate("night", 0.0), ExportRate("day", 0.05)),
+            (ExportRate("night", 0.0), ExportRate("day", 0.05)),
         )
+        return Plan("P", day_patterns=(pattern,))
 
     def test_the_plan_is_valid_either_way(self) -> None:
         for timed in (True, False):
@@ -1151,32 +1279,32 @@ class TestExportBoundaries(unittest.TestCase):
 
 class TestAllowance(unittest.TestCase):
     def setUp(self) -> None:
-        self.plan = Plan(
-            "P",
+        self.day_pattern = with_rates(
+            DayPattern("D", ALL_DAYS, (Period(0, 1440, "free"),)),
             (
                 Rate("free", 0.0, rate_allowance_kwh=24.0, fallback_rate="standard"),
                 Rate("standard", 0.321),
             ),
-            (DayPattern("D", ALL_DAYS, (Period(0, 1440, "free"),)),),
         )
+        self.plan = Plan("P", day_patterns=(self.day_pattern,))
 
     def test_within_allowance(self) -> None:
-        state = allowance.apply(self.plan, self.plan.rates[0], 10.0)
+        state = allowance.apply(self.day_pattern, self.plan.rates[0], 10.0)
         self.assertEqual(state.rate.name, "free")
         self.assertFalse(state.exhausted)
         self.assertAlmostEqual(state.remaining_kwh or 0.0, 14.0)
 
     def test_beyond_allowance_falls_back(self) -> None:
-        state = allowance.apply(self.plan, self.plan.rates[0], 30.0)
+        state = allowance.apply(self.day_pattern, self.plan.rates[0], 30.0)
         self.assertEqual(state.rate.name, "standard")
         self.assertTrue(state.exhausted)
 
     def test_exactly_at_the_allowance_falls_back(self) -> None:
-        state = allowance.apply(self.plan, self.plan.rates[0], 24.0)
+        state = allowance.apply(self.day_pattern, self.plan.rates[0], 24.0)
         self.assertTrue(state.exhausted)
 
     def test_rate_without_allowance(self) -> None:
-        state = allowance.apply(self.plan, self.plan.rates[1], 100.0)
+        state = allowance.apply(self.day_pattern, self.plan.rates[1], 100.0)
         self.assertIsNone(state.remaining_kwh)
         self.assertFalse(state.exhausted)
 
@@ -1204,17 +1332,11 @@ class TestSerialise(unittest.TestCase):
 class TestStorageRoundTrip(unittest.TestCase):
     def test_plan_survives_a_round_trip(self) -> None:
         original = sample_plan()
-        rebuilt = Plan.from_dict(
-            {
-                **original.as_dict(),
-                "rates": [rate.as_dict() for rate in original.rates],
-                "day_patterns": [ds.as_dict() for ds in original.day_patterns],
-            }
-        )
+        rebuilt = Plan.from_dict(original.as_dict())
         self.assertEqual(rebuilt.rate_names, original.rate_names)
         self.assertEqual(rebuilt.day_pattern_names, original.day_pattern_names)
         self.assertAlmostEqual(
-            rebuilt.rate_by_name("peak").import_price,  # type: ignore[union-attr]
+            rebuilt.rate_by_name("peak", "Every day").import_price,  # type: ignore[union-attr]
             0.584,
         )
         self.assertAlmostEqual(rebuilt.daily_supply_charge, 1.25)
@@ -1252,22 +1374,21 @@ if __name__ == "__main__":
 class TestExportSide(unittest.TestCase):
     def _plan(self, flat: bool) -> Plan:
         ExportRate = _pkg.plan.ExportRate
-        pattern = DayPattern(
-            "Every day",
-            ALL_DAYS,
-            (Period(0, 1440, "standard"),),
-            None,
-            None,
-            (Period(0, 960, "daytime"), Period(960, 1440, "evening")),
-            flat,
-            0.05,
-        )
-        return Plan(
-            "P",
+        pattern = with_rates(
+            DayPattern(
+                "Every day",
+                ALL_DAYS,
+                (Period(0, 1440, "standard"),),
+                None,
+                None,
+                (Period(0, 960, "daytime"), Period(960, 1440, "evening")),
+                flat,
+                0.05,
+            ),
             (Rate("standard", 0.32),),
-            (pattern,),
-            export_rates=(ExportRate("daytime", 0.027), ExportRate("evening", 0.12)),
+            (ExportRate("daytime", 0.027), ExportRate("evening", 0.12)),
         )
+        return Plan("P", day_patterns=(pattern,))
 
     def test_flat_export_ignores_periods(self) -> None:
         plan = self._plan(flat=True)
@@ -1288,32 +1409,34 @@ class TestExportSide(unittest.TestCase):
 
     def test_mode_is_per_timetable(self) -> None:
         ExportRate = _pkg.plan.ExportRate
-        weekday = DayPattern(
-            "Weekday",
-            frozenset({"mon", "tue", "wed", "thu", "fri"}),
-            (Period(0, 1440, "standard"),),
-            None,
-            None,
-            (),
-            True,
-            0.05,
-        )
-        weekend = DayPattern(
-            "Weekend",
-            frozenset({"sat", "sun", "holiday"}),
-            (Period(0, 1440, "standard"),),
-            None,
-            None,
-            (Period(0, 1440, "evening"),),
-            False,
-            0.0,
-        )
-        plan = Plan(
-            "P",
+        weekday = with_rates(
+            DayPattern(
+                "Weekday",
+                frozenset({"mon", "tue", "wed", "thu", "fri"}),
+                (Period(0, 1440, "standard"),),
+                None,
+                None,
+                (),
+                True,
+                0.05,
+            ),
             (Rate("standard", 0.32),),
-            (weekday, weekend),
-            export_rates=(ExportRate("evening", 0.12),),
         )
+        weekend = with_rates(
+            DayPattern(
+                "Weekend",
+                frozenset({"sat", "sun", "holiday"}),
+                (Period(0, 1440, "standard"),),
+                None,
+                None,
+                (Period(0, 1440, "evening"),),
+                False,
+                0.0,
+            ),
+            (Rate("standard", 0.32),),
+            (ExportRate("evening", 0.12),),
+        )
+        plan = Plan("P", day_patterns=(weekday, weekend))
         self.assertTrue(is_valid(plan), [str(p) for p in validate_plan(plan)])
         self.assertAlmostEqual(
             plan.export_price_at(date(2026, 8, 14), 600, False), 0.05
@@ -1326,42 +1449,43 @@ class TestExportSide(unittest.TestCase):
         ExportRate = _pkg.plan.ExportRate
         broken = Plan(
             "P",
-            (Rate("standard", 0.32),),
-            (
-                DayPattern(
-                    "Every day",
-                    ALL_DAYS,
-                    (Period(0, 1440, "standard"),),
-                    None,
-                    None,
-                    (Period(0, 600, "daytime"),),
-                    False,
-                    0.0,
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "Every day",
+                        ALL_DAYS,
+                        (Period(0, 1440, "standard"),),
+                        None,
+                        None,
+                        (Period(0, 600, "daytime"),),
+                        False,
+                        0.0,
+                    ),
+                    (Rate("standard", 0.32),),
+                    (ExportRate("daytime", 0.027),),
                 ),
             ),
-            export_rates=(ExportRate("daytime", 0.027),),
         )
         self.assertFalse(is_valid(broken))
 
     def test_export_at_is_none_when_no_day_pattern_matches(self) -> None:
         """P36. Was a fabricated 0.0, indistinguishable from a genuine one."""
         ExportRate = _pkg.plan.ExportRate
-        weekdays_only = DayPattern(
-            "Weekday",
-            frozenset({"mon", "tue", "wed", "thu", "fri"}),
-            (Period(0, 1440, "standard"),),
-            None,
-            None,
-            (Period(0, 1440, "daytime"),),
-            False,
-            0.0,
-        )
-        plan = Plan(
-            "P",
+        weekdays_only = with_rates(
+            DayPattern(
+                "Weekday",
+                frozenset({"mon", "tue", "wed", "thu", "fri"}),
+                (Period(0, 1440, "standard"),),
+                None,
+                None,
+                (Period(0, 1440, "daytime"),),
+                False,
+                0.0,
+            ),
             (Rate("standard", 0.32),),
-            (weekdays_only,),
-            export_rates=(ExportRate("daytime", 0.027),),
+            (ExportRate("daytime", 0.027),),
         )
+        plan = Plan("P", day_patterns=(weekdays_only,))
         # A Saturday, which the plan's only day pattern does not cover.
         self.assertIsNone(plan.export_at(date(2026, 8, 15), 600, False))
         self.assertIsNone(plan.export_price_at(date(2026, 8, 15), 600, False))
@@ -1372,20 +1496,22 @@ class TestExportSide(unittest.TestCase):
         ExportRate = _pkg.plan.ExportRate
         plan = Plan(
             "P",
-            (Rate("standard", 0.32),),
-            (
-                DayPattern(
-                    "Every day",
-                    ALL_DAYS,
-                    (Period(0, 1440, "standard"),),
-                    None,
-                    None,
-                    (Period(0, 600, "daytime"),),
-                    False,
-                    0.0,
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "Every day",
+                        ALL_DAYS,
+                        (Period(0, 1440, "standard"),),
+                        None,
+                        None,
+                        (Period(0, 600, "daytime"),),
+                        False,
+                        0.0,
+                    ),
+                    (Rate("standard", 0.32),),
+                    (ExportRate("daytime", 0.027),),
                 ),
             ),
-            export_rates=(ExportRate("daytime", 0.027),),
         )
         # 600 is covered; 601 falls in the gap the incomplete day leaves.
         self.assertAlmostEqual(
@@ -1398,86 +1524,60 @@ class TestExportSide(unittest.TestCase):
         """P36. The strip.py-style dangling reference, on the export side."""
         plan = Plan(
             "P",
-            (Rate("standard", 0.32),),
-            (
-                DayPattern(
-                    "Every day",
-                    ALL_DAYS,
-                    (Period(0, 1440, "standard"),),
-                    None,
-                    None,
-                    (Period(0, 1440, "ghost"),),
-                    False,
-                    0.0,
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "Every day",
+                        ALL_DAYS,
+                        (Period(0, 1440, "standard"),),
+                        None,
+                        None,
+                        (Period(0, 1440, "ghost"),),
+                        False,
+                        0.0,
+                    ),
+                    (Rate("standard", 0.32),),
+                    # No export rate named "ghost" declared at all.
+                    (),
                 ),
             ),
-            # No export rate named "ghost" declared at all.
-            export_rates=(),
         )
         self.assertIsNone(plan.export_at(date(2026, 8, 14), 600, False))
         self.assertIsNone(plan.export_price_at(date(2026, 8, 14), 600, False))
-
-    def test_an_unscoped_export_rate_still_resolves(self) -> None:
-        """P37. An old plan's export rates carry no timetable field at all —
-        from_dict must not require one, and the lookup must still find it
-        regardless of which timetable asks. Mirrors the equivalent Rate test.
-        """
-        rate = ExportRate.from_dict({"name": "Daytime", "export_cents": 8.0})
-        self.assertIsNone(rate.timetable)
-        plan = Plan(
-            "P",
-            (Rate("standard", 0.32),),
-            (
-                DayPattern(
-                    "Every day",
-                    ALL_DAYS,
-                    (Period(0, 1440, "standard"),),
-                    None,
-                    None,
-                    (Period(0, 1440, "Daytime"),),
-                    False,
-                    0.0,
-                ),
-            ),
-            export_rates=(rate,),
-        )
-        self.assertAlmostEqual(
-            plan.export_price_at(date(2026, 8, 14), 600, False), 0.08
-        )
 
     def test_the_same_export_rate_name_on_two_timetables_is_two_rates(self) -> None:
         """P37. Both are called Evening. They are told apart by their
         timetable — the export-side equivalent of rule 10's own test.
         """
-        weekday = DayPattern(
-            "Weekday",
-            frozenset({"mon", "tue", "wed", "thu", "fri"}),
-            (Period(0, 1440, "standard"),),
-            None,
-            None,
-            (Period(0, 1440, "Evening"),),
-            False,
-            0.0,
-        )
-        weekend = DayPattern(
-            "Weekend",
-            frozenset({"sat", "sun", "holiday"}),
-            (Period(0, 1440, "standard"),),
-            None,
-            None,
-            (Period(0, 1440, "Evening"),),
-            False,
-            0.0,
-        )
-        plan = Plan(
-            "P",
-            (Rate("standard", 0.32),),
-            (weekday, weekend),
-            export_rates=(
-                ExportRate("Evening", 0.08, timetable="Weekday"),
-                ExportRate("Evening", 0.15, timetable="Weekend"),
+        weekday = with_rates(
+            DayPattern(
+                "Weekday",
+                frozenset({"mon", "tue", "wed", "thu", "fri"}),
+                (Period(0, 1440, "standard"),),
+                None,
+                None,
+                (Period(0, 1440, "Evening"),),
+                False,
+                0.0,
             ),
+            (Rate("standard", 0.32),),
+            (ExportRate("Evening", 0.08),),
         )
+        weekend = with_rates(
+            DayPattern(
+                "Weekend",
+                frozenset({"sat", "sun", "holiday"}),
+                (Period(0, 1440, "standard"),),
+                None,
+                None,
+                (Period(0, 1440, "Evening"),),
+                False,
+                0.0,
+            ),
+            (Rate("standard", 0.32),),
+            (ExportRate("Evening", 0.15),),
+        )
+        plan = Plan("P", day_patterns=(weekday, weekend))
         # A Wednesday and a Saturday, so each pattern resolves in turn.
         self.assertAlmostEqual(
             plan.export_price_at(date(2026, 8, 12), 1200, False), 0.08
@@ -1493,24 +1593,22 @@ class TestExportSide(unittest.TestCase):
         but only on the *other* timetable — the flat membership test this
         replaced would have missed this entirely.
         """
-        weekday = DayPattern(
-            "Weekday",
-            frozenset({"mon", "tue", "wed", "thu", "fri"}),
-            (Period(0, 1440, "standard"),),
-            None,
-            None,
-            (Period(0, 1440, "Evening"),),
-            False,
-            0.0,
-        )
-        plan = Plan(
-            "P",
+        weekday = with_rates(
+            DayPattern(
+                "Weekday",
+                frozenset({"mon", "tue", "wed", "thu", "fri"}),
+                (Period(0, 1440, "standard"),),
+                None,
+                None,
+                (Period(0, 1440, "Evening"),),
+                False,
+                0.0,
+            ),
             (Rate("standard", 0.32),),
-            (weekday,),
-            # Only declared on Weekend — Weekday's own period names a rate
-            # that, for Weekday, does not exist.
-            export_rates=(ExportRate("Evening", 0.15, timetable="Weekend"),),
+            # No export rate declared on Weekday at all — Weekday's own
+            # period names a rate that, for Weekday, does not exist.
         )
+        plan = Plan("P", day_patterns=(weekday,))
         self.assertFalse(is_valid(plan))
         problems = [str(problem) for problem in validate_plan(plan)]
         self.assertTrue(
@@ -1523,15 +1621,19 @@ class TestExportSide(unittest.TestCase):
     def test_demand_rate_round_trips(self) -> None:
         """P27: the demand rate belongs to the rate, not the plan."""
         plan = Plan(
-            "P", (Rate("a", 0.1, demand_period=True, demand_rate_per_kw_month=12.5),)
+            "P",
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "a"),)),
+                    (
+                        Rate(
+                            "a", 0.1, demand_period=True, demand_rate_per_kw_month=12.5
+                        ),
+                    ),
+                ),
+            ),
         )
-        rebuilt = Plan.from_dict(
-            {
-                **plan.as_dict(),
-                "rates": [rate.as_dict() for rate in plan.rates],
-                "day_patterns": [],
-            }
-        )
+        rebuilt = Plan.from_dict(plan.as_dict())
         self.assertAlmostEqual(rebuilt.rates[0].demand_rate_per_kw_month, 12.5)
         self.assertTrue(rebuilt.rates[0].demand_period)
 
@@ -1540,29 +1642,33 @@ class TestExportSide(unittest.TestCase):
         rebuilt = Plan.from_dict(
             {
                 "name": "P",
-                "rates": [Rate("a", 0.1).as_dict()],
-                "day_patterns": [],
+                "day_patterns": [
+                    with_rates(
+                        DayPattern("D", ALL_DAYS, (Period(0, 1440, "a"),)),
+                        (Rate("a", 0.1),),
+                    ).as_dict()
+                ],
                 "demand_rate_per_kw_month": 12.5,
             }
         )
         self.assertEqual(rebuilt.rates[0].demand_rate_per_kw_month, 0.0)
 
     def _round_trip(self, plan: Plan) -> Plan:
-        return Plan.from_dict(
-            {
-                **plan.as_dict(),
-                "rates": [rate.as_dict() for rate in plan.rates],
-                "export_rates": [rate.as_dict() for rate in plan.export_rates],
-                "day_patterns": [pattern.as_dict() for pattern in plan.day_patterns],
-            }
-        )
+        return Plan.from_dict(plan.as_dict())
 
     def test_an_export_rates_cap_round_trips(self) -> None:
         plan = Plan(
             "P",
-            (Rate("a", 0.1),),
-            export_rates=(
-                ExportRate("Morning", 0.08, allowance_kwh=10.0, fallback_price=0.02),
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "a"),)),
+                    (Rate("a", 0.1),),
+                    (
+                        ExportRate(
+                            "Morning", 0.08, allowance_kwh=10.0, fallback_price=0.02
+                        ),
+                    ),
+                ),
             ),
         )
         rebuilt = self._round_trip(plan)
@@ -1570,7 +1676,16 @@ class TestExportSide(unittest.TestCase):
         self.assertAlmostEqual(rebuilt.export_rates[0].fallback_price, 0.02)
 
     def test_no_export_cap_round_trips_as_none(self) -> None:
-        plan = Plan("P", (Rate("a", 0.1),), export_rates=(ExportRate("M", 0.08),))
+        plan = Plan(
+            "P",
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 1440, "a"),)),
+                    (Rate("a", 0.1),),
+                    (ExportRate("M", 0.08),),
+                ),
+            ),
+        )
         rebuilt = self._round_trip(plan)
         self.assertIsNone(rebuilt.export_rates[0].allowance_kwh)
         self.assertIsNone(rebuilt.export_rates[0].fallback_price)
@@ -1578,15 +1693,17 @@ class TestExportSide(unittest.TestCase):
     def test_an_all_day_cap_round_trips_on_the_timetable(self) -> None:
         plan = Plan(
             "P",
-            (Rate("a", 0.1),),
-            (
-                DayPattern(
-                    "D",
-                    ALL_DAYS,
-                    (Period(0, 1440, "a"),),
-                    export_flat_price=0.08,
-                    export_allowance_kwh=10.0,
-                    export_fallback_price=0.02,
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "D",
+                        ALL_DAYS,
+                        (Period(0, 1440, "a"),),
+                        export_flat_price=0.08,
+                        export_allowance_kwh=10.0,
+                        export_fallback_price=0.02,
+                    ),
+                    (Rate("a", 0.1),),
                 ),
             ),
         )
@@ -1622,23 +1739,39 @@ class TestPlanText(unittest.TestCase):
 
     def test_a_gap_is_named(self) -> None:
         plan = Plan(
-            "P", (Rate("a", 0.1),), (DayPattern("D", ALL_DAYS, (Period(0, 360, "a"),)),)
+            "P",
+            day_patterns=(
+                with_rates(
+                    DayPattern("D", ALL_DAYS, (Period(0, 360, "a"),)),
+                    (Rate("a", 0.1),),
+                ),
+            ),
         )
         self.assertIn("nothing covers", strip.render_plan(plan))
 
     def test_an_overlap_is_named(self) -> None:
         plan = Plan(
             "P",
-            (Rate("a", 0.1), Rate("b", 0.2)),
-            (DayPattern("D", ALL_DAYS, (Period(0, 800, "a"), Period(600, 1440, "b"))),),
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "D", ALL_DAYS, (Period(0, 800, "a"), Period(600, 1440, "b"))
+                    ),
+                    (Rate("a", 0.1), Rate("b", 0.2)),
+                ),
+            ),
         )
         self.assertIn("overlaps", strip.render_plan(plan))
 
     def test_a_missing_rate_is_named(self) -> None:
         plan = Plan(
             "P",
-            (Rate("peak", 0.5),),
-            (DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "missing"),)),),
+            day_patterns=(
+                with_rates(
+                    DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "missing"),)),
+                    (Rate("peak", 0.5),),
+                ),
+            ),
         )
         self.assertIn(
             "rate missing", strip.render_day_pattern(plan, plan.day_patterns[0])
@@ -1648,19 +1781,21 @@ class TestPlanText(unittest.TestCase):
         """A fixed pad bends the column the moment a name outgrows it."""
         plan = Plan(
             "P",
-            (
-                Rate("Every day Super Off Peak", 0.0),
-                Rate("Every day EV Charging", 0.08),
-                Rate("Every day Peak", 0.3685),
-            ),
-            (
-                DayPattern(
-                    "Every day",
-                    ALL_DAYS,
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "Every day",
+                        ALL_DAYS,
+                        (
+                            Period(0, 360, "Every day EV Charging"),
+                            Period(360, 660, "Every day Super Off Peak"),
+                            Period(660, 1440, "Every day Peak"),
+                        ),
+                    ),
                     (
-                        Period(0, 360, "Every day EV Charging"),
-                        Period(360, 660, "Every day Super Off Peak"),
-                        Period(660, 1440, "Every day Peak"),
+                        Rate("Every day Super Off Peak", 0.0),
+                        Rate("Every day EV Charging", 0.08),
+                        Rate("Every day Peak", 0.3685),
                     ),
                 ),
             ),
@@ -1687,28 +1822,34 @@ class TestPlanText(unittest.TestCase):
         """The second block existed to show this; it is a column now."""
         plan = Plan(
             "P",
-            (Rate("Peak", 0.5, timetable="Every day"),),
-            (DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "Peak"),)),),
+            day_patterns=(
+                with_rates(
+                    DayPattern("Every day", ALL_DAYS, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.5),),
+                ),
+            ),
         )
         row = strip.render_day_pattern(plan, plan.day_patterns[0]).splitlines()[1]
         self.assertIn("00:00-24:00", row)
         self.assertIn("Peak", row)
-        self.assertIn("every_day.peak", row)
+        self.assertIn("p.every_day.import.peak", row)
         self.assertIn("50.00 c/kWh", row)
 
     def test_the_columns_line_up_across_the_whole_plan(self) -> None:
         """One width per column, measured once, or the table bends."""
         plan = Plan(
             "P",
-            (
-                Rate("Super Off Peak", 0.0, timetable="Every day"),
-                Rate("EV", 0.08, timetable="Every day"),
-            ),
-            (
-                DayPattern(
-                    "Every day",
-                    ALL_DAYS,
-                    (Period(0, 360, "EV"), Period(360, 1440, "Super Off Peak")),
+            day_patterns=(
+                with_rates(
+                    DayPattern(
+                        "Every day",
+                        ALL_DAYS,
+                        (Period(0, 360, "EV"), Period(360, 1440, "Super Off Peak")),
+                    ),
+                    (
+                        Rate("Super Off Peak", 0.0),
+                        Rate("EV", 0.08),
+                    ),
                 ),
             ),
         )
@@ -1722,42 +1863,51 @@ class TestPlanText(unittest.TestCase):
 
     def test_nothing_entered_yet(self) -> None:
         self.assertIn("No rates", strip.render_plan(Plan("P")))
-        self.assertIn(
-            "No day patterns", strip.render_plan(Plan("P", (Rate("a", 0.1),)))
-        )
 
     def test_a_season_is_named(self) -> None:
-        pattern = DayPattern(
-            "Summer", ALL_DAYS, (Period(0, 1440, "peak"),), (11, 1), (3, 31)
+        pattern = with_rates(
+            DayPattern(
+                "Summer", ALL_DAYS, (Period(0, 1440, "peak"),), (11, 1), (3, 31)
+            ),
+            (Rate("peak", 0.5),),
         )
-        plan = Plan("P", (Rate("peak", 0.5),), (pattern,))
+        plan = Plan("P", day_patterns=(pattern,))
         self.assertIn("01/11", strip.render_day_pattern(plan, pattern))
 
     def test_a_flat_feed_in_states_the_price(self) -> None:
-        pattern = DayPattern(
-            "Every day", ALL_DAYS, (Period(0, 1440, "a"),), None, None, (), True, 0.05
+        pattern = with_rates(
+            DayPattern(
+                "Every day",
+                ALL_DAYS,
+                (Period(0, 1440, "a"),),
+                None,
+                None,
+                (),
+                True,
+                0.05,
+            ),
+            (Rate("a", 0.1),),
         )
-        plan = Plan("P", (Rate("a", 0.1),), (pattern,))
+        plan = Plan("P", day_patterns=(pattern,))
         self.assertIn("Feed-in: 5.00 c/kWh all day", strip.render_plan(plan))
 
     def test_a_timed_feed_in_lists_its_periods(self) -> None:
         ExportRate = _pkg.plan.ExportRate
-        pattern = DayPattern(
-            "Every day",
-            ALL_DAYS,
-            (Period(0, 1440, "a"),),
-            None,
-            None,
-            (Period(0, 960, "daytime"), Period(960, 1440, "evening")),
-            False,
-            0.0,
-        )
-        plan = Plan(
-            "P",
+        pattern = with_rates(
+            DayPattern(
+                "Every day",
+                ALL_DAYS,
+                (Period(0, 1440, "a"),),
+                None,
+                None,
+                (Period(0, 960, "daytime"), Period(960, 1440, "evening")),
+                False,
+                0.0,
+            ),
             (Rate("a", 0.1),),
-            (pattern,),
-            export_rates=(ExportRate("daytime", 0.027), ExportRate("evening", 0.12)),
+            (ExportRate("daytime", 0.027), ExportRate("evening", 0.12)),
         )
+        plan = Plan("P", day_patterns=(pattern,))
         text = strip.render_plan(plan)
         self.assertIn("16:00-24:00", text)
         self.assertIn("evening", text)
@@ -1766,13 +1916,15 @@ class TestPlanText(unittest.TestCase):
     def test_two_timetables_with_the_same_rate_name_stay_apart(self) -> None:
         plan = Plan(
             "P",
-            (
-                Rate("Peak", 0.5688, timetable="Weekday"),
-                Rate("Peak", 0.30, timetable="Weekend"),
-            ),
-            (
-                DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Peak"),)),
-                DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+            day_patterns=(
+                with_rates(
+                    DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.5688),),
+                ),
+                with_rates(
+                    DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.30),),
+                ),
             ),
         )
         weekday, weekend = (
@@ -1783,20 +1935,22 @@ class TestPlanText(unittest.TestCase):
         self.assertNotIn("rate missing", weekday + weekend)
         # The identifier is on the row, so the two Peaks are told apart in
         # place rather than in a separate listing.
-        self.assertIn("weekday.peak", weekday)
-        self.assertIn("weekend.peak", weekend)
-        self.assertNotIn("weekend.peak", weekday)
+        self.assertIn("p.weekday.import.peak", weekday)
+        self.assertIn("p.weekend.import.peak", weekend)
+        self.assertNotIn("p.weekend.import.peak", weekday)
 
     def test_the_card_resolves_every_period(self) -> None:
         plan = Plan(
             "P",
-            (
-                Rate("Peak", 0.5688, timetable="Weekday"),
-                Rate("Peak", 0.30, timetable="Weekend"),
-            ),
-            (
-                DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Peak"),)),
-                DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+            day_patterns=(
+                with_rates(
+                    DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.5688),),
+                ),
+                with_rates(
+                    DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.30),),
+                ),
             ),
         )
         card = strip.render_rate_plan_card(plan)
@@ -1805,19 +1959,19 @@ class TestPlanText(unittest.TestCase):
         self.assertIn("buy 0.3000/kWh", card)
 
     def test_the_card_shows_tax_and_charges(self) -> None:
-        plan = Plan("P", (Rate("a", 0.1),), daily_supply_charge=1.166)
+        plan = Plan("P", daily_supply_charge=1.166)
         card = strip.render_rate_plan_card(plan)
-        self.assertIn("Prices include GST", card)
+        self.assertIn("Prices include tax", card)
         self.assertIn("Daily supply charge: 116.60 c/day", card)
 
     def test_the_card_shows_a_monthly_charge_only_when_there_is_one(self) -> None:
-        plan = Plan("P", (Rate("a", 0.1),))
+        plan = Plan("P")
         self.assertNotIn("Monthly charge", strip.render_rate_plan_card(plan))
-        with_fee = Plan("P", (Rate("a", 0.1),), monthly_charge=19.0)
+        with_fee = Plan("P", monthly_charge=19.0)
         self.assertIn("Monthly charge: 19.00", strip.render_rate_plan_card(with_fee))
 
     def test_the_card_says_when_prices_exclude_tax(self) -> None:
-        plan = Plan("P", (Rate("a", 0.1),), prices_include_gst=False)
+        plan = Plan("P", prices_include_gst=False)
         self.assertIn("exclude tax", strip.render_rate_plan_card(plan))
 
 
@@ -1830,68 +1984,83 @@ class TestTheCsvNamesRatesUnambiguously(unittest.TestCase):
     def _plan(self) -> Plan:
         return Plan(
             "P",
-            (
-                Rate("Peak", 0.5688, timetable="Weekday"),
-                Rate("Peak", 0.30, timetable="Weekend"),
-            ),
-            (
-                DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Peak"),)),
-                DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+            day_patterns=(
+                with_rates(
+                    DayPattern("Weekday", self.WEEKDAYS, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.5688),),
+                ),
+                with_rates(
+                    DayPattern("Weekend", self.WEEKEND, (Period(0, 1440, "Peak"),)),
+                    (Rate("Peak", 0.30),),
+                ),
             ),
         )
 
     def test_the_rates_csv_carries_the_identifier(self) -> None:
         text = _pkg.serialise.rates_to_csv(self._plan())
         self.assertIn("rate_id", text.splitlines()[0])
-        self.assertIn("weekday.peak", text)
-        self.assertIn("weekend.peak", text)
+        self.assertIn("p.weekday.import.peak", text)
+        self.assertIn("p.weekend.import.peak", text)
 
     def test_the_periods_csv_carries_the_identifier(self) -> None:
         text = _pkg.serialise.periods_to_csv(self._plan())
         self.assertIn("rate_id", text.splitlines()[0])
-        self.assertIn("weekday.peak", text)
-        self.assertIn("weekend.peak", text)
+        self.assertIn("p.weekday.import.peak", text)
+        self.assertIn("p.weekend.import.peak", text)
 
 
 class TestTheCardNamesTheBillingDay(unittest.TestCase):
     def test_the_day_is_stated_when_there_is_one(self) -> None:
-        plan = Plan("P", (Rate("a", 0.1),), billing_cycle_day=12)
+        plan = Plan("P", billing_cycle_day=12)
         self.assertIn("day 12", strip.render_rate_plan_card(plan))
 
     def test_nothing_is_said_when_there_is_none(self) -> None:
-        plan = Plan("P", (Rate("a", 0.1),))
+        plan = Plan("P")
         self.assertNotIn("Billing cycle", strip.render_rate_plan_card(plan))
 
 
 class TestTheFallbackIsAskedOfTheRate(unittest.TestCase):
-    """P31 change three: a rate says which timetable it belongs to.
+    """A fallback is resolved within the rate's own timetable, never another.
 
-    ``validate_rates`` and ``allowance.apply`` both look a fallback up in the
-    rate's own timetable. ``intervals.generate`` used the day set it happened
-    to resolve through, which is a different question, so the published series
-    could name a fallback validation never approved.
-
-    A rate stored before rates were scoped belongs to no timetable and
-    resolves in any. Its fallback belongs to no timetable either, so it is the
-    unscoped rate of that name — not whichever scoped one shares it.
+    ``validate_rates`` and ``allowance.apply`` both look a fallback up
+    scoped to the day pattern the rate is nested in (Gap #1). ``intervals.
+    generate`` used the day set it happened to resolve through, which is a
+    different question in principle, so the published series could in
+    theory name a fallback validation never approved — this proves it
+    still agrees, now that nesting makes there only ever one candidate to
+    begin with.
     """
 
     def _plan(self) -> Plan:
         return Plan(
             "P",
-            (
-                # Unscoped: what a plan written before the scoping looks like.
-                Rate("Capped", 0.0, rate_allowance_kwh=24.0, fallback_rate="Cheap"),
-                Rate("Cheap", 0.10),
-                # Same name, but belonging to the day set being resolved.
-                Rate("Cheap", 0.99, timetable="Weekday"),
+            day_patterns=(
+                with_rates(
+                    DayPattern("Weekday", ALL_DAYS, (Period(0, 1440, "Capped"),)),
+                    (
+                        Rate(
+                            "Capped",
+                            0.0,
+                            rate_allowance_kwh=24.0,
+                            fallback_rate="Cheap",
+                        ),
+                        Rate("Cheap", 0.10),
+                    ),
+                ),
+                with_rates(
+                    DayPattern("Weekend", ALL_DAYS, (Period(0, 1440, "Cheap"),)),
+                    # Same name, different price — belongs to a different
+                    # timetable and must never be confused with Weekday's.
+                    (Rate("Cheap", 0.99),),
+                ),
             ),
-            (DayPattern("Weekday", ALL_DAYS, (Period(0, 1440, "Capped"),)),),
         )
 
     def test_the_series_names_the_fallback_validation_approved(self) -> None:
         plan = self._plan()
-        approved = plan.rate_by_name("Cheap", plan.rates[0].timetable)
+        weekday = plan.day_pattern_by_name("Weekday")
+        assert weekday is not None
+        approved = weekday.rate_by_name("Cheap")
         assert approved is not None
         start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
         payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
@@ -1902,7 +2071,11 @@ class TestTheFallbackIsAskedOfTheRate(unittest.TestCase):
 
     def test_the_allowance_module_agrees_with_the_series(self) -> None:
         plan = self._plan()
-        spent = allowance.apply(plan, plan.rates[0], 30.0)
+        weekday = plan.day_pattern_by_name("Weekday")
+        assert weekday is not None
+        capped = weekday.rate_by_name("Capped")
+        assert capped is not None
+        spent = allowance.apply(weekday, capped, 30.0)
         start = datetime(2026, 8, 14, 10, 0, tzinfo=BRISBANE)
         payload = intervals.generate(plan, start, BRISBANE, never_holiday, hours=1)[
             0
