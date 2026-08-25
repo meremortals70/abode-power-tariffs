@@ -285,6 +285,40 @@ class TestTranslationsMatch(unittest.TestCase):
         ]
         self.assertEqual(offenders, [])
 
+    def test_no_placeholder_wrapped_in_single_quotes(self) -> None:
+        """hassfest rejects a placeholder quoted with '{x}' anywhere in strings.json.
+
+        Caught by hassfest in CI, not by anything in this suite — nothing
+        here parsed the string text closely enough to notice the quoting.
+        Walks every string value in the whole file, not just steps, since
+        hassfest's own check isn't scoped to steps either.
+        """
+
+        def walk(node: object, path: str) -> list[str]:
+            found: list[str] = []
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    found.extend(walk(value, f"{path}.{key}"))
+            elif isinstance(node, str) and re.search(r"'\{[a-z_]+\}'", node):
+                found.append(path)
+            return found
+
+        offenders = walk(self.strings, "strings")
+        self.assertEqual(offenders, [], "\n".join(offenders))
+
+    def test_no_empty_error_dict(self) -> None:
+        """hassfest rejects an 'error' key present but empty — {} is not the
+        same as "this step has no errors" to its schema; omit the key
+        entirely instead. Also caught by hassfest in CI, not by this suite.
+        """
+        offenders = [
+            f"{section}.step.{name}"
+            for section in ("config", "options")
+            for name, step in self.strings[section]["step"].items()
+            if "error" in step and step["error"] == {}
+        ]
+        self.assertEqual(offenders, [], "\n".join(offenders))
+
     def test_flow_errors_have_strings(self) -> None:
         source = (PACKAGE / "config_flow.py").read_text()
         used = set(re.findall(r'errors\[[^\]]+\] = "([a-z_]+)"', source))

@@ -32,8 +32,7 @@
           "prices_include_gst": "Bills quote prices with tax included in some countries — Australian ones with GST, for instance — and without it in most European and US rate sheets.",
           "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
           "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
-        },
-        "error": {}
+        }
       },
       "single_rate": {
         "title": "Prices",
@@ -57,14 +56,14 @@
       },
       "rates": {
         "title": "Rates",
-        "description": "The prices that apply on {pattern}. Each one is stored as '{pattern}' followed by the name you type.\n\nEntered so far: {so_far}",
+        "description": "The prices that apply on {pattern}. Each one is stored as the pattern name followed by the name you type.\n\nEntered so far: {so_far}",
         "data": {
           "name": "Rate name",
           "import_cents": "You pay (c/kWh)",
           "on_submit": "When I submit"
         },
         "data_description": {
-          "name": "As it appears on your bill - peak, off peak, shoulder, free. '{pattern}' is put in front automatically.",
+          "name": "As it appears on your bill - peak, off peak, shoulder, free. The pattern name is put in front automatically.",
           "import_cents": "Cents per kilowatt hour, as the bill quotes it.",
           "on_submit": "Choose 'Continue to the time periods' when this timetable's rates are all in. Every rate you have entered is kept."
         },
@@ -146,7 +145,7 @@
       },
       "export_rates": {
         "title": "Feed-in rates",
-        "description": "The feed-in prices on {pattern}. Each is stored as '{pattern}' followed by the name you type.\n\nEntered so far: {so_far}",
+        "description": "The feed-in prices on {pattern}. Each is stored as the pattern name followed by the name you type.\n\nEntered so far: {so_far}",
         "data": {
           "name": "Feed-in rate name",
           "export_cents": "You are paid (c/kWh)",
@@ -155,7 +154,7 @@
           "export_fallback_cents": "Export price after the allowance (c/kWh)"
         },
         "data_description": {
-          "name": "Your own words - for example evening export, daytime export. '{pattern}' is put in front automatically.",
+          "name": "Your own words - for example evening export, daytime export. The pattern name is put in front automatically.",
           "on_submit": "Choose 'Continue to the feed-in time periods' when they are all in. Every feed-in rate you have entered is kept.",
           "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet.",
           "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent."
@@ -445,8 +444,7 @@
           "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here.",
           "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
           "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
-        },
-        "error": {}
+        }
       },
       "usage_tracking": {
         "title": "Track usage by rate",
