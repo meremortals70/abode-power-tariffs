@@ -317,10 +317,15 @@ class TestSingleRatePlan(unittest.TestCase):
         self.assertAlmostEqual(pattern.export_fallback_price, 0.02)
 
     def test_nothing_counts_yet(self) -> None:
-        """Rule 7, revoked: there is no tickbox left to be false."""
+        """Rule 7, revoked: there is no tickbox left to be false.
+
+        The import meter itself is unrelated to rule 7 and is mandatory for
+        every plan (Gap #7) — asked on the charges screen this same setup
+        already went through, so it is set on the finished plan, not None.
+        """
         result = self._finish()
         self.assertNotIn("count_allowance", result["options"])
-        self.assertIsNone(result["options"].get(CONST.CONF_IMPORT_ENERGY_SENSOR))
+        self.assertIsNotNone(result["options"].get(CONST.CONF_IMPORT_ENERGY_SENSOR))
 
 
 class TestSingleRatePlanWithNoExport(unittest.TestCase):

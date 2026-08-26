@@ -176,7 +176,7 @@ def populated_options() -> dict[str, Any]:
         CONST.CONF_VALID_TO: None,
         CONST.CONF_HOLIDAY_SENSOR: None,
         CONST.CONF_EXPORT_ENERGY_SENSOR: None,
-        CONST.CONF_IMPORT_ENERGY_SENSOR: None,
+        CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
     }
 
 

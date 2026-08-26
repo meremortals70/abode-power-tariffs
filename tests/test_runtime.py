@@ -1516,7 +1516,6 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
                 CONST.CONF_RATE_ALLOWANCE_KWH,
                 CONST.CONF_FALLBACK_RATE,
                 CONST.CONF_ALLOWANCE_PERIOD,
-                CONST.CONF_IMPORT_ENERGY_SENSOR,
             },
         )
         self.assertEqual(
@@ -1541,7 +1540,9 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
         An allowance declared during setup should not have to be declared a
         second time in Configure. There is no counting tickbox any more
         (rule 7, revoked) — what is offered instead is which accounting
-        period the cap belongs to.
+        period the cap belongs to. The import meter itself is no longer
+        asked here at all (Gap #7): it is mandatory for the whole plan,
+        asked once on the charges screen, not per rate.
         """
         fields = _ha_stubs.field_names(
             PKG.config_flow._rate_schema(
@@ -1551,7 +1552,7 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
         self.assertIn(CONST.CONF_RATE_ALLOWANCE_KWH, fields)
         self.assertIn(CONST.CONF_FALLBACK_RATE, fields)
         self.assertIn(CONST.CONF_ALLOWANCE_PERIOD, fields)
-        self.assertIn(CONST.CONF_IMPORT_ENERGY_SENSOR, fields)
+        self.assertNotIn(CONST.CONF_IMPORT_ENERGY_SENSOR, fields)
         self.assertNotIn("count_allowance", fields)
 
     def test_the_edit_form_is_the_same_form_unfiltered(self) -> None:
@@ -1594,12 +1595,19 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
 
 
 class TestCountingSitsWithTheCap(unittest.TestCase):
-    """The meter belongs on the rate form, beside the allowance.
+    """The meter is asked once, for the whole plan, not per rate.
 
     It used to be a Configure screen of its own, which meant an allowance was
     declared in one place and counted in another (P24). Rule 7 was then
     revoked: there is no tickbox any more, because there is no opt-in — a
-    declared cap is counted whenever a meter is nominated.
+    declared cap is counted whenever a meter is nominated. Rule 6 was later
+    also revoked (Gap #7): the meter used to be asked per rate, required
+    only once that one rate declared a demand charge or an allowance — a
+    demand-only rate never opened the Allowance section that field lived in,
+    and was rejected for a field it was never shown. It is asked once now,
+    on the charges screen (setup) and the general screen (Configure),
+    mandatory for every plan regardless of what any individual rate
+    declares.
     """
 
     def test_the_separate_screen_is_gone(self) -> None:
@@ -1615,75 +1623,52 @@ class TestCountingSitsWithTheCap(unittest.TestCase):
         fields = _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"]))
         self.assertNotIn("count_allowance", fields)
 
-    def test_the_rate_form_carries_the_allowance_period_and_the_meter(self) -> None:
+    def test_the_rate_form_carries_the_allowance_period_but_not_the_meter(
+        self,
+    ) -> None:
         fields = _ha_stubs.field_names(PKG.config_flow._rate_schema({}, ["Other"]))
         self.assertIn(CONST.CONF_RATE_ALLOWANCE_KWH, fields)
         self.assertIn(CONST.CONF_ALLOWANCE_PERIOD, fields)
-        self.assertIn(CONST.CONF_IMPORT_ENERGY_SENSOR, fields)
+        self.assertNotIn(CONST.CONF_IMPORT_ENERGY_SENSOR, fields)
 
-    def test_the_meter_defaults_to_the_one_already_chosen(self) -> None:
-        """One grid meter for the plan, so a later capped rate finds it filled."""
-        schema = PKG.config_flow._rate_schema(
-            {}, ["Other"], energy_sensor="sensor.grid_import"
-        )
-        marker, _selector = _ha_stubs.field_for(schema, CONST.CONF_IMPORT_ENERGY_SENSOR)
-        self.assertEqual(marker.description, {"suggested_value": "sensor.grid_import"})
-
-    def test_a_declared_cap_makes_the_meter_required(self) -> None:
-        """Rule 6's own test, replacing the old tickbox guard.
-
-        Reads has_allowance, not the typed magnitude — a magnitude alone,
-        with the box unchecked, declares nothing (the P36 fix: the box used
-        to be inferred from a nonzero number, so a rate that never touched
-        the field still got treated as if it had one). A checked box with a
-        zero typed is still a declared cap, symmetric with a demand charge
-        at a zero price.
-        """
-        self.assertFalse(
-            PKG.config_flow._meter_required_without_one(
-                {CONST.CONF_RATE_ALLOWANCE_KWH: 24.0}
-            )
-        )
-        self.assertTrue(
-            PKG.config_flow._meter_required_without_one(
+    def test_the_meter_is_required_on_the_charges_screen(self) -> None:
+        flow = PKG.config_flow.AbodePowerTariffsConfigFlow()
+        run(flow.async_step_user())
+        run(
+            flow.async_step_user(
                 {
-                    CONST.CONF_HAS_ALLOWANCE: True,
-                    CONST.CONF_RATE_ALLOWANCE_KWH: 0.0,
+                    CONST.CONF_PLAN_NAME: "P",
+                    CONST.CONF_PLAN_DESCRIPTION: "",
+                    CONST.CONF_SINGLE_RATE: False,
+                    CONST.CONF_HAS_EXPORT: False,
                 }
             )
         )
-        self.assertTrue(
-            PKG.config_flow._meter_required_without_one(
+        result = run(
+            flow.async_step_charges(
                 {
-                    CONST.CONF_HAS_ALLOWANCE: True,
-                    CONST.CONF_RATE_ALLOWANCE_KWH: 24.0,
+                    CONST.CONF_SUPPLY_CHARGE_CENTS: 0.0,
+                    CONST.CONF_MONTHLY_CHARGE: 0.0,
+                    CONST.CONF_BILLING_CYCLE_DAY: 0,
+                    CONST.CONF_PRICES_INCLUDE_GST: True,
+                    CONST.CONF_GST_PERCENT: 10.0,
+                    CONST.CONF_IMPORT_ENERGY_SENSOR: "",
                 }
             )
         )
-        self.assertFalse(
-            PKG.config_flow._meter_required_without_one(
-                {
-                    CONST.CONF_HAS_ALLOWANCE: True,
-                    CONST.CONF_RATE_ALLOWANCE_KWH: 24.0,
-                    CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
-                }
-            )
+        self.assertEqual(
+            result["errors"].get(CONST.CONF_IMPORT_ENERGY_SENSOR),
+            "energy_sensor_required",
         )
 
-    def test_a_declared_demand_charge_also_makes_the_meter_required(self) -> None:
-        """The same guard, the same reason: neither can be honoured without one."""
-        self.assertTrue(
-            PKG.config_flow._meter_required_without_one(
-                {CONST.CONF_DEMAND_PERIOD: True}
-            )
-        )
-        self.assertFalse(
-            PKG.config_flow._meter_required_without_one(
-                {
-                    CONST.CONF_DEMAND_PERIOD: True,
-                    CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
-                }
-            )
+    def test_the_meter_is_required_on_the_general_screen(self) -> None:
+        driver = OptionsDriver()
+        driver.start()
+        driver.choose("general")
+        result = driver.submit(**{CONST.CONF_IMPORT_ENERGY_SENSOR: ""})
+        self.assertEqual(
+            result["errors"].get(CONST.CONF_IMPORT_ENERGY_SENSOR),
+            "energy_sensor_required",
         )
 
     def test_the_meter_is_not_stored_on_the_rate(self) -> None:
@@ -1753,9 +1738,12 @@ class TestTheDemandRateSitsOnTheRate(unittest.TestCase):
             result["errors"], {CONST.CONF_DEMAND_RATE: "demand_rate_required"}
         )
 
-    def test_a_bare_demand_period_is_refused_for_want_of_a_meter_first(self) -> None:
-        """Rule 6 checks the meter before the rate. Both are unmet; the meter
-        guard is the one that fires, since it runs first in the chain."""
+    def test_a_bare_demand_period_with_no_rate_is_refused(self) -> None:
+        """The meter is no longer checked here at all (Gap #7) — it is asked
+        once, earlier, on the charges screen. What is still checked here is
+        the demand rate itself: declaring the period without a number to
+        publish is refused the same way it always was.
+        """
         flow = PKG.config_flow.AbodePowerTariffsConfigFlow()
         flow._name = "P"
         result = run(
@@ -1771,7 +1759,7 @@ class TestTheDemandRateSitsOnTheRate(unittest.TestCase):
         )
         self.assertEqual(
             result["errors"],
-            {CONST.CONF_IMPORT_ENERGY_SENSOR: "energy_sensor_required"},
+            {CONST.CONF_DEMAND_RATE: "demand_rate_required"},
         )
 
     def test_a_demand_rate_declared_at_setup_reaches_the_stored_rate(self) -> None:

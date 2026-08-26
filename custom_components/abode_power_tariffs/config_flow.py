@@ -260,27 +260,6 @@ def _rules_from(user_input: dict[str, Any], key: str) -> list[str]:
     return seen
 
 
-def _meter_required_without_one(user_input: dict[str, Any]) -> bool:
-    """Return whether a meter is needed but not given.
-
-    Rule 7 was revoked: there is no counting tickbox, and a declared cap is
-    counted. Rule 6 makes the meter required the moment that becomes true —
-    the same test a demand charge is held to, since neither can be honoured
-    without one. Nothing about the meter is required until one of the two is
-    declared, which is what asking the minimum means here.
-
-    Reads the has_allowance checkbox, not the typed magnitude — a checked box
-    with a zero typed is still a declared cap, the same way demand_period
-    being checked still declares a demand charge with a zero-priced rate.
-    """
-    needs_meter = bool(user_input.get(CONF_DEMAND_PERIOD)) or bool(
-        user_input.get(CONF_HAS_ALLOWANCE)
-    )
-    if not needs_meter:
-        return False
-    return not user_input.get(CONF_IMPORT_ENERGY_SENSOR)
-
-
 def _demand_without_rate(user_input: dict[str, Any]) -> bool:
     """Return whether a demand period was declared with no rate attached.
 
@@ -345,7 +324,6 @@ SETUP_RATE_FIELDS: Final = (
     CONF_RATE_ALLOWANCE_KWH,
     CONF_FALLBACK_RATE,
     CONF_ALLOWANCE_PERIOD,
-    CONF_IMPORT_ENERGY_SENSOR,
 )
 
 # What the Configure form offers: the same fields, plus the timetable the rate
@@ -379,7 +357,6 @@ def _rate_schema(
     fields: tuple[str, ...] | None = None,
     known_constraints: list[str] | None = None,
     timetables: list[str] | None = None,
-    energy_sensor: str | None = None,
 ) -> vol.Schema:
     """Return the rate form.
 
@@ -538,13 +515,6 @@ def _rate_schema(
             mode=selector.SelectSelectorMode.DROPDOWN,
         )
     )
-    schema[
-        vol.Optional(
-            CONF_IMPORT_ENERGY_SENSOR, description={"suggested_value": energy_sensor}
-        )
-    ] = selector.EntitySelector(
-        selector.EntitySelectorConfig(domain="sensor", device_class="energy")
-    )
     if fields is not None:
         schema = {
             key: value for key, value in schema.items() if _field_name(key) in fields
@@ -567,7 +537,6 @@ RATE_SECTIONS: Final = (
             CONF_RATE_ALLOWANCE_KWH,
             CONF_FALLBACK_RATE,
             CONF_ALLOWANCE_PERIOD,
-            CONF_IMPORT_ENERGY_SENSOR,
         ),
     ),
     (
@@ -849,7 +818,16 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 # A cycle starts on the same day every month, so the day has to
                 # be one every month has.
                 errors[CONF_BILLING_CYCLE_DAY] = "billing_day_out_of_range"
+            elif not user_input.get(CONF_IMPORT_ENERGY_SENSOR):
+                # Mandatory for every plan (Gap #7, rule 6 revoked) — asked
+                # once here, not re-litigated on every rate form gated on
+                # whether that one rate happens to declare a demand charge
+                # or an allowance. A demand-only rate never opened that
+                # form's Allowance section, where this used to live, and
+                # was rejected for a field it was never shown.
+                errors[CONF_IMPORT_ENERGY_SENSOR] = "energy_sensor_required"
             else:
+                self._energy_sensor = user_input[CONF_IMPORT_ENERGY_SENSOR]
                 self._billing_cycle_day = day or None
                 if self._single_rate:
                     return await self.async_step_single_rate()
@@ -900,6 +878,14 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                             max=100,
                             step=0.1,
                             mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_IMPORT_ENERGY_SENSOR,
+                        description={"suggested_value": self._energy_sensor},
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor", device_class="energy"
                         )
                     ),
                 }
@@ -1065,13 +1051,16 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_NAME] = "rate_exists"
             elif _rules_in_both_lists(user_input):
                 errors[CONF_ENFORCEABLE_CONSTRAINTS] = "rule_in_both_lists"
-            elif _meter_required_without_one(user_input):
-                errors[CONF_IMPORT_ENERGY_SENSOR] = "energy_sensor_required"
             elif _demand_without_rate(user_input):
                 errors[CONF_DEMAND_RATE] = "demand_rate_required"
             else:
-                # Plan-level, not the rate's: one grid meter, one answer.
-                self._energy_sensor = user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
+                # Not asked here any more (Gap #7): the import meter is
+                # mandatory for the whole plan, asked once on the charges
+                # screen before any rate exists, not re-litigated per rate
+                # gated on that one rate's own demand or allowance
+                # declaration — a demand-only rate never opened the
+                # Allowance section this used to live in, and was rejected
+                # for a field it was never shown.
                 built = merged(Rate, None, record)
                 # Scratch bookkeeping only, for this multi-step flow to know
                 # which timetable a rate belongs to while more are still
@@ -1092,7 +1081,6 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 [str(rate.get(CONF_NAME, "")) for rate in self._pattern_rates()],
                 fields=SETUP_RATE_FIELDS,
                 known_constraints=known_constraints(self._rates),
-                energy_sensor=self._energy_sensor,
             ).schema,
             **on_submit(
                 "submit_rates",
@@ -1956,14 +1944,12 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 errors[CONF_NAME] = "rate_exists"
             elif _rules_in_both_lists(user_input):
                 errors[CONF_ENFORCEABLE_CONSTRAINTS] = "rule_in_both_lists"
-            elif _meter_required_without_one(user_input):
-                errors[CONF_IMPORT_ENERGY_SENSOR] = "energy_sensor_required"
             elif _demand_without_rate(user_input):
                 errors[CONF_DEMAND_RATE] = "demand_rate_required"
             else:
-                self.working[CONF_IMPORT_ENERGY_SENSOR] = (
-                    user_input.get(CONF_IMPORT_ENERGY_SENSOR) or None
-                )
+                # Not asked here any more (Gap #7): the import meter is
+                # mandatory for the whole plan, asked once on the general
+                # screen, not re-litigated per rate.
                 if index is None:
                     self._add_rate(timetable, merged(Rate, None, record))
                 else:
@@ -2006,7 +1992,6 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     fields=OPTIONS_RATE_FIELDS,
                     known_constraints=self._known_constraints(),
                     timetables=self._day_pattern_names(),
-                    energy_sensor=self.working.get(CONF_IMPORT_ENERGY_SENSOR),
                 )
             ),
             errors=errors,
@@ -2681,11 +2666,17 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                 # The cycle starts on the same day every month, so the day has
                 # to be one that every month has.
                 errors[CONF_BILLING_CYCLE_DAY] = "billing_day_out_of_range"
+            elif not user_input.get(CONF_IMPORT_ENERGY_SENSOR):
+                # Mandatory for every plan (Gap #7, rule 6 revoked).
+                errors[CONF_IMPORT_ENERGY_SENSOR] = "energy_sensor_required"
             elif plan is not None and any(
                 "validity" in str(problem) for problem in validate_plan(plan)
             ):
                 errors[CONF_VALID_TO] = "validity_backwards"
             else:
+                self.working[CONF_IMPORT_ENERGY_SENSOR] = user_input[
+                    CONF_IMPORT_ENERGY_SENSOR
+                ]
                 return self._menu("init")
 
         options = self.working
@@ -2736,6 +2727,16 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                         },
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="binary_sensor")
+                    ),
+                    vol.Required(
+                        CONF_IMPORT_ENERGY_SENSOR,
+                        description={
+                            "suggested_value": options.get(CONF_IMPORT_ENERGY_SENSOR)
+                        },
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="sensor", device_class="energy"
+                        )
                     ),
                     vol.Optional(
                         CONF_EXPORT_ENERGY_SENSOR,

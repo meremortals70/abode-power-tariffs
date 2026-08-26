@@ -25,13 +25,15 @@
           "prices_include_gst": "Prices include tax",
           "gst_percent": "Tax rate (%)",
           "monthly_charge": "Monthly charge",
-          "billing_cycle_day": "Billing cycle starts on day of month (0 for none)"
+          "billing_cycle_day": "Billing cycle starts on day of month (0 for none)",
+          "import_energy_sensor": "Import energy sensor"
         },
         "data_description": {
           "daily_supply_charge_cents": "The fixed charge per day. Zero if you do not have one.",
           "prices_include_gst": "Bills quote prices with tax included in some countries — Australian ones with GST, for instance — and without it in most European and US rate sheets.",
           "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
-          "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
+          "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28.",
+          "import_energy_sensor": "The household's total imported energy, cumulative and increasing. Mandatory for every plan, whatever any individual rate declares."
         }
       },
       "single_rate": {
@@ -430,6 +432,7 @@
           "valid_from": "Plan valid from",
           "valid_to": "Plan valid to",
           "holiday_sensor": "Public holiday sensor",
+          "import_energy_sensor": "Import energy sensor",
           "export_energy_sensor": "Export energy sensor",
           "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
           "monthly_charge": "Monthly charge",
@@ -440,6 +443,7 @@
           "valid_from": "Optional. Leave empty unless you are recording a plan that started on a known date.",
           "valid_to": "Optional. When your retailer reprices, set this and add a new channel for the new plan, so past costs stay correct against the price that was actually in force.",
           "holiday_sensor": "Optional. A Workday sensor from Home Assistant's built-in Workday integration, which is off on a public holiday. Needed only if holidays are priced differently.",
+          "import_energy_sensor": "The household's total imported energy, cumulative and increasing. Mandatory for every plan, whatever any individual rate declares.",
           "export_energy_sensor": "Optional. The household's total exported energy, cumulative and increasing. Needed only if an export rate declares a demand charge or an allowance — nothing counts against either without it.",
           "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here.",
           "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",

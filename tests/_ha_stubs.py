@@ -477,6 +477,13 @@ def _defaults_for(schema: vol.Schema) -> dict[str, Any]:
                 submitted[name] = default()
             except TypeError:
                 submitted[name] = default
+        elif name == "import_energy_sensor":
+            # Required (Gap #7), and genuinely has no schema default — a
+            # real entity path cannot have one. A 'press Submit unchanged'
+            # baseline still needs something valid here, the same way a
+            # real user would already have picked a sensor before this
+            # screen could ever have been reached with nothing chosen.
+            submitted[name] = "sensor.grid_import"
     return submitted
 
 

@@ -213,6 +213,7 @@ async def test_setup_rate_screen_commits_on_continue_when_filled(hass) -> None:
             "billing_cycle_day": 0,
             "prices_include_gst": True,
             "gst_percent": 10.0,
+            "import_energy_sensor": "sensor.grid_import",
         },
     )
     assert result["step_id"] == "days"
@@ -517,6 +518,7 @@ async def test_setup_rates_defaults_to_continue_once_something_is_entered(
             "billing_cycle_day": 0,
             "prices_include_gst": True,
             "gst_percent": 10.0,
+            "import_energy_sensor": "sensor.grid_import",
         },
     )
     result = await hass.config_entries.flow.async_configure(
@@ -565,4 +567,207 @@ async def test_setup_rates_defaults_to_continue_once_something_is_entered(
     assert result["step_id"] == "periods", (
         "a blank screen with rates already entered should move on by "
         "default, not demand a name"
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_last_rate_with_explicit_continue_is_committed(hass) -> None:
+    """Type a real rate, explicitly choose 'continue' (not the default),
+    submit -- it must commit that rate AND move to periods, not re-show a
+    blank rate screen as if nothing happened.
+    """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "plan_name": "Last Rate Test",
+            "plan_description": "",
+            "single_rate_plan": False,
+            "has_export": False,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "daily_supply_charge_cents": 0.0,
+            "monthly_charge": 0.0,
+            "billing_cycle_day": 0,
+            "prices_include_gst": True,
+            "gst_percent": 10.0,
+            "import_energy_sensor": "sensor.grid_import",
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"name": "Every day", "same_every_day": True, "days": []},
+    )
+    assert result["step_id"] == "rates"
+
+    from homeassistant.data_entry_flow import section as _section_type
+
+    def _defaults_for(schema):
+        submitted = {}
+        for key, value in schema.schema.items():
+            name = getattr(key, "schema", key)
+            if isinstance(value, _section_type):
+                submitted[name] = _defaults_for(value.schema)
+                continue
+            default = getattr(key, "default", vol.UNDEFINED)
+            if default is not vol.UNDEFINED and default is not None:
+                submitted[name] = default() if callable(default) else default
+        return submitted
+
+    # One rate typed, real name and price, explicit "continue" even though
+    # nothing has been entered yet for this pattern (default would be "add").
+    payload = _defaults_for(result["data_schema"])
+    payload["name"] = "Peak"
+    payload["import_cents"] = 45.0
+    payload["on_submit"] = "continue"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], payload
+    )
+    print("STEP AFTER LAST RATE + EXPLICIT CONTINUE:", result["step_id"], result.get("errors"))
+    assert result["step_id"] == "periods", (
+        f"typed rate with explicit continue was not committed: {result}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_four_rates_then_explicit_continue(hass) -> None:
+    """Enter four rates in sequence, explicitly choosing 'add' each time
+    except the last, where 'continue' is explicitly chosen -- the exact
+    reported sequence: several rates entered, then the last one submitted
+    with intent to move on.
+    """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "plan_name": "Four Rates Test",
+            "plan_description": "",
+            "single_rate_plan": False,
+            "has_export": False,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "daily_supply_charge_cents": 0.0,
+            "monthly_charge": 0.0,
+            "billing_cycle_day": 0,
+            "prices_include_gst": True,
+            "gst_percent": 10.0,
+            "import_energy_sensor": "sensor.grid_import",
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"name": "Every day", "same_every_day": True, "days": []},
+    )
+    assert result["step_id"] == "rates"
+
+    from homeassistant.data_entry_flow import section as _section_type
+
+    def _defaults_for(schema):
+        submitted = {}
+        for key, value in schema.schema.items():
+            name = getattr(key, "schema", key)
+            if isinstance(value, _section_type):
+                submitted[name] = _defaults_for(value.schema)
+                continue
+            default = getattr(key, "default", vol.UNDEFINED)
+            if default is not vol.UNDEFINED and default is not None:
+                submitted[name] = default() if callable(default) else default
+        return submitted
+
+    names = ["EV Charging", "Shoulder", "Super Off Peak", "Off Peak"]
+    for index, name in enumerate(names):
+        assert result["step_id"] == "rates", (index, result)
+        payload = _defaults_for(result["data_schema"])
+        payload["name"] = name
+        payload["import_cents"] = 10.0 + index
+        payload["on_submit"] = "continue" if index == len(names) - 1 else "add"
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], payload
+        )
+        print(f"AFTER RATE {index} ({name}):", result["step_id"], result.get("errors"))
+
+    assert result["step_id"] == "periods", (
+        f"the fourth rate, submitted with explicit continue, did not "
+        f"commit and move on: {result}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_rate_with_demand_charge_is_accepted(hass) -> None:
+    """A rate declaring a genuine demand charge -- demand_period ticked,
+    a real demand rate given -- must be accepted, not rejected as if the
+    rate were missing.
+    """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "plan_name": "Demand Rate Test",
+            "plan_description": "",
+            "single_rate_plan": False,
+            "has_export": False,
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            "daily_supply_charge_cents": 0.0,
+            "monthly_charge": 0.0,
+            "billing_cycle_day": 0,
+            "prices_include_gst": True,
+            "gst_percent": 10.0,
+            "import_energy_sensor": "sensor.grid_import",
+        },
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"name": "Every day", "same_every_day": True, "days": []},
+    )
+    assert result["step_id"] == "rates"
+
+    from homeassistant.data_entry_flow import section as _section_type
+
+    def _defaults_for(schema):
+        submitted = {}
+        for key, value in schema.schema.items():
+            name = getattr(key, "schema", key)
+            if isinstance(value, _section_type):
+                submitted[name] = _defaults_for(value.schema)
+                continue
+            default = getattr(key, "default", vol.UNDEFINED)
+            if default is not vol.UNDEFINED and default is not None:
+                submitted[name] = default() if callable(default) else default
+        return submitted
+
+    payload = _defaults_for(result["data_schema"])
+    print("RAW DEFAULT PAYLOAD:", payload)
+    payload["name"] = "Peak"
+    payload["import_cents"] = 45.0
+    payload["on_submit"] = "continue"
+    # This is the part that matters: a real browser submission with the
+    # demand section actually filled in, not left at its collapsed default.
+    payload["demand"] = {
+        "demand_period": True,
+        "demand_rate_per_kw_month": 18.4,
+        "demand_interval": "30",
+        "demand_basis": "day",
+    }
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], payload
+    )
+    print("STEP AFTER DEMAND RATE:", result["step_id"], result.get("errors"))
+    assert result["step_id"] == "periods", (
+        f"a rate with a real demand charge was rejected: {result}"
     )
