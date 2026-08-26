@@ -239,7 +239,7 @@ class Rate:
             CONF_RATE_ALLOWANCE_KWH: self.rate_allowance_kwh,
             CONF_FALLBACK_RATE: self.fallback_rate,
             CONF_DEMAND_PERIOD: self.demand_period,
-            CONF_DEMAND_RATE: self.demand_rate_per_kw_month,
+            CONF_DEMAND_RATE: round(self.demand_rate_per_kw_month * 100, 4),
             CONF_DEMAND_INTERVAL: self.demand_interval,
             CONF_DEMAND_BASIS: self.demand_basis,
             CONF_ALLOWANCE_PERIOD: self.allowance_period,
@@ -269,7 +269,11 @@ class Rate:
                 str(raw[CONF_FALLBACK_RATE]) if raw.get(CONF_FALLBACK_RATE) else None
             ),
             demand_period=bool(raw.get(CONF_DEMAND_PERIOD, False)),
-            demand_rate_per_kw_month=float(raw.get(CONF_DEMAND_RATE) or 0.0),
+            # Cents, like every other price on the form — a rate typed as
+            # "18.40" here means 18.40 cents per kW per month, the same
+            # convention import_price and export_price already use, not the
+            # bare dollars this field used to be read as.
+            demand_rate_per_kw_month=_cents_to_dollars(raw.get(CONF_DEMAND_RATE)),
             demand_interval=_one_of_int(
                 raw.get(CONF_DEMAND_INTERVAL), DEMAND_INTERVALS, DEFAULT_DEMAND_INTERVAL
             ),
@@ -384,7 +388,7 @@ class ExportRate:
             CONF_CONSTRAINTS: sorted(self.constraints),
             CONF_ENFORCEABLE_CONSTRAINTS: sorted(self.enforceable_constraints),
             CONF_DEMAND_PERIOD: self.demand_period,
-            CONF_DEMAND_RATE: self.demand_rate_per_kw_month,
+            CONF_DEMAND_RATE: round(self.demand_rate_per_kw_month * 100, 4),
             CONF_DEMAND_INTERVAL: self.demand_interval,
             CONF_DEMAND_BASIS: self.demand_basis,
         }
@@ -415,7 +419,8 @@ class ExportRate:
                 if str(item).strip()
             ),
             demand_period=bool(raw.get(CONF_DEMAND_PERIOD, False)),
-            demand_rate_per_kw_month=float(raw.get(CONF_DEMAND_RATE) or 0.0),
+            # Cents, like every other price on the form — see Rate.from_dict.
+            demand_rate_per_kw_month=_cents_to_dollars(raw.get(CONF_DEMAND_RATE)),
             demand_interval=_one_of_int(
                 raw.get(CONF_DEMAND_INTERVAL), DEMAND_INTERVALS, DEFAULT_DEMAND_INTERVAL
             ),

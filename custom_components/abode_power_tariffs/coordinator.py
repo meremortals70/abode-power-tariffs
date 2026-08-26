@@ -61,7 +61,7 @@ from .const import (
     ISSUE_PLAN_EXPIRED,
     SIGNAL_UPDATE,
 )
-from .plan import ExportResolution, Plan, Rate, Resolution
+from .plan import ExportResolution, Plan, Rate, Resolution, format_time
 from .validate import validate_plan
 
 _LOGGER = logging.getLogger(__name__)
@@ -1032,6 +1032,60 @@ class TariffCoordinator:
             hours=24,
             resolution_minutes=resolution_minutes,
         )
+
+    def today_schedule_segments(self, resolution_minutes: int) -> list[dict[str, Any]]:
+        """Return today's schedule as plain dicts, for a service or a sensor.
+
+        Every segment covers the same single day, so it belongs to exactly
+        one timetable throughout — unlike ``get_intervals``, which can span
+        several days and several timetables, so naming which one each
+        interval belongs to is genuinely informative there. Here it is the
+        same value repeated on every one of the day's segments, so it is
+        dropped rather than published as if it varied.
+        """
+        return [
+            {
+                key: value
+                for key, value in segment.as_dict().items()
+                if key != "day_pattern"
+            }
+            for segment in self.today_schedule(resolution_minutes)
+        ]
+
+    def today_periods(self) -> list[dict[str, Any]]:
+        """Return today's periods exactly as entered, resolved to their rates.
+
+        Not a coarser resolution of ``today_schedule`` and not a client-side
+        merge of it either — read directly off the day pattern's own
+        periods, so the boundaries are exact regardless of what resolution
+        a chart happens to be drawn at. One row per period actually
+        entered, the same shape ``strip.render_day_pattern`` already shows
+        as text, as data a table card can read directly.
+        """
+        now = dt_util.now()
+        today = now.astimezone(self.zone).date()
+        day_pattern = self.plan.day_pattern_for(today, self.is_holiday(today))
+        if day_pattern is None:
+            return []
+        rows: list[dict[str, Any]] = []
+        for period in day_pattern.sorted_periods():
+            rate = day_pattern.rate_by_name(period.rate)
+            if rate is None:
+                continue
+            rows.append(
+                {
+                    "start": format_time(period.start),
+                    "end": format_time(period.end),
+                    "rate": plan_module.qualified_name(
+                        self.plan.name, day_pattern.name, rate.name
+                    ),
+                    "rate_name": rate.name,
+                    "per_kwh": rate.import_price,
+                    "demand_period": rate.demand_period,
+                    "demand_rate_per_kw_month": rate.demand_rate_per_kw_month,
+                }
+            )
+        return rows
 
     @property
     def problems(self) -> list[str]:

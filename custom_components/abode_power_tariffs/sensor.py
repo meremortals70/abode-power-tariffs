@@ -362,7 +362,7 @@ class TodayScheduleSensor(TariffEntity, SensorEntity):
     # Rebuilt on the resolution grid, several times an hour, several KB of
     # it. Keeping a history of past pictures of "today's schedule" has no
     # value — the whole point is that it is one fact per day.
-    _unrecorded_attributes = frozenset({"segments"})
+    _unrecorded_attributes = frozenset({"segments", "periods"})
 
     def __init__(self, coordinator: TariffCoordinator) -> None:
         """Initialise the today-schedule sensor."""
@@ -375,10 +375,10 @@ class TodayScheduleSensor(TariffEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return today's segments, midnight to midnight, and the current time."""
-        segments = self.coordinator.today_schedule(15)
+        """Return today's schedule, for a chart, and today's periods, for a table."""
         return {
-            "segments": [segment.as_dict() for segment in segments],
+            "segments": self.coordinator.today_schedule_segments(15),
+            "periods": self.coordinator.today_periods(),
             "now": dt_util.now().isoformat(),
         }
 

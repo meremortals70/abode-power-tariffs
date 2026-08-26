@@ -75,13 +75,13 @@
             "description": "Whether a demand charge applies while this rate is in force, and what it is. Declared only — the monthly amount is not calculated here.",
             "data": {
               "demand_period": "This is a demand charge period",
-              "demand_rate_per_kw_month": "Demand charge ($/kW)",
+              "demand_rate_per_kw_month": "Demand charge (c/kW/month)",
               "demand_interval": "Meter averaging interval (minutes)",
               "demand_basis": "How the peak is charged"
             },
             "data_description": {
               "demand_period": "Turns on counting: the highest completed interval while this rate is in force becomes the published peak.",
-              "demand_rate_per_kw_month": "Zero if you do not have one. Charged on the highest completed interval while this rate is in force.",
+              "demand_rate_per_kw_month": "Cents, like every other price on the form. Zero if you do not have one. Charged on the highest completed interval while this rate is in force.",
               "demand_interval": "0 for instantaneous. 30 minutes is the Australian default; use what your meter and bill actually measure.",
               "demand_basis": "'period' charges the peak once for the billing cycle. 'day' charges it for every day of the cycle. The same peak is a very different bill either way."
             }
@@ -93,15 +93,13 @@
               "has_allowance": "This rate has an energy allowance",
               "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
               "fallback_rate": "Rate once the allowance is used up",
-              "allowance_period": "What the allowance covers",
-              "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
+              "allowance_period": "What the allowance covers"
             },
             "data_description": {
               "has_allowance": "Turns on counting: a declared cap is counted against a meter, and this component switches to the fallback once it is spent.",
               "rate_allowance_kwh": "The cap. A zero here with the box above checked is a legitimate zero allowance, not 'none' — leave the box unchecked for that.",
               "fallback_rate": "Only used when there is an allowance. Pick an existing rate, or type the name of one you haven't created yet — it resolves once you add it.",
-              "allowance_period": "'slot' resets on entry to each occurrence of this rate's time period. 'month' accumulates across every slot and day of the billing cycle and resets on the billing day.",
-              "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped or demand-charged rate. Required once either is declared."
+              "allowance_period": "'slot' resets on entry to each occurrence of this rate's time period. 'month' accumulates across every slot and day of the billing cycle and resets on the billing day."
             }
           },
           "constraints_section": {
@@ -278,13 +276,13 @@
             "description": "Whether a demand charge applies while this rate is in force, and what it is. Declared only — the monthly amount is not calculated here.",
             "data": {
               "demand_period": "This is a demand charge period",
-              "demand_rate_per_kw_month": "Demand charge (per kW)",
+              "demand_rate_per_kw_month": "Demand charge (c/kW/month)",
               "demand_interval": "Meter averaging interval (minutes)",
               "demand_basis": "How the peak is charged"
             },
             "data_description": {
               "demand_period": "Turns on counting: the highest completed interval while this rate is in force becomes the published peak.",
-              "demand_rate_per_kw_month": "Zero if you do not have one. Charged on the highest completed interval while this rate is in force.",
+              "demand_rate_per_kw_month": "Cents, like every other price on the form. Zero if you do not have one. Charged on the highest completed interval while this rate is in force.",
               "demand_interval": "0 for instantaneous. 30 minutes is the Australian default; use what your meter and bill actually measure.",
               "demand_basis": "'period' charges the peak once for the billing cycle. 'day' charges it for every day of the cycle. The same peak is a very different bill either way."
             }
@@ -296,15 +294,13 @@
               "has_allowance": "This rate has an energy allowance",
               "rate_allowance_kwh": "Energy allowance for this rate (kWh)",
               "fallback_rate": "Rate once the allowance is used up",
-              "allowance_period": "What the allowance covers",
-              "import_energy_sensor": "Energy sensor to count (whole-of-plan)"
+              "allowance_period": "What the allowance covers"
             },
             "data_description": {
               "has_allowance": "Turns on counting: a declared cap is counted against a meter, and this component switches to the fallback once it is spent.",
               "rate_allowance_kwh": "The cap. A zero here with the box above checked is a legitimate zero allowance, not 'none' — leave the box unchecked for that.",
               "fallback_rate": "Only used when there is an allowance. Pick an existing rate, or type the name of one you haven't created yet — it resolves once you add it.",
-              "allowance_period": "'slot' resets on entry to each occurrence of this rate's time period. 'month' accumulates across every slot and day of the billing cycle and resets on the billing day.",
-              "import_energy_sensor": "The grid import meter. One for the whole plan, so it is the same answer on every capped or demand-charged rate. Required once either is declared."
+              "allowance_period": "'slot' resets on entry to each occurrence of this rate's time period. 'month' accumulates across every slot and day of the billing cycle and resets on the billing day."
             }
           },
           "constraints_section": {
@@ -434,7 +430,6 @@
           "holiday_sensor": "Public holiday sensor",
           "import_energy_sensor": "Import energy sensor",
           "export_energy_sensor": "Export energy sensor",
-          "demand_rate_per_kw_month": "Demand charge ($/kW/month)",
           "monthly_charge": "Monthly charge",
           "billing_cycle_day": "Billing cycle starts on day of month (0 for none)"
         },
@@ -445,7 +440,6 @@
           "holiday_sensor": "Optional. A Workday sensor from Home Assistant's built-in Workday integration, which is off on a public holiday. Needed only if holidays are priced differently.",
           "import_energy_sensor": "The household's total imported energy, cumulative and increasing. Mandatory for every plan, whatever any individual rate declares.",
           "export_energy_sensor": "Optional. The household's total exported energy, cumulative and increasing. Needed only if an export rate declares a demand charge or an allowance — nothing counts against either without it.",
-          "demand_rate_per_kw_month": "Zero if you do not have one. Charged on your highest half-hour of demand in the month. The monthly amount is not calculated here.",
           "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
           "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
         }

@@ -731,7 +731,9 @@ class TestDemandSensors(PlatformCase):
     def _demand_data(self) -> dict[str, Any]:
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
         rate_in(data, 1)[CONST.CONF_DEMAND_PERIOD] = True
-        rate_in(data, 1)[CONST.CONF_DEMAND_RATE] = 20.0
+        # Cents, like every other price on the form: 2000.0 c/kW/day is
+        # $20.00/kW/day.
+        rate_in(data, 1)[CONST.CONF_DEMAND_RATE] = 2000.0
         return data
 
     def test_the_demand_sensors_appear_only_for_a_rate_that_declares_one(self) -> None:
@@ -1063,17 +1065,19 @@ class TestBinarySensorPlatform(PlatformCase):
         demand = self._added().by_key("demand_period_active")
 
         # "Every day Off Peak" is in force at setup (COORD.dt_util.NOW default).
-        # Peak is not, but it still declares 18.4 c/kW/day about itself.
+        # Peak is not, but it still declares 18.4 c/kW/day about itself —
+        # cents, like every other price on the form, so the Rate object
+        # itself holds $0.184.
         self.assertFalse(demand.is_on)
         self.assertAlmostEqual(
-            demand.extra_state_attributes["demand_rate_per_kw_month"], 18.4
+            demand.extra_state_attributes["demand_rate_per_kw_month"], 0.184
         )
 
         COORD.dt_util.NOW = datetime(2026, 8, 14, 17, 0, tzinfo=BRISBANE)
         self.coordinator.async_refresh()
         self.assertTrue(demand.is_on)
         self.assertAlmostEqual(
-            demand.extra_state_attributes["demand_rate_per_kw_month"], 18.4
+            demand.extra_state_attributes["demand_rate_per_kw_month"], 0.184
         )
 
     def test_no_data_complete_sensor_when_the_plan_accounts_for_nothing(self) -> None:

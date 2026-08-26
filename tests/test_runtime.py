@@ -2062,7 +2062,6 @@ class TestTheRateFormIsSectioned(unittest.TestCase):
                 CONST.CONF_RATE_ALLOWANCE_KWH,
                 CONST.CONF_FALLBACK_RATE,
                 CONST.CONF_ALLOWANCE_PERIOD,
-                CONST.CONF_IMPORT_ENERGY_SENSOR,
             ):
                 self.assertNotIn("not yet implemented", labels[field], (root, field))
             self.assertNotIn("count_allowance", labels, root)

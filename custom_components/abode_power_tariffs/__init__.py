@@ -152,9 +152,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 translation_placeholders={"title": entry.title},
             )
         now = dt_util.now()
-        segments = coordinator.today_schedule(call.data[ATTR_RESOLUTION_MINUTES])
+        segments = coordinator.today_schedule_segments(
+            call.data[ATTR_RESOLUTION_MINUTES]
+        )
         return {
-            "segments": [segment.as_dict() for segment in segments],
+            "segments": segments,
             "now": now.isoformat(),
         }
 

@@ -834,6 +834,11 @@ async def test_real_get_day_schedule_service(hass) -> None:
     assert len(segments) == 96
     assert segments[0]["per_kwh"] == 0.45
     assert response["now"]
+    # Every segment covers the same single day, so it belongs to the same
+    # timetable throughout — the field is dropped rather than repeated 96
+    # times as if it varied. get_intervals, which can span several days,
+    # keeps it.
+    assert "day_pattern" not in segments[0]
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
@@ -858,6 +863,121 @@ async def test_real_today_schedule_sensor(hass) -> None:
     assert state is not None
     assert len(state.attributes["segments"]) == 96
     assert state.attributes["now"]
+    assert "day_pattern" not in state.attributes["segments"][0]
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_demand_rate_is_entered_in_cents(hass) -> None:
+    """The reported bug: demand charge was in dollars, not cents like every
+    other price on the form. A rate submitted with demand_rate_per_kw_month
+    = 1840 (cents, matching the form's own convention) must be read back as
+    $18.40, not $1840.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Demand Cents Test",
+        data={},
+        options=_options(),
+        entry_id="demand_cents_test",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    from homeassistant.data_entry_flow import section as _section_type
+
+    def _defaults_for(schema):
+        submitted = {}
+        for key, value in schema.schema.items():
+            name = getattr(key, "schema", key)
+            if isinstance(value, _section_type):
+                submitted[name] = _defaults_for(value.schema)
+                continue
+            default = getattr(key, "default", vol.UNDEFINED)
+            if default is not vol.UNDEFINED and default is not None:
+                submitted[name] = default() if callable(default) else default
+        return submitted
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "rates_menu"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "rate_add"}
+    )
+    payload = _defaults_for(result["data_schema"])
+    payload["name"] = "Demand Rate"
+    payload["import_cents"] = 30.0
+    payload["demand"]["demand_period"] = True
+    payload["demand"]["demand_rate_per_kw_month"] = 1840.0
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], payload
+    )
+    assert result["step_id"] == "rates_menu", result
+
+    coordinator = entry.runtime_data
+    added_pattern = coordinator.plan.day_pattern_by_name("Every day")
+    added_rate = added_pattern.rate_by_name("Demand Rate")
+    print("DEMAND RATE ON THE REAL OBJECT:", added_rate.demand_rate_per_kw_month)
+    assert added_rate.demand_rate_per_kw_month == pytest.approx(18.40)
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_today_periods_attribute(hass) -> None:
+    """The new 'periods' attribute -- exact period boundaries, resolved to
+    their rates, for a table card. Not merged from segments client-side;
+    read directly off the day pattern's own periods.
+    """
+    options = {
+        CONF_DAY_PATTERNS: [
+            {
+                CONF_NAME: "Every day",
+                CONF_DAYS: [
+                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                ],
+                CONF_RATES: [
+                    {CONF_NAME: "Off Peak", CONF_IMPORT_CENTS: 19.8},
+                    {CONF_NAME: "Peak", CONF_IMPORT_CENTS: 56.88},
+                ],
+                CONF_PERIODS: [
+                    {CONF_START: "00:00", CONF_END: "16:00", CONF_RATE: "Off Peak"},
+                    {CONF_START: "16:00", CONF_END: "24:00", CONF_RATE: "Peak"},
+                ],
+                CONF_EXPORT_SAME_ALL_DAY: True,
+                CONF_EXPORT_FLAT_CENTS: 5.0,
+            }
+        ],
+        CONF_SUPPLY_CHARGE_CENTS: 100.0,
+        "import_energy_sensor": "sensor.grid_import",
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Periods Test",
+        data={},
+        options=options,
+        entry_id="periods_test",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.periods_test_today_s_schedule")
+    periods = state.attributes["periods"]
+    print("PERIODS:", periods)
+    assert len(periods) == 2
+    assert periods[0]["start"] == "00:00"
+    assert periods[0]["end"] == "16:00"
+    assert periods[0]["rate_name"] == "Off Peak"
+    assert periods[0]["per_kwh"] == pytest.approx(0.198)
+    assert periods[1]["rate_name"] == "Peak"
+    assert periods[1]["per_kwh"] == pytest.approx(0.5688)
+    assert "day_pattern" not in periods[0]
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

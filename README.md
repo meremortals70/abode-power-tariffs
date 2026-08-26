@@ -29,7 +29,7 @@ action. It answers questions and other things decide.
 | `sensor.<name>_daily_supply_charge` | Your declared daily supply charge |
 | `sensor.<name>_supply_charge_today` | The declared charge accrued so far today |
 | `sensor.<name>_supply_charge_energy` | The declared charge accrued so far this billing cycle |
-| `sensor.<name>_today_s_schedule` | Today's full local-midnight-to-midnight schedule, as a `segments` attribute — for a dashboard card, see A daily rate card |
+| `sensor.<name>_today_s_schedule` | Today's full local-midnight-to-midnight schedule — `segments` (fixed-width slices, for a chart) and `periods` (one row per period as entered, for a table) — see A daily rate card |
 | `sensor.<name>_billing_cycle_progress` | Days elapsed of the cycle, as a percentage. Only when something on the plan accumulates |
 | `sensor.<name>_<rate>_allowance_used_kwh` | kWh spent so far in a capped rate's current period, once a meter is nominated. One per capped rate |
 | `sensor.<name>_<rate>_allowance_remaining_kwh` | kWh left. One per capped rate |
@@ -275,7 +275,7 @@ had:
 | Field | Section | Notes |
 |---|---|---|
 | Demand charge period | Demand charging | Marks this rate as carrying a demand charge, and turns on `binary_sensor.<name>_<rate>_demand_period_active` while it is in force |
-| Demand charge ($/kW) | Demand charging | Declared alongside the flag. The number the demand cost sensors are built on |
+| Demand charge (c/kW/month) | Demand charging | Cents, like every other price on the form. Declared alongside the flag. The number the demand cost sensors are built on |
 | Meter averaging interval | Demand charging | 15, 30 or 60 minutes, or instantaneous. Defaults to 30 minutes, what Australian distributors meter on |
 | How the peak is charged | Demand charging | Once for the billing cycle, or once for every day of it. The same peak can be a very different bill either way |
 | Energy allowance for this rate | Allowance | Some plans give a period free only up to a cap. Zero for none. Counted against the plan's nominated meter |
@@ -381,13 +381,14 @@ time period boundary — the automation people normally write for this disappear
 ## A daily rate card
 
 `sensor.<name>_today_s_schedule` holds today's full local-midnight-to-midnight
-schedule as a `segments` attribute — fixed-width slices (15 minutes by
-default) each carrying the price, the rate, and whether a demand charge
-applies, for the whole day, not just what is still ahead. It exists for
-exactly this: a coloured picture on a dashboard, which nothing built into
-Home Assistant draws on its own — a `history-graph` card only shows what has
-already happened, and has no way to colour by price rank rather than by
-which rate was in force.
+schedule two ways: `segments`, fixed-width slices (15 minutes by default)
+each carrying the price, the rate, and whether a demand charge applies, and
+`periods`, the same day resolved to its actual periods as entered — one row
+per period, not per slice. Both cover the whole day, not just what is still
+ahead. It exists for exactly this: a coloured picture on a dashboard, which
+nothing built into Home Assistant draws on its own — a `history-graph` card
+only shows what has already happened, and has no way to colour by price
+rank rather than by which rate was in force.
 
 [ApexCharts Card](https://github.com/RomRider/apexcharts-card), installed
 through HACS, can. This reads the same sensor and draws a coloured bar for
@@ -451,33 +452,37 @@ Change `sensor.electricity_today_s_schedule` to your own channel's entity id.
 The bar's height and colour both track the ranking above, cheapest at 0,
 most expensive at 100 — not the literal price, which is why the y-axis is
 hidden. What each slice actually costs belongs in a table underneath, not
-squeezed onto a bar with 96 slices in it:
+squeezed onto a bar with 96 slices in it.
+
+The same sensor also carries a `periods` attribute — one entry per period
+exactly as entered, not per 15-minute slice, already resolved to its rate
+and price server-side. [Flex Table Card](https://github.com/custom-cards/flex-table-card),
+also from HACS, reads a list attribute directly and turns it into a table,
+one row per list entry:
 
 ```yaml
-type: markdown
-content: >-
-  {% set segs = state_attr('sensor.electricity_today_s_schedule', 'segments') or [] %}
-  {%- set ns = namespace(rows=[]) %}
-  {%- for s in segs %}
-    {%- if ns.rows and ns.rows[-1].rate == s.rate %}
-      {%- set ns.rows = ns.rows[:-1] + [dict(ns.rows[-1], end=s.end_time)] %}
-    {%- else %}
-      {%- set ns.rows = ns.rows + [{'start': s.start_time, 'end': s.end_time, 'rate': s.rate, 'per_kwh': s.per_kwh, 'demand': s.demand_period, 'demand_rate': s.demand_rate_per_kw_month}] %}
-    {%- endif %}
-  {%- endfor %}
-  | Time | Rate | Price |
-  |---|---|---|
-  {% for r in ns.rows -%}
-  | {{ as_timestamp(r.start) | timestamp_custom('%H:%M') }}–{{ as_timestamp(r.end) | timestamp_custom('%H:%M') }} | {{ r.rate.split('.')[-1] | replace('_',' ') | title }} | {{ '%.2f'|format(r.per_kwh*100) }} c/kWh{% if r.demand %} + demand ${{ '%.2f'|format(r.demand_rate) }}/kW{% endif %} |
-  {% endfor -%}
+type: custom:flex-table-card
+title: Today's rates
+entities:
+  include: sensor.electricity_today_s_schedule
+columns:
+  - name: Time
+    data: periods
+    modify: x.start + '–' + x.end
+  - name: Rate
+    data: periods
+    modify: x.rate_name
+  - name: Price
+    data: periods
+    modify: (x.per_kwh * 100).toFixed(2) + ' c/kWh'
+  - name: Demand
+    data: periods
+    modify: x.demand_period ? '$' + x.demand_rate_per_kw_month.toFixed(2) + '/kW' : ''
 ```
 
-Again, change the entity id to your own. The template walks the same
-segments, merges consecutive slices that name the same rate back into
-periods — the way they were actually entered — and prints one row per
-period, in the same shape the Rate plan card already uses: the time span,
-the rate, and the price, with a demand charge noted alongside the rate that
-carries it.
+Again, change the entity id to your own. This is the same shape the Rate
+plan card already uses — the time span, the rate, and the price, with a
+demand charge in its own column rather than folded into the price one.
 
 Put the two in a `vertical-stack` and you have the coloured picture with the
 current time marked, and the numbers it is drawn from, in one card:
@@ -487,9 +492,8 @@ type: vertical-stack
 cards:
   - type: custom:apexcharts-card
     # ... the chart config above
-  - type: markdown
-    content: >-
-      # ... the template above
+  - type: custom:flex-table-card
+    # ... the table config above
 ```
 
 ---

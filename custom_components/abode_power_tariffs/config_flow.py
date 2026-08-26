@@ -424,7 +424,14 @@ def _rate_schema(
         )
     ] = selector.NumberSelector(
         selector.NumberSelectorConfig(
-            min=0, max=1000, step="any", mode=selector.NumberSelectorMode.BOX
+            # Cents, like every other price on the form — but a demand
+            # charge is $/kW/month, not $/kWh, so the realistic range is
+            # much wider than a per-kWh price's. 10000 c is $100/kW/month,
+            # generous headroom over any real tariff.
+            min=0,
+            max=10000,
+            step="any",
+            mode=selector.NumberSelectorMode.BOX,
         )
     )
     # How the meter averages the draw, and what the money means. Neither is a
