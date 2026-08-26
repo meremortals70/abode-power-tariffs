@@ -107,7 +107,12 @@ async def test_real_config_entry_loads_and_publishes_a_price(hass) -> None:
 
     rate_state = hass.states.get("sensor.real_ha_smoke_test_rate")
     assert rate_state is not None
-    assert rate_state.state == "real_ha_smoke_test.every_day.import.peak"
+    # Short and readable -- the full qualified identifier survives in the
+    # scheduled_rate attribute, not the state itself.
+    assert rate_state.state == "Every day Peak"
+    assert rate_state.attributes["scheduled_rate"] == (
+        "real_ha_smoke_test.every_day.import.peak"
+    )
 
     export_state = hass.states.get("sensor.real_ha_smoke_test_export_price")
     assert export_state is not None
@@ -1270,6 +1275,146 @@ async def test_real_full_day_colour_trace(hass) -> None:
             f"{s['start_time'][11:16]}  {rate:<16} price={s['per_kwh']:.4f}"
             f"  score={scores[i]:.4f}  rank={rank}  ->  {colour_for(rank)}"
         )
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_clearer_labels(hass) -> None:
+    """Confirm the reworded labels actually render, against real HA."""
+    options = {
+        CONF_DAY_PATTERNS: [
+            {
+                CONF_NAME: "Every day",
+                CONF_DAYS: [
+                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                ],
+                CONF_RATES: [
+                    {
+                        CONF_NAME: "Peak",
+                        CONF_IMPORT_CENTS: 45.0,
+                        CONF_DEMAND_PERIOD: True,
+                        CONF_DEMAND_RATE: 1000.0,
+                    },
+                ],
+                CONF_PERIODS: [
+                    {CONF_START: "00:00", CONF_END: "24:00", CONF_RATE: "Peak"},
+                ],
+                CONF_EXPORT_SAME_ALL_DAY: True,
+                CONF_EXPORT_FLAT_CENTS: 5.0,
+            }
+        ],
+        CONF_SUPPLY_CHARGE_CENTS: 100.0,
+        "import_energy_sensor": "sensor.grid_import",
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Label Check", data={}, options=options,
+        entry_id="label_check",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    checks = {
+        "sensor.label_check_supply_charge_accrued_today": None,
+        "sensor.label_check_supply_charge_accrued_this_cycle": None,
+        "sensor.label_check_demand_this_interval_every_day_peak": None,
+        "sensor.label_check_projected_demand_cost_every_day_peak": None,
+        "sensor.label_check_demand_peak_time_every_day_peak": None,
+        "binary_sensor.label_check_data_gap": None,
+    }
+    for entity_id in checks:
+        state = hass.states.get(entity_id)
+        print(entity_id, "->", state.attributes.get("friendly_name") if state else "MISSING")
+        assert state is not None, entity_id
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_rate_sensor_name_fields(hass) -> None:
+    """Inspect exactly what the Rate sensor's name-related fields hold,
+    to check for a genuine concatenation bug rather than assume one.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Ovo Original Plan", data={}, options=_options(),
+        entry_id="rate_name_check",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    from homeassistant.helpers import entity_registry as er
+    registry = er.async_get(hass)
+    entity_id = "sensor.ovo_original_plan_rate"
+    entry_reg = registry.async_get(entity_id)
+    state = hass.states.get(entity_id)
+
+    print("entity_id:", entity_id)
+    print("registry.name:", entry_reg.name if entry_reg else None)
+    print("registry.original_name:", entry_reg.original_name if entry_reg else None)
+    print("registry.has_entity_name:", entry_reg.has_entity_name if entry_reg else None)
+    print("registry.translation_key:", entry_reg.translation_key if entry_reg else None)
+    print("state.attributes.friendly_name:", repr(state.attributes.get("friendly_name")))
+    print("state.state:", repr(state.state))
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_rate_sensor_short_state(hass) -> None:
+    """The Rate sensor's state is short and readable, with deduplication
+    when the rate's own name already starts with its timetable's name.
+    The full qualified identifier survives as the scheduled_rate attribute.
+    """
+    options = {
+        CONF_DAY_PATTERNS: [
+            {
+                CONF_NAME: "Every day",
+                CONF_DAYS: [
+                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                ],
+                CONF_RATES: [
+                    {CONF_NAME: "Every day Off Peak", CONF_IMPORT_CENTS: 19.8},
+                    {CONF_NAME: "Peak", CONF_IMPORT_CENTS: 56.88},
+                ],
+                CONF_PERIODS: [
+                    {
+                        CONF_START: "00:00",
+                        CONF_END: "16:00",
+                        CONF_RATE: "Every day Off Peak",
+                    },
+                    {CONF_START: "16:00", CONF_END: "24:00", CONF_RATE: "Peak"},
+                ],
+                CONF_EXPORT_SAME_ALL_DAY: True,
+                CONF_EXPORT_FLAT_CENTS: 5.0,
+            }
+        ],
+        CONF_SUPPLY_CHARGE_CENTS: 100.0,
+        "import_energy_sensor": "sensor.grid_import",
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Short State Test", data={}, options=options,
+        entry_id="short_state_test",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.short_state_test_rate")
+    print("STATE:", repr(state.state))
+    print("OPTIONS:", state.attributes.get("options"))
+    print("scheduled_rate:", state.attributes.get("scheduled_rate"))
+    # No doubling: "Every day Off Peak" already starts with "Every day".
+    assert state.state == "Every day Off Peak"
+    assert "Every day Every day" not in state.state
+    assert state.attributes["scheduled_rate"] == (
+        "short_state_test.every_day.import.every_day_off_peak"
+    )
+    assert "Every day Peak" in state.attributes["options"]
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

@@ -440,9 +440,12 @@ class TestSensorPlatform(PlatformCase):
     def test_rate_sensor_is_an_enum_of_the_plan(self) -> None:
         sensor = self.sensors().by_key("rate")
         off_peak = off_peak_name(self.coordinator)
-        peak = peak_name(self.coordinator)
-        self.assertEqual(sensor.native_value, off_peak)
-        self.assertEqual(sensor._attr_options, [off_peak, peak])
+        # The state itself is short and readable — the timetable and the
+        # rate's own name, deduplicated since "Every day Off Peak" already
+        # names its own timetable. The full qualified identifier still
+        # exists, in scheduled_rate below.
+        self.assertEqual(sensor.native_value, "Every day Off Peak")
+        self.assertEqual(sensor._attr_options, ["Every day Off Peak", "Every day Peak"])
         self.assertEqual(sensor.extra_state_attributes["scheduled_rate"], off_peak)
 
     def test_next_rate_change_is_the_boundary(self) -> None:

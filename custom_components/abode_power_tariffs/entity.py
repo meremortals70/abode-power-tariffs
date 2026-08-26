@@ -11,6 +11,7 @@ from .accounting import RateLedger
 from .const import DOMAIN, SIGNAL_UPDATE
 from .coordinator import TariffCoordinator
 from .plan import DayPattern, ExportRate, Rate
+from .plan import display_name as rate_display_name
 from .plan import qualified_name as build_qualified_name
 
 
@@ -119,7 +120,7 @@ class RateTariffEntity(TariffEntity):
         # The timetable and the rate's own name are what actually vary
         # entity to entity, so that is what the label shows.
         self._attr_translation_placeholders = {
-            "rate": f"{day_pattern.name} {rate.name}"
+            "rate": rate_display_name(day_pattern.name, rate.name)
         }
 
     @property

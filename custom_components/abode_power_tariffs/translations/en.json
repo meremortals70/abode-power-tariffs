@@ -597,10 +597,10 @@
         "name": "Daily supply charge"
       },
       "supply_charge_today": {
-        "name": "Supply charge today"
+        "name": "Supply charge accrued today"
       },
       "supply_charge_energy": {
-        "name": "Supply charge this cycle"
+        "name": "Supply charge accrued this cycle"
       },
       "billing_cycle_progress": {
         "name": "Billing cycle progress"
@@ -612,19 +612,19 @@
         "name": "Allowance remaining ({rate})"
       },
       "demand_now_kw": {
-        "name": "Demand now ({rate})"
+        "name": "Demand this interval ({rate})"
       },
       "demand_peak_kw": {
         "name": "Demand peak ({rate})"
       },
       "demand_peak_at": {
-        "name": "Demand peak set at ({rate})"
+        "name": "Demand peak time ({rate})"
       },
       "demand_cost_to_date": {
         "name": "Demand cost to date ({rate})"
       },
       "demand_cost_projected": {
-        "name": "Demand cost projected ({rate})"
+        "name": "Projected demand cost ({rate})"
       }
     },
     "binary_sensor": {
@@ -632,7 +632,7 @@
         "name": "Demand period active ({rate})"
       },
       "data_complete": {
-        "name": "Data complete"
+        "name": "Data gap"
       }
     }
   },

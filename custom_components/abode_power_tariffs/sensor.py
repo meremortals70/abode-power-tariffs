@@ -41,6 +41,7 @@ from .const import (
 from .coordinator import TariffCoordinator
 from .entity import RateTariffEntity, TariffEntity
 from .plan import DayPattern, ExportRate, Rate, format_time
+from .plan import display_name as rate_display_name
 from .plan import qualified_name as build_qualified_name
 
 # Said on every accumulating entity. What this component publishes from
@@ -316,25 +317,35 @@ class ExportPriceSensor(_PriceSensor):
 
 
 class RateSensor(TariffEntity, SensorEntity):
-    """The name of the rate in force."""
+    """The name of the rate in force.
+
+    The state is short and readable — the timetable and the rate's own
+    name, the same form a per-rate entity's label already uses — not the
+    full four-segment qualified identifier. That identifier still exists,
+    unambiguous, in the ``scheduled_rate`` attribute below, and it is what
+    the tariff select write-back and the ledger keys are built from
+    independently of this sensor. Only what a human reads as this
+    sensor's own value got shorter.
+    """
 
     _attr_device_class = SensorDeviceClass.ENUM
 
     def __init__(self, coordinator: TariffCoordinator) -> None:
         """Initialise the rate sensor with the plan's rate names as options."""
         super().__init__(coordinator, "rate")
-        self._attr_options = list(coordinator.plan.qualified_rate_names)
+        self._attr_options = [
+            rate_display_name(day_pattern.name, rate.name)
+            for day_pattern, rate in coordinator.plan.rates_with_pattern()
+        ]
 
     @property
     def native_value(self) -> str | None:
-        """Return the rate name."""
+        """Return the timetable and the rate's own name."""
         resolution = self.coordinator.state.resolution
         rate = self.coordinator.state.effective_rate
         if resolution is None or rate is None:
             return None
-        return build_qualified_name(
-            self.coordinator.plan.name, resolution.day_pattern.name, rate.name
-        )
+        return rate_display_name(resolution.day_pattern.name, rate.name)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -699,7 +710,12 @@ class DemandPeakSensor(_AccumulatingSensor):
 
 
 class DemandPeakAtSensor(RateTariffEntity, SensorEntity):
-    """When this cycle's peak was set. Which half hour did it."""
+    """The timestamp of the interval that set this cycle's demand peak.
+
+    Not when the peak was noticed or written down — when the half-hour (or
+    whatever the declared interval is) that actually reached the current
+    peak kW started. "Demand peak" gives the kW; this gives the when.
+    """
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 

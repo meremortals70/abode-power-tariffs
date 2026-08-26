@@ -140,6 +140,27 @@ def qualified_name(
     return ".".join((slug(plan_name), slug(timetable), side, slug(rate_name)))
 
 
+def display_name(timetable: str, rate_name: str) -> str:
+    """Return a short, human-readable label for a rate — not the identifier.
+
+    The timetable and the rate's own name, the same two segments
+    ``qualified_name`` uses beyond the plan and the side — but without
+    those other two, since a human reading a label already has the plan
+    from the device it belongs to and rarely needs the side spelled out
+    on top of the label's own context (a demand sensor, an allowance
+    sensor).
+
+    A rate is very often named after its own timetable already — "Every
+    day Off Peak" on the "Every day" timetable is a common, unremarkable
+    style, not a mistake to correct. Prepending the timetable again would
+    double it up into "Every day Every day Off Peak", so this checks
+    first and only adds it once.
+    """
+    if rate_name.strip().lower().startswith(timetable.strip().lower()):
+        return rate_name
+    return f"{timetable} {rate_name}"
+
+
 def day_token(day: date, is_holiday: bool) -> str:
     """Return the day type token for a calendar date."""
     if is_holiday:
