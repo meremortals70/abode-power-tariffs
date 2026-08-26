@@ -19,7 +19,7 @@ identifier the second block existed to show is now a column of the first.
 
 from __future__ import annotations
 
-from .plan import DayPattern, Plan, format_time, qualified_name
+from .plan import DayPattern, ExportRate, Plan, Rate, format_time, qualified_name
 from .validate import validate_periods
 
 # "00:00-24:00".
@@ -84,6 +84,41 @@ def _price(cents: float) -> str:
     return f"{cents:>7.2f} c/kWh"
 
 
+def _rate_note(rate: Rate | ExportRate) -> str:
+    """Return a one-line summary of what a rate declares beyond its price.
+
+    Neither the plan preview nor the rate plan card showed a demand charge
+    or an allowance anywhere — a rate could have one saved correctly and
+    there was no way to see it without opening the rate again to check.
+    """
+    parts: list[str] = []
+    if rate.has_demand_charge:
+        basis = "day" if rate.demand_basis == "day" else "month"
+        interval = (
+            f"{rate.demand_interval} min interval"
+            if rate.demand_interval
+            else "instantaneous"
+        )
+        parts.append(
+            f"demand: ${rate.demand_rate_per_kw_month:.2f}/kW/{basis}, {interval}"
+        )
+    if rate.has_allowance:
+        cap = rate.rate_allowance_kwh if isinstance(rate, Rate) else rate.allowance_kwh
+        assert cap is not None
+        if isinstance(rate, Rate):
+            period = "per cycle" if rate.counts_monthly_allowance else "per slot"
+            fallback = rate.fallback_rate or "nothing declared"
+        else:
+            period = "per slot"
+            fallback = (
+                f"{rate.fallback_price:.4f}/kWh"
+                if rate.fallback_price is not None
+                else "nothing declared"
+            )
+        parts.append(f"allowance: {cap:g} kWh {period}, then {fallback}")
+    return "  ·  ".join(parts)
+
+
 def render_export_row(
     plan: Plan, day_pattern: DayPattern, widths: tuple[int, int] | None = None
 ) -> str:
@@ -110,6 +145,10 @@ def render_export_row(
                 indent="    ",
             )
         )
+        if rate is not None:
+            note = _rate_note(rate)
+            if note:
+                lines.append(f"      {note}")
     return "\n".join(lines)
 
 
@@ -144,6 +183,10 @@ def render_day_pattern(
                 columns,
             )
         )
+        if rate is not None:
+            note = _rate_note(rate)
+            if note:
+                lines.append(f"    {note}")
 
     problems = validate_periods(day_pattern)
     if problems:
@@ -249,6 +292,9 @@ def render_rate_plan_card(plan: Plan) -> str:
                 f"  {identifier:<12}"
                 f"  buy {rate.import_price:.4f}/kWh"
             )
+            note = _rate_note(rate)
+            if note:
+                lines.append(f"    {note}")
         lines.append(f"  {render_export_row(plan, day_pattern).strip()}")
         lines.append("")
 

@@ -771,3 +771,93 @@ async def test_setup_rate_with_demand_charge_is_accepted(hass) -> None:
     assert result["step_id"] == "periods", (
         f"a rate with a real demand charge was rejected: {result}"
     )
+
+
+@pytest.mark.asyncio
+async def test_real_export_rates_csv_service(hass) -> None:
+    """The new export_rates_csv service, called for real."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="CSV Export Test",
+        data={},
+        options=_options(),
+        entry_id="csv_export_test",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        "export_rates_csv",
+        {"config_entry_id": entry.entry_id},
+        blocking=True,
+        return_response=True,
+    )
+    print("SERVICE RESPONSE:", response)
+    assert "rates_csv" in response
+    assert "Peak" in response["rates_csv"]
+    assert "rate_id" in response["rates_csv"]
+    assert "periods_csv" in response
+    assert "export_rates_csv" in response
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_get_day_schedule_service(hass) -> None:
+    """The new get_day_schedule service, called for real."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Day Schedule Test",
+        data={},
+        options=_options(),
+        entry_id="day_schedule_test",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    response = await hass.services.async_call(
+        DOMAIN,
+        "get_day_schedule",
+        {"config_entry_id": entry.entry_id, "resolution_minutes": 15},
+        blocking=True,
+        return_response=True,
+    )
+    segments = response["segments"]
+    print("SEGMENT COUNT:", len(segments))
+    print("FIRST:", segments[0])
+    print("NOW:", response["now"])
+    # 24 hours at 15-minute resolution is 96 segments on an ordinary day.
+    assert len(segments) == 96
+    assert segments[0]["per_kwh"] == 0.45
+    assert response["now"]
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_today_schedule_sensor(hass) -> None:
+    """The new today_schedule sensor, read as a real entity."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Today Schedule Test",
+        data={},
+        options=_options(),
+        entry_id="today_schedule_test",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.today_schedule_test_today_s_schedule")
+    print("STATE:", state)
+    assert state is not None
+    assert len(state.attributes["segments"]) == 96
+    assert state.attributes["now"]
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()

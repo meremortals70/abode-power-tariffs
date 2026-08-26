@@ -14,6 +14,7 @@ from homeassistant.components.sensor import (
 from homeassistant.const import UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import TariffConfigEntry
 from . import accounting as accounting_module
@@ -74,6 +75,7 @@ async def async_setup_entry(
         RateSensor(coordinator),
         NextRateChangeSensor(coordinator),
         SupplyChargeSensor(coordinator, currency),
+        TodayScheduleSensor(coordinator),
     ]
 
     # Only when the feed-in price actually moves. A plan on one export price
@@ -343,6 +345,41 @@ class RateSensor(TariffEntity, SensorEntity):
             "rate_name": resolution.rate.name if resolution else None,
             "timetable": resolution.day_pattern.name if resolution else None,
             "allowance_exhausted": self.coordinator.state.allowance_exhausted,
+        }
+
+
+class TodayScheduleSensor(TariffEntity, SensorEntity):
+    """Today's full local-midnight-to-midnight schedule, for a dashboard card.
+
+    Every other price sensor answers "what does it cost right now" or "what
+    will it cost over the next N hours from this instant" — neither is what
+    a card drawing the whole day, past and future in one picture, actually
+    needs. This exposes the same thing coordinator.today_schedule() and the
+    get_day_schedule action already compute, as an attribute a card can read
+    directly with no service call.
+    """
+
+    # Rebuilt on the resolution grid, several times an hour, several KB of
+    # it. Keeping a history of past pictures of "today's schedule" has no
+    # value — the whole point is that it is one fact per day.
+    _unrecorded_attributes = frozenset({"segments"})
+
+    def __init__(self, coordinator: TariffCoordinator) -> None:
+        """Initialise the today-schedule sensor."""
+        super().__init__(coordinator, "today_schedule")
+
+    @property
+    def native_value(self) -> str:
+        """Return the plan's own local date, so the state changes once a day."""
+        return dt_util.now().astimezone(self.coordinator.zone).date().isoformat()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return today's segments, midnight to midnight, and the current time."""
+        segments = self.coordinator.today_schedule(15)
+        return {
+            "segments": [segment.as_dict() for segment in segments],
+            "now": dt_util.now().isoformat(),
         }
 
 

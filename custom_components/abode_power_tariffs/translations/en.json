@@ -596,6 +596,9 @@
       "next_export_change": {
         "name": "Next export change"
       },
+      "today_schedule": {
+        "name": "Today's schedule"
+      },
       "daily_supply_charge": {
         "name": "Daily supply charge"
       },
@@ -655,6 +658,30 @@
         "resolution_minutes": {
           "name": "Resolution",
           "description": "Length of each interval in minutes."
+        }
+      }
+    },
+    "export_rates_csv": {
+      "name": "Export rates as CSV",
+      "description": "Returns the plan's rates, export rates and periods as CSV text, for a spreadsheet or an inverter's own tariff screen.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Channel",
+          "description": "Which tariff channel to read."
+        }
+      }
+    },
+    "get_day_schedule": {
+      "name": "Get day schedule",
+      "description": "Returns today's full local-midnight-to-midnight schedule, resolved into fixed-width segments — what the daily rate breakdown card reads.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Channel",
+          "description": "Which tariff channel to read."
+        },
+        "resolution_minutes": {
+          "name": "Resolution",
+          "description": "Length of each segment in minutes."
         }
       }
     }

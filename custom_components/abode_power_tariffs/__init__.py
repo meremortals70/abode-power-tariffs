@@ -29,6 +29,7 @@ from homeassistant.helpers.issue_registry import (
     async_delete_issue,
 )
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util import dt as dt_util
 
 from .const import (
     ATTR_CONFIG_ENTRY_ID,
@@ -37,10 +38,13 @@ from .const import (
     DEFAULT_HOURS,
     DEFAULT_RESOLUTION_MINUTES,
     DOMAIN,
+    SERVICE_EXPORT_RATES_CSV,
+    SERVICE_GET_DAY_SCHEDULE,
     SERVICE_GET_INTERVALS,
 )
 from .coordinator import TariffCoordinator
 from .plan import Plan, PlanError
+from .serialise import export_rates_to_csv, periods_to_csv, rates_to_csv
 from .validate import validate_plan
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,6 +64,21 @@ GET_INTERVALS_SCHEMA = vol.Schema(
         vol.Optional(
             ATTR_RESOLUTION_MINUTES, default=DEFAULT_RESOLUTION_MINUTES
         ): vol.All(vol.Coerce(int), vol.Range(min=1, max=1440)),
+    }
+)
+
+EXPORT_RATES_CSV_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+    }
+)
+
+GET_DAY_SCHEDULE_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional(ATTR_RESOLUTION_MINUTES, default=15): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=60)
+        ),
     }
 )
 
@@ -93,11 +112,71 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         )
         return {"intervals": [interval.as_dict() for interval in series]}
 
+    async def _export_rates_csv(call: ServiceCall) -> ServiceResponse:
+        entry_id: str = call.data[ATTR_CONFIG_ENTRY_ID]
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry is None or entry.domain != DOMAIN:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="entry_not_found",
+                translation_placeholders={"entry_id": entry_id},
+            )
+        coordinator: TariffCoordinator | None = getattr(entry, "runtime_data", None)
+        if coordinator is None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="entry_not_loaded",
+                translation_placeholders={"title": entry.title},
+            )
+        plan = coordinator.plan
+        return {
+            "rates_csv": rates_to_csv(plan),
+            "export_rates_csv": export_rates_to_csv(plan),
+            "periods_csv": periods_to_csv(plan),
+        }
+
+    async def _get_day_schedule(call: ServiceCall) -> ServiceResponse:
+        entry_id: str = call.data[ATTR_CONFIG_ENTRY_ID]
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry is None or entry.domain != DOMAIN:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="entry_not_found",
+                translation_placeholders={"entry_id": entry_id},
+            )
+        coordinator: TariffCoordinator | None = getattr(entry, "runtime_data", None)
+        if coordinator is None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="entry_not_loaded",
+                translation_placeholders={"title": entry.title},
+            )
+        now = dt_util.now()
+        segments = coordinator.today_schedule(call.data[ATTR_RESOLUTION_MINUTES])
+        return {
+            "segments": [segment.as_dict() for segment in segments],
+            "now": now.isoformat(),
+        }
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_GET_INTERVALS,
         _get_intervals,
         schema=GET_INTERVALS_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EXPORT_RATES_CSV,
+        _export_rates_csv,
+        schema=EXPORT_RATES_CSV_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_DAY_SCHEDULE,
+        _get_day_schedule,
+        schema=GET_DAY_SCHEDULE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
     return True

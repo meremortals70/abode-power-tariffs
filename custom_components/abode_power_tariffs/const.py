@@ -202,6 +202,8 @@ CONF_RATE: Final = "rate"
 
 # Service
 SERVICE_GET_INTERVALS: Final = "get_intervals"
+SERVICE_EXPORT_RATES_CSV: Final = "export_rates_csv"
+SERVICE_GET_DAY_SCHEDULE: Final = "get_day_schedule"
 ATTR_ALLOWANCE_SLOT: Final = "allowance_slot"
 ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"
 ATTR_HOURS: Final = "hours"

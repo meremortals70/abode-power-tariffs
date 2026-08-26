@@ -23,3 +23,26 @@ get_intervals:
           max: 1440
           unit_of_measurement: min
           mode: box
+export_rates_csv:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: abode_power_tariffs
+get_day_schedule:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: abode_power_tariffs
+    resolution_minutes:
+      required: false
+      default: 15
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: min
+          mode: box

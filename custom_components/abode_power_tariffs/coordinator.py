@@ -1008,6 +1008,31 @@ class TariffCoordinator:
             self._forward_key = key
         return self._forward_series
 
+    def today_schedule(
+        self, resolution_minutes: int
+    ) -> list[intervals_module.Interval]:
+        """Return today's full local-midnight-to-midnight schedule.
+
+        Unlike ``forward_intervals``, this always starts at local midnight
+        today, whatever the current time is — the whole day the daily rate
+        card draws, not just what is still ahead. Reuses ``intervals.
+        generate()`` anchored to midnight with ``hours=24`` rather than a
+        separate walk, so the real-instants DST handling
+        (``instants_at``) is inherited, not reimplemented.
+        """
+        now = dt_util.now()
+        midnight = intervals_module.instants_at(
+            now.astimezone(self.zone).date(), 0, self.zone
+        )[0]
+        return intervals_module.generate(
+            self.plan,
+            midnight,
+            self.zone,
+            self.is_holiday,
+            hours=24,
+            resolution_minutes=resolution_minutes,
+        )
+
     @property
     def problems(self) -> list[str]:
         """Return the plan's validation problems as text."""

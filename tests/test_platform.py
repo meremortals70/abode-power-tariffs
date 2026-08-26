@@ -235,6 +235,7 @@ class TestSensorPlatform(PlatformCase):
                 "daily_supply_charge",
                 "supply_charge_today",
                 "supply_charge_energy",
+                "today_schedule",
             },
         )
 
@@ -1208,6 +1209,56 @@ class TestTheAction(PlatformCase):
         self.assertEqual(
             response["intervals"][0]["rate"], off_peak_name(self.coordinator)
         )
+
+    def test_an_unknown_entry_is_a_validation_error(self) -> None:
+        error = sys.modules["homeassistant.exceptions"].ServiceValidationError
+        with self.assertRaises(error):
+            self._call(**{CONST.ATTR_CONFIG_ENTRY_ID: "nope"})
+
+    def test_an_unloaded_entry_is_a_validation_error(self) -> None:
+        self.entry.runtime_data = None
+        error = sys.modules["homeassistant.exceptions"].ServiceValidationError
+        with self.assertRaises(error):
+            self._call(**{CONST.ATTR_CONFIG_ENTRY_ID: "entry1"})
+
+
+class TestTheCsvExportAction(PlatformCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.registered: dict[str, Any] = {}
+        outer = self
+
+        class FakeServices(_ha_stubs.FakeServices):
+            def async_register(
+                self, domain: str, service: str, handler: Any, **kwargs: Any
+            ) -> None:
+                outer.registered[service] = handler
+
+        self.coordinator.hass.services = FakeServices()
+
+        class FakeConfigEntries:
+            def async_get_entry(self, entry_id: str) -> Any:
+                return outer.entry if entry_id == "entry1" else None
+
+        self.coordinator.hass.config_entries = FakeConfigEntries()
+        run(PKG.async_setup(self.coordinator.hass, {}))
+
+    def _call(self, **data: Any) -> Any:
+        return run(
+            self.registered[CONST.SERVICE_EXPORT_RATES_CSV](
+                types.SimpleNamespace(data=data)
+            )
+        )
+
+    def test_the_action_is_registered(self) -> None:
+        self.assertIn(CONST.SERVICE_EXPORT_RATES_CSV, self.registered)
+
+    def test_it_returns_all_three_csvs(self) -> None:
+        response = self._call(**{CONST.ATTR_CONFIG_ENTRY_ID: "entry1"})
+        self.assertIn("rate_id", response["rates_csv"])
+        self.assertIn(peak_name(self.coordinator), response["rates_csv"])
+        self.assertIn("rate_id", response["periods_csv"])
+        self.assertIn("rate_id", response["export_rates_csv"])
 
     def test_an_unknown_entry_is_a_validation_error(self) -> None:
         error = sys.modules["homeassistant.exceptions"].ServiceValidationError

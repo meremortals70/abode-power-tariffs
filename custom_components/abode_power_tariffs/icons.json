@@ -16,6 +16,9 @@
       "next_export_change": {
         "default": "mdi:clock-end"
       },
+      "today_schedule": {
+        "default": "mdi:chart-timeline-variant"
+      },
       "daily_supply_charge": {
         "default": "mdi:calendar-clock"
       },

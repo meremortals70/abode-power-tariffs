@@ -23,12 +23,13 @@ action. It answers questions and other things decide.
 |---|---|
 | `sensor.<name>_import_price` | Price now, in currency per kWh. Goes straight into the Energy dashboard |
 | `sensor.<name>_export_price` | Feed-in price now |
-| `sensor.<name>_rate` | The rate in force, as `weekday.peak` — its timetable and its name |
+| `sensor.<name>_rate` | The rate in force, as `plan.timetable.import.peak` — always four segments: the plan, the timetable, the side, and the rate's own name |
 | `sensor.<name>_next_rate_change` | When the import rate next changes |
 | `sensor.<name>_next_export_change` | When the feed-in price next changes, if it moves during the day |
 | `sensor.<name>_daily_supply_charge` | Your declared daily supply charge |
 | `sensor.<name>_supply_charge_today` | The declared charge accrued so far today |
 | `sensor.<name>_supply_charge_energy` | The declared charge accrued so far this billing cycle |
+| `sensor.<name>_today_s_schedule` | Today's full local-midnight-to-midnight schedule, as a `segments` attribute — for a dashboard card, see A daily rate card |
 | `sensor.<name>_billing_cycle_progress` | Days elapsed of the cycle, as a percentage. Only when something on the plan accumulates |
 | `sensor.<name>_<rate>_allowance_used_kwh` | kWh spent so far in a capped rate's current period, once a meter is nominated. One per capped rate |
 | `sensor.<name>_<rate>_allowance_remaining_kwh` | kWh left. One per capped rate |
@@ -41,8 +42,14 @@ action. It answers questions and other things decide.
 | `binary_sensor.<name>_<rate>_demand_period_active` | On while this rate is in force. One per rate that carries a demand charge |
 | `binary_sensor.<name>_data_complete` | Off while an input is unreadable. Only when something on the plan accumulates — see Accumulating figures |
 
-Plus an action, `abode_power_tariffs.get_intervals`, returning the forward
-series.
+Plus three actions: `abode_power_tariffs.get_intervals`, returning the forward
+series; `abode_power_tariffs.export_rates_csv`, returning the plan's
+rates, export rates and time periods as CSV text — for a spreadsheet, or an
+inverter's own tariff screen; and `abode_power_tariffs.get_day_schedule`,
+returning today's full schedule — the same thing
+`sensor.<name>_today_s_schedule` already publishes as an attribute, callable
+directly for a script or an automation that does not want to read it off the
+entity.
 
 **Everything that accumulates is an estimate this integration measured
 itself.** It is taken from a meter you nominate, on a clock this integration
@@ -98,7 +105,7 @@ Four things, and the order matters:
 |---|---|
 | **The plan** | One meter or one circuit. Its name, and the charges that apply no matter what you use — daily supply charge, monthly fee, tax |
 | **A timetable** | A set of days that share the same prices. "Every day", or "Weekday" and "Weekend" and "Public holidays" |
-| **A rate** | A named price, belonging to a timetable. It is identified by the pair, so a Peak on the Weekday timetable and a Peak on the Weekend one are two rates at two prices, published as `weekday.peak` and `weekend.peak` |
+| **A rate** | A named price, nested inside the timetable it belongs to. It is identified by the plan, the timetable, the side and its own name — always four segments — so a Peak on the Weekday timetable and a Peak on the Weekend one are two rates at two prices, published as `electricity.weekday.import.peak` and `electricity.weekend.import.peak` |
 | **A time period** | A span of the day, priced at one of that timetable's rates. Together they must cover the day exactly once |
 
 Feed-in works the same way, per timetable: either one price all day, or its own
@@ -128,8 +135,10 @@ Leave both off for an ordinary time-of-use or flat-rate plan and the rest of
 setup runs as before.
 
 **2. Fixed charges** — daily supply charge, monthly fee, whether prices
-include tax and at what rate, and the day of the month your billing cycle
-starts.
+include tax and at what rate, the day of the month your billing cycle
+starts, and your grid import energy sensor. The import sensor is mandatory
+for every plan, asked here once — not re-asked per rate, whatever any
+individual rate does or does not declare.
 
 **If "Is this power plan based on a single rate?" was ticked**, this is
 followed by one more screen instead of the timetable loop below:
@@ -149,7 +158,7 @@ same" on unless weekends or public holidays are priced differently.
 **4. Rates** — the prices on this timetable, and any rules that apply during
 them. Call it `Peak` and it stays `Peak`: it belongs to the timetable you are
 entering, so a weekday Peak and a weekend Peak can both be called Peak at
-different prices. It is published as `weekday.peak`.
+different prices. It is published as `electricity.weekday.import.peak`.
 
 The screen opens on the two things every rate has — its name and its price.
 Everything else is in a section you open only if it applies:
@@ -170,8 +179,8 @@ is not lost. Continue from a blank screen and nothing is added.
 
 **5. Time periods** — start, end, and which rate. Only the rates belonging to
 this timetable are offered, shown by their published identifier, so
-`weekday.peak` cannot be allocated on the weekend. If the timetable has no
-rates yet the rate screen opens first.
+`electricity.weekday.import.peak` cannot be allocated on the weekend. If the
+timetable has no rates yet the rate screen opens first.
 
 The start is included and the end is not, so one period can end at 16:00 and
 the next begin at 16:00. A period running to midnight ends at 00:00.
@@ -186,8 +195,11 @@ step 1. One price all day, or not. Leave the switch on and enter the price,
 the export allowance if there is one, and what you are paid past it; this
 timetable is then done. Turn it off and you get:
 
-- **6a. Feed-in rates** — a name and a price, and the same two questions: the
-  allowance on that feed-in price and what is paid once it is spent
+- **6a. Feed-in rates** — a name and a price, and the same shape an import
+  rate has: the allowance on that feed-in price and what is paid once it is
+  spent, a demand charge if one applies, and any rules you want to declare.
+  Import and export are separate flows, never mixed, but nothing about being
+  on the export side means a rate is offered fewer of these things
 - **6b. Feed-in time periods** — same as step 5, independent of the import
   ones, and gated the same way
 
@@ -202,9 +214,9 @@ A plan where weekends are cheaper and the weekend feed-in is better:
 | Screen | Weekday pass | Weekend pass |
 |---|---|---|
 | Timetable | `Weekday`, Mon–Fri | `Weekend`, Sat, Sun, public holidays |
-| Rates | Off Peak, Shoulder, Peak → `weekday.off_peak`, `weekday.shoulder`, `weekday.peak` | Off Peak, Peak → `weekend.off_peak`, `weekend.peak` |
+| Rates | Off Peak, Shoulder, Peak → `electricity.weekday.import.off_peak`, `electricity.weekday.import.shoulder`, `electricity.weekday.import.peak` | Off Peak, Peak → `electricity.weekend.import.off_peak`, `electricity.weekend.import.peak` |
 | Time periods | 00:00–06:00 Off Peak, 06:00–16:00 Shoulder, 16:00–21:00 Peak, 21:00–00:00 Shoulder | 00:00–16:00 Off Peak, 16:00–00:00 Peak |
-| Feed-in | One price all day, 2.7 c | Switch off → `Daytime` 2.7 c, `Evening` 12 c → 00:00–16:00 Daytime, 16:00–00:00 Evening. Feed-in rates are scoped to their timetable the same way import rates are, so a Weekday Evening and a Weekend Evening can both just be called Evening |
+| Feed-in | One price all day, 2.7 c | Switch off → `Daytime` 2.7 c, `Evening` 12 c → 00:00–16:00 Daytime, 16:00–00:00 Evening → `electricity.weekend.export.daytime`, `electricity.weekend.export.evening`. Feed-in rates are scoped to their timetable the same way import rates are, so a Weekday Evening and a Weekend Evening can both just be called Evening |
 | Timetable complete | Add a timetable for other days | Finish |
 
 Five rates, two timetables, one plan.
@@ -223,18 +235,22 @@ the identifier it is published under, and the price:
 
 ```
 Weekday
-  00:00-06:00  Off Peak  weekday.off_peak    19.80 c/kWh
-  06:00-16:00  Shoulder  weekday.shoulder    32.10 c/kWh
-  16:00-21:00  Peak      weekday.peak        56.88 c/kWh
-  21:00-24:00  Shoulder  weekday.shoulder    32.10 c/kWh
+  00:00-06:00  Off Peak  electricity.weekday.import.off_peak    19.80 c/kWh
+  06:00-16:00  Shoulder  electricity.weekday.import.shoulder    32.10 c/kWh
+  16:00-21:00  Peak      electricity.weekday.import.peak        56.88 c/kWh
+    demand: $18.40/kW/day, 30 min interval
+  21:00-24:00  Shoulder  electricity.weekday.import.shoulder    32.10 c/kWh
   Coverage: complete. 4 periods, no gaps, no overlaps.
   Feed-in: 2.70 c/kWh all day
 ```
 
-There is no chart and no colour bar. A configuration dialog renders markdown,
-and a bar drawn from characters cannot be made to line up with a clock across
-every font and platform. The picture is a **history-graph** card on the rate
-sensor — see below.
+A demand charge or an allowance on a rate gets its own line underneath the
+row it belongs to, so it is visible without opening the rate again to check.
+
+There is no chart and no colour bar in Configure itself. A configuration
+dialog renders markdown, and a bar drawn from characters cannot be made to
+line up with a clock across every font and platform. For a coloured picture
+on your dashboard, see **A daily rate card**, below.
 
 The Configure menu:
 
@@ -252,21 +268,27 @@ The Configure menu:
 
 Beyond the name and the price, a rate carries the following. Everything here
 sits in one of the three sections on the rate screen, all of which start
-closed:
+closed. Export rates have the same shape — a demand charge and constraints
+sections exactly like an import rate's, alongside the allowance they already
+had:
 
 | Field | Section | Notes |
 |---|---|---|
-| Timetable | — | Which timetable the rate belongs to. Rates are identified by the pair, so two timetables can each have a Peak |
 | Demand charge period | Demand charging | Marks this rate as carrying a demand charge, and turns on `binary_sensor.<name>_<rate>_demand_period_active` while it is in force |
 | Demand charge ($/kW) | Demand charging | Declared alongside the flag. The number the demand cost sensors are built on |
 | Meter averaging interval | Demand charging | 15, 30 or 60 minutes, or instantaneous. Defaults to 30 minutes, what Australian distributors meter on |
 | How the peak is charged | Demand charging | Once for the billing cycle, or once for every day of it. The same peak can be a very different bill either way |
-| Energy allowance for this rate | Allowance | Some plans give a period free only up to a cap. Zero for none. Counted once a meter is nominated |
+| Energy allowance for this rate | Allowance | Some plans give a period free only up to a cap. Zero for none. Counted against the plan's nominated meter |
 | Rate beyond the allowance | Allowance | Required when there is an allowance |
 | What the allowance covers | Allowance | Each occurrence of this rate's time period, or the whole billing cycle. Defaults to the time period, which is the tighter and more common cap |
-| Energy sensor to count | Allowance | The grid import meter. One for the whole plan. Required once a rate declares a demand charge or an allowance |
 | Information only rules | Constraints | Your own words. Each becomes a binary sensor. See below |
 | Enforceable rules | Constraints | The same, but declared as part of what the rate means. See below |
+
+**The grid import meter is not on the rate form.** It is mandatory for every
+plan and asked once, on the Fixed charges screen during setup and on
+Supply charge, tax, plan dates, sensors in Configure — not re-declared per
+rate. A grid export meter can also be nominated there, optional, needed only
+if an export rate declares a demand charge or an allowance.
 
 **Coasting permitted is a rule, not a field of its own.** It says the same
 kind of thing the other rules say — something another system may act on while
@@ -282,15 +304,12 @@ timetable where it is one price all day.
 
 ### Rate names
 
-A rate is identified by its timetable and its name together. Type `Peak` on the
-Weekday timetable and on the Weekend one and you have two rates, both called
-Peak, at whatever prices you gave them. They are published as `weekday.peak` and
-`weekend.peak`, and that is what the rate sensor reports and what a
-`utility_meter` tariff should be called.
-
-Plans created before this carry rates named `Weekday Peak` and the like, with no
-timetable of their own. They keep those names and keep working. Nothing is
-renamed underneath you.
+A rate is identified by its plan, its timetable, its side (import or export)
+and its own name — always four segments. Type `Peak` on the Weekday timetable
+and on the Weekend one and you have two rates, both called Peak, at whatever
+prices you gave them. They are published as `electricity.weekday.import.peak`
+and `electricity.weekend.import.peak`, and that is what the rate sensor
+reports and what a `utility_meter` tariff should be called.
 
 ### Seasons
 
@@ -356,6 +375,122 @@ clock, against the billing cycle day you declared.
 its tariffs. It makes one meter per rate plus a select naming which is in force.
 Nominate that select under Track usage by rate and the integration sets it at each
 time period boundary — the automation people normally write for this disappears.
+
+---
+
+## A daily rate card
+
+`sensor.<name>_today_s_schedule` holds today's full local-midnight-to-midnight
+schedule as a `segments` attribute — fixed-width slices (15 minutes by
+default) each carrying the price, the rate, and whether a demand charge
+applies, for the whole day, not just what is still ahead. It exists for
+exactly this: a coloured picture on a dashboard, which nothing built into
+Home Assistant draws on its own — a `history-graph` card only shows what has
+already happened, and has no way to colour by price rank rather than by
+which rate was in force.
+
+[ApexCharts Card](https://github.com/RomRider/apexcharts-card), installed
+through HACS, can. This reads the same sensor and draws a coloured bar for
+the whole day, cheapest to most expensive, with a line at the current time:
+
+```yaml
+type: custom:apexcharts-card
+graph_span: 24h
+span:
+  start: day
+now:
+  show: true
+  label: Now
+header:
+  show: true
+  title: Today's rates
+apex_config:
+  chart:
+    toolbar:
+      show: false
+  plotOptions:
+    bar:
+      columnWidth: 100%
+      distributed: true
+      colors:
+        ranges:
+          - { from: 0, to: 20, color: "#2e7d32" }
+          - { from: 20, to: 40, color: "#8bc34a" }
+          - { from: 40, to: 60, color: "#fdd835" }
+          - { from: 60, to: 80, color: "#fb8c00" }
+          - { from: 80, to: 100, color: "#e53935" }
+  dataLabels:
+    enabled: false
+  yaxis:
+    show: false
+  tooltip:
+    enabled: true
+series:
+  - entity: sensor.electricity_today_s_schedule
+    type: column
+    name: Rate
+    data_generator: |
+      const segs = entity.attributes.segments || [];
+      if (segs.length === 0) return [];
+      // Ranked by price plus the demand rate declared on it — a demand
+      // charge is $/kW/month, not $/kWh, so it is not really addable to
+      // a per-kWh price, but for colouring which slice reads as most
+      // expensive it does exactly what is wanted: a rate with a real
+      // demand charge outranks one without, whatever its own price is.
+      const scores = segs.map(s => s.per_kwh + (s.demand_rate_per_kw_month || 0));
+      const min = Math.min(...scores);
+      const max = Math.max(...scores);
+      const range = (max - min) || 1;
+      return segs.map((s, i) => [
+        new Date(s.start_time).getTime(),
+        Math.round(((scores[i] - min) / range) * 100),
+      ]);
+```
+
+Change `sensor.electricity_today_s_schedule` to your own channel's entity id.
+The bar's height and colour both track the ranking above, cheapest at 0,
+most expensive at 100 — not the literal price, which is why the y-axis is
+hidden. What each slice actually costs belongs in a table underneath, not
+squeezed onto a bar with 96 slices in it:
+
+```yaml
+type: markdown
+content: >-
+  {% set segs = state_attr('sensor.electricity_today_s_schedule', 'segments') or [] %}
+  {%- set ns = namespace(rows=[]) %}
+  {%- for s in segs %}
+    {%- if ns.rows and ns.rows[-1].rate == s.rate %}
+      {%- set ns.rows = ns.rows[:-1] + [dict(ns.rows[-1], end=s.end_time)] %}
+    {%- else %}
+      {%- set ns.rows = ns.rows + [{'start': s.start_time, 'end': s.end_time, 'rate': s.rate, 'per_kwh': s.per_kwh, 'demand': s.demand_period, 'demand_rate': s.demand_rate_per_kw_month}] %}
+    {%- endif %}
+  {%- endfor %}
+  | Time | Rate | Price |
+  |---|---|---|
+  {% for r in ns.rows -%}
+  | {{ as_timestamp(r.start) | timestamp_custom('%H:%M') }}–{{ as_timestamp(r.end) | timestamp_custom('%H:%M') }} | {{ r.rate.split('.')[-1] | replace('_',' ') | title }} | {{ '%.2f'|format(r.per_kwh*100) }} c/kWh{% if r.demand %} + demand ${{ '%.2f'|format(r.demand_rate) }}/kW{% endif %} |
+  {% endfor -%}
+```
+
+Again, change the entity id to your own. The template walks the same
+segments, merges consecutive slices that name the same rate back into
+periods — the way they were actually entered — and prints one row per
+period, in the same shape the Rate plan card already uses: the time span,
+the rate, and the price, with a demand charge noted alongside the rate that
+carries it.
+
+Put the two in a `vertical-stack` and you have the coloured picture with the
+current time marked, and the numbers it is drawn from, in one card:
+
+```yaml
+type: vertical-stack
+cards:
+  - type: custom:apexcharts-card
+    # ... the chart config above
+  - type: markdown
+    content: >-
+      # ... the template above
+```
 
 ---
 
@@ -505,7 +640,7 @@ intervals:
     duration: 30
     per_kwh: 0.584
     export_per_kwh: 0.043
-    rate: weekday.peak
+    rate: electricity.weekday.import.peak
     constraints: [coasting_permitted, no_grid_import, precool_opportunity]
     enforceable_constraints: [no_grid_import]
     coasting_permitted: true
@@ -527,7 +662,8 @@ Times are local, with the offset. On the day the clocks go back a wall-clock
 time appears twice and the offsets tell the two apart; `duration` is always the
 real length of the interval.
 
-`rate` is the identifier — the timetable and the name. `constraints` is every
+`rate` is the identifier — the plan, the timetable, the side and the name,
+always four segments. `constraints` is every
 rule as it always was; `enforceable_constraints` is the subset declared as part
 of what the rate means. `coasting_permitted` is one of those rules, published
 as its own field for the consumers that already read it, and true only where
@@ -675,10 +811,13 @@ under the general settings. Without one the day option is not offered, and
 holidays follow the calendar weekday.
 
 **Nothing is counting my allowance or my demand charge.** Check that a rate
-declares one and that a grid import meter is nominated on the rate form —
-rule 6 makes the meter required the moment either is declared, and without
-one the scheduled price and the declared cap or rate are still published, for
-a consumer to apply the rule itself.
+declares one and that the plan's grid import meter is nominated — mandatory
+for every plan, asked once on the Fixed charges screen (setup) or Supply
+charge, tax, plan dates, sensors (Configure), not per rate. Without it the
+scheduled price and the declared cap or rate are still published, for a
+consumer to apply the rule itself. An export rate additionally needs the
+export meter nominated in the same place — optional, since a plan can export
+without any export rate declaring a demand charge or an allowance.
 
 **The count does not match my bill.** It will not exactly. It counts the
 meter you nominated, on this integration's own clock, and a period allowance
@@ -699,7 +838,10 @@ corrects itself at midnight.
 
 **You want to see the whole state.** The entry's three-dot menu → **Download
 diagnostics**. It contains the plan, the strip, every validation problem, what
-is resolved right now with a trace of why, and the next 24 hours.
+is resolved right now with a trace of why, and the next 24 hours. For just
+the rates, export rates and time periods as plain CSV — for a spreadsheet, or
+an inverter's own tariff screen — call the
+`abode_power_tariffs.export_rates_csv` action instead.
 
 ---
 
@@ -719,11 +861,15 @@ is resolved right now with a trace of why, and the next 24 hours.
 - **Public holidays are resolved for today only**, because a workday binary
   sensor reports one day at a time. Holidays inside the forward series are
   treated as ordinary days.
-- **There is no dashboard card.** The strip lives in the configuration screens,
-  where the question it answers is asked. On a dashboard, the rate and
-  next-rate-change sensors already say what is in force.
-- **No text or CSV import.** With rates defined once, a time period is three fields.
-  Diagnostics renders the plan as CSV for backup and for support.
+- **No custom card ships with the integration.** The daily rate card is a
+  worked example (see A daily rate card, above) built on
+  [ApexCharts Card](https://github.com/RomRider/apexcharts-card), a separate
+  HACS install, and `sensor.<name>_today_s_schedule`, which the integration
+  does publish — there is no bundled Lovelace card of its own.
+- **No text import.** With rates defined once, a time period is three fields.
+  `abode_power_tariffs.export_rates_csv` exports the plan as CSV, and
+  Diagnostics still bundles the same CSV alongside the full state for backup
+  and support — but there is no import back the other way.
 - **No bill reconciliation.** Accumulating figures are this integration's own
   estimate, measured on its own clock; they will not reproduce an invoice.
 
