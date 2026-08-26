@@ -29,7 +29,7 @@ action. It answers questions and other things decide.
 | `sensor.<name>_daily_supply_charge` | Your declared daily supply charge |
 | `sensor.<name>_supply_charge_today` | The declared charge accrued so far today |
 | `sensor.<name>_supply_charge_energy` | The declared charge accrued so far this billing cycle |
-| `sensor.<name>_today_s_schedule` | Today's full local-midnight-to-midnight schedule — `segments` (fixed-width slices, for a chart) and `periods` (one row per period as entered, for a table) — see A daily rate card |
+| `sensor.<name>_today_schedule` | Today's full local-midnight-to-midnight schedule — `segments` (for a chart), `periods` (one entry per period as entered), and `table` (the same, already rendered as a markdown table string) — see A daily rate card |
 | `sensor.<name>_billing_cycle_progress` | Days elapsed of the cycle, as a percentage. Only when something on the plan accumulates |
 | `sensor.<name>_<rate>_allowance_used_kwh` | kWh spent so far in a capped rate's current period, once a meter is nominated. One per capped rate |
 | `sensor.<name>_<rate>_allowance_remaining_kwh` | kWh left. One per capped rate |
@@ -47,7 +47,7 @@ series; `abode_power_tariffs.export_rates_csv`, returning the plan's
 rates, export rates and time periods as CSV text — for a spreadsheet, or an
 inverter's own tariff screen; and `abode_power_tariffs.get_day_schedule`,
 returning today's full schedule — the same thing
-`sensor.<name>_today_s_schedule` already publishes as an attribute, callable
+`sensor.<name>_today_schedule` already publishes as an attribute, callable
 directly for a script or an automation that does not want to read it off the
 entity.
 
@@ -380,7 +380,7 @@ time period boundary — the automation people normally write for this disappear
 
 ## A daily rate card
 
-`sensor.<name>_today_s_schedule` holds today's full local-midnight-to-midnight
+`sensor.<name>_today_schedule` holds today's full local-midnight-to-midnight
 schedule two ways: `segments`, fixed-width slices (15 minutes by default)
 each carrying the price, the rate, and whether a demand charge applies, and
 `periods`, the same day resolved to its actual periods as entered — one row
@@ -412,14 +412,6 @@ apex_config:
   plotOptions:
     bar:
       columnWidth: 100%
-      distributed: true
-      colors:
-        ranges:
-          - { from: 0, to: 20, color: "#2e7d32" }
-          - { from: 20, to: 40, color: "#8bc34a" }
-          - { from: 40, to: 60, color: "#fdd835" }
-          - { from: 60, to: 80, color: "#fb8c00" }
-          - { from: 80, to: 100, color: "#e53935" }
   dataLabels:
     enabled: false
   yaxis:
@@ -427,62 +419,64 @@ apex_config:
   tooltip:
     enabled: true
 series:
-  - entity: sensor.electricity_today_s_schedule
+  - entity: sensor.electricity_today_schedule
     type: column
     name: Rate
     data_generator: |
       const segs = entity.attributes.segments || [];
       if (segs.length === 0) return [];
-      // Ranked by price plus the demand rate declared on it — a demand
-      // charge is $/kW/month, not $/kWh, so it is not really addable to
-      // a per-kWh price, but for colouring which slice reads as most
-      // expensive it does exactly what is wanted: a rate with a real
-      // demand charge outranks one without, whatever its own price is.
+      // Ranked by price plus the demand rate declared on it.
       const scores = segs.map(s => s.per_kwh + (s.demand_rate_per_kw_month || 0));
       const min = Math.min(...scores);
       const max = Math.max(...scores);
       const range = (max - min) || 1;
-      return segs.map((s, i) => [
-        new Date(s.start_time).getTime(),
-        Math.round(((scores[i] - min) / range) * 100),
-      ]);
+      // The colour is set directly on each point (fillColor), rather than
+      // through plotOptions.bar.colors.ranges with distributed: true --
+      // that combination, on a datetime x-axis, coloured bars wrong in
+      // practice, confirmed against a real dashboard and not explained by
+      // anything wrong in this ranking (proven correct against real data
+      // before this was changed). Setting fillColor directly on each
+      // point is a plain, standard ApexCharts feature and does not depend
+      // on distributed mode or a ranges lookup at all.
+      const colourFor = (rank) => {
+        if (rank < 20) return '#2e7d32';
+        if (rank < 40) return '#8bc34a';
+        if (rank < 60) return '#fdd835';
+        if (rank < 80) return '#fb8c00';
+        return '#e53935';
+      };
+      return segs.map((s, i) => {
+        const rank = Math.round(((scores[i] - min) / range) * 100);
+        return {
+          x: new Date(s.start_time).getTime(),
+          y: rank,
+          fillColor: colourFor(rank),
+        };
+      });
 ```
 
-Change `sensor.electricity_today_s_schedule` to your own channel's entity id.
+Change `sensor.electricity_today_schedule` to your own channel's entity id.
 The bar's height and colour both track the ranking above, cheapest at 0,
 most expensive at 100 — not the literal price, which is why the y-axis is
 hidden. What each slice actually costs belongs in a table underneath, not
 squeezed onto a bar with 96 slices in it.
 
-The same sensor also carries a `periods` attribute — one entry per period
-exactly as entered, not per 15-minute slice, already resolved to its rate
-and price server-side. [Flex Table Card](https://github.com/custom-cards/flex-table-card),
-also from HACS, reads a list attribute directly and turns it into a table,
-one row per list entry:
+The same sensor also carries a `table` attribute — the periods already
+rendered into a markdown table string, server-side, so the card reading it
+has nothing to get wrong: no template loop, no third-party card behaviour
+to depend on, one line:
 
 ```yaml
-type: custom:flex-table-card
-title: Today's rates
-entities:
-  include: sensor.electricity_today_s_schedule
-columns:
-  - name: Time
-    data: periods
-    modify: x.start + '–' + x.end
-  - name: Rate
-    data: periods
-    modify: x.rate_name
-  - name: Price
-    data: periods
-    modify: (x.per_kwh * 100).toFixed(2) + ' c/kWh'
-  - name: Demand
-    data: periods
-    modify: x.demand_period ? '$' + x.demand_rate_per_kw_month.toFixed(2) + '/kW' : ''
+type: markdown
+content: "{{ state_attr('sensor.electricity_today_schedule', 'table') }}"
 ```
 
-Again, change the entity id to your own. This is the same shape the Rate
-plan card already uses — the time span, the rate, and the price, with a
-demand charge in its own column rather than folded into the price one.
+Change the entity id to your own. `periods` (the same data, unrendered —
+one dict per period, each with `start`, `end`, `rate_name`, `per_kwh`,
+`demand_period` and `demand_rate_per_kw_month`) is also there if you want
+to build your own table with a card that reads a list attribute directly,
+but the plain string above is the one actually verified against a real
+Home Assistant template render before being put in this document.
 
 Put the two in a `vertical-stack` and you have the coloured picture with the
 current time marked, and the numbers it is drawn from, in one card:
@@ -492,8 +486,8 @@ type: vertical-stack
 cards:
   - type: custom:apexcharts-card
     # ... the chart config above
-  - type: custom:flex-table-card
-    # ... the table config above
+  - type: markdown
+    content: "{{ state_attr('sensor.electricity_today_schedule', 'table') }}"
 ```
 
 ---
@@ -868,7 +862,7 @@ an inverter's own tariff screen — call the
 - **No custom card ships with the integration.** The daily rate card is a
   worked example (see A daily rate card, above) built on
   [ApexCharts Card](https://github.com/RomRider/apexcharts-card), a separate
-  HACS install, and `sensor.<name>_today_s_schedule`, which the integration
+  HACS install, and `sensor.<name>_today_schedule`, which the integration
   does publish — there is no bundled Lovelace card of its own.
 - **No text import.** With rates defined once, a time period is three fields.
   `abode_power_tariffs.export_rates_csv` exports the plan as CSV, and

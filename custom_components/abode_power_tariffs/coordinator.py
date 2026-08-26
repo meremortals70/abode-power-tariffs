@@ -1087,6 +1087,28 @@ class TariffCoordinator:
             )
         return rows
 
+    def today_periods_table(self) -> str:
+        """Return today's periods as a ready-made markdown table string.
+
+        For a plain ``markdown`` card that does nothing but print
+        ``{{ state_attr(..., 'table') }}`` — no template loop, no merging
+        logic on the user's side to get wrong, nothing to verify beyond
+        rendering one attribute. Every row this session's rewrite of
+        ``strip.render_day_pattern`` would show, in the same shape.
+        """
+        rows = self.today_periods()
+        if not rows:
+            return "No periods today."
+        lines = ["| Time | Rate | Price |", "|---|---|---|"]
+        for row in rows:
+            price = f"{row['per_kwh'] * 100:.2f} c/kWh"
+            if row["demand_period"]:
+                price += f" + demand ${row['demand_rate_per_kw_month']:.2f}/kW"
+            lines.append(
+                f"| {row['start']}–{row['end']} | {row['rate_name']} | {price} |"
+            )
+        return "\n".join(lines)
+
     @property
     def problems(self) -> list[str]:
         """Return the plan's validation problems as text."""

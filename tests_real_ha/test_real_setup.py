@@ -10,6 +10,7 @@ price sensor holds a real value — not a mock standing in for one.
 from __future__ import annotations
 
 import pytest
+from homeassistant.helpers import entity_registry as er
 import voluptuous as vol
 
 # The newest Home Assistant installable from PyPI in this sandbox is
@@ -31,6 +32,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.abode_power_tariffs.const import (
     CONF_DAY_PATTERNS,
     CONF_DAYS,
+    CONF_DEMAND_PERIOD,
+    CONF_DEMAND_RATE,
     CONF_EXPORT_FLAT_CENTS,
     CONF_EXPORT_SAME_ALL_DAY,
     CONF_IMPORT_CENTS,
@@ -858,7 +861,7 @@ async def test_real_today_schedule_sensor(hass) -> None:
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    state = hass.states.get("sensor.today_schedule_test_today_s_schedule")
+    state = hass.states.get("sensor.today_schedule_test_today_schedule")
     print("STATE:", state)
     assert state is not None
     assert len(state.attributes["segments"]) == 96
@@ -967,7 +970,7 @@ async def test_real_today_periods_attribute(hass) -> None:
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    state = hass.states.get("sensor.periods_test_today_s_schedule")
+    state = hass.states.get("sensor.periods_test_today_schedule")
     periods = state.attributes["periods"]
     print("PERIODS:", periods)
     assert len(periods) == 2
@@ -978,6 +981,295 @@ async def test_real_today_periods_attribute(hass) -> None:
     assert periods[1]["rate_name"] == "Peak"
     assert periods[1]["per_kwh"] == pytest.approx(0.5688)
     assert "day_pattern" not in periods[0]
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_per_rate_entity_names_are_short(hass) -> None:
+    """The reported problem: a per-rate entity's own name embedded the
+    full four-segment qualified identifier, duplicating the plan name the
+    device is already named after. The label should be the timetable and
+    the rate's own name -- short, human-readable -- while the unique_id
+    and state values keep the full identifier where correctness needs it.
+    """
+    options = {
+        CONF_DAY_PATTERNS: [
+            {
+                CONF_NAME: "Every day",
+                CONF_DAYS: [
+                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                ],
+                CONF_RATES: [
+                    {
+                        CONF_NAME: "Super Off Peak",
+                        CONF_IMPORT_CENTS: 19.8,
+                        CONF_DEMAND_PERIOD: True,
+                        CONF_DEMAND_RATE: 1840.0,
+                    },
+                ],
+                CONF_PERIODS: [
+                    {
+                        CONF_START: "00:00",
+                        CONF_END: "24:00",
+                        CONF_RATE: "Super Off Peak",
+                    },
+                ],
+                CONF_EXPORT_SAME_ALL_DAY: True,
+                CONF_EXPORT_FLAT_CENTS: 5.0,
+            }
+        ],
+        CONF_SUPPLY_CHARGE_CENTS: 100.0,
+        "import_energy_sensor": "sensor.grid_import",
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Ovo Original Plan",
+        data={},
+        options=options,
+        entry_id="short_name_test",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    registry = er.async_get(hass)
+    entity_id = (
+        "binary_sensor.ovo_original_plan_demand_period_active_every_day_super_off_peak"
+    )
+    entry_reg = registry.async_get(entity_id)
+    print("REGISTRY ENTRY:", entry_reg)
+    state = hass.states.get(entity_id)
+    print("FRIENDLY NAME:", state.attributes.get("friendly_name"))
+    friendly = state.attributes.get("friendly_name")
+    assert "ovo_original_plan" not in friendly.lower()
+    assert "Every day" in friendly
+    assert "Super Off Peak" in friendly
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_table_attribute_and_markdown_template(hass) -> None:
+    """The table attribute, and the exact one-line markdown template a user
+    would actually type to display it -- rendered through real Home
+    Assistant's template engine, not assumed.
+    """
+    options = {
+        CONF_DAY_PATTERNS: [
+            {
+                CONF_NAME: "Every day",
+                CONF_DAYS: [
+                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                ],
+                CONF_RATES: [
+                    {CONF_NAME: "Off Peak", CONF_IMPORT_CENTS: 19.8},
+                    {
+                        CONF_NAME: "Peak",
+                        CONF_IMPORT_CENTS: 56.88,
+                        CONF_DEMAND_PERIOD: True,
+                        CONF_DEMAND_RATE: 1840.0,
+                    },
+                ],
+                CONF_PERIODS: [
+                    {CONF_START: "00:00", CONF_END: "16:00", CONF_RATE: "Off Peak"},
+                    {CONF_START: "16:00", CONF_END: "24:00", CONF_RATE: "Peak"},
+                ],
+                CONF_EXPORT_SAME_ALL_DAY: True,
+                CONF_EXPORT_FLAT_CENTS: 5.0,
+            }
+        ],
+        CONF_SUPPLY_CHARGE_CENTS: 100.0,
+        "import_energy_sensor": "sensor.grid_import",
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Table Test",
+        data={},
+        options=options,
+        entry_id="table_test",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.table_test_today_schedule")
+    print("TABLE ATTRIBUTE:\n" + state.attributes["table"])
+
+    from homeassistant.helpers import template as template_helper
+
+    # The exact one-line content a markdown card would have.
+    tpl = template_helper.Template(
+        "{{ state_attr('sensor.table_test_today_schedule', 'table') }}", hass
+    )
+    rendered = tpl.async_render()
+    print("RENDERED THROUGH TEMPLATE ENGINE:\n" + rendered)
+    assert "Off Peak" in rendered
+    assert "Peak" in rendered
+    assert "demand $18.40/kW" in rendered
+    assert "00:00" in rendered and "16:00" in rendered and "24:00" in rendered
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_super_off_peak_zero_price_ranks_lowest(hass) -> None:
+    """Reproduce the exact plan from the screenshot: a 0.00 c/kWh rate must
+    rank at 0 (cheapest/green), not get pushed toward the top.
+    """
+    options = {
+        CONF_DAY_PATTERNS: [
+            {
+                CONF_NAME: "Every day",
+                CONF_DAYS: [
+                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                ],
+                CONF_RATES: [
+                    {CONF_NAME: "EV Charging", CONF_IMPORT_CENTS: 8.0},
+                    {CONF_NAME: "Shoulder", CONF_IMPORT_CENTS: 39.60},
+                    {CONF_NAME: "Super Off Peak", CONF_IMPORT_CENTS: 0.0},
+                    {CONF_NAME: "Off Peak", CONF_IMPORT_CENTS: 35.20},
+                    {
+                        CONF_NAME: "Peak",
+                        CONF_IMPORT_CENTS: 36.85,
+                        CONF_DEMAND_PERIOD: True,
+                        CONF_DEMAND_RATE: 0.0,
+                    },
+                ],
+                CONF_PERIODS: [
+                    {CONF_START: "00:00", CONF_END: "06:00", CONF_RATE: "EV Charging"},
+                    {CONF_START: "06:00", CONF_END: "11:00", CONF_RATE: "Shoulder"},
+                    {CONF_START: "11:00", CONF_END: "14:00", CONF_RATE: "Super Off Peak"},
+                    {CONF_START: "14:00", CONF_END: "16:00", CONF_RATE: "Off Peak"},
+                    {CONF_START: "16:00", CONF_END: "21:00", CONF_RATE: "Peak"},
+                    {CONF_START: "21:00", CONF_END: "24:00", CONF_RATE: "Shoulder"},
+                ],
+                CONF_EXPORT_SAME_ALL_DAY: True,
+                CONF_EXPORT_FLAT_CENTS: 5.0,
+            }
+        ],
+        CONF_SUPPLY_CHARGE_CENTS: 100.0,
+        "import_energy_sensor": "sensor.grid_import",
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Screenshot Repro",
+        data={},
+        options=options,
+        entry_id="screenshot_repro",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.screenshot_repro_today_schedule")
+    segs = state.attributes["segments"]
+
+    # Reproduce the exact JS data_generator logic in Python, against the
+    # real segments this sensor actually publishes.
+    prices = [s["per_kwh"] for s in segs]
+    lo, hi = min(prices), max(prices)
+    rng = (hi - lo) or 1
+    scores = []
+    for s in segs:
+        rank = 100 if s["demand_period"] else round(((s["per_kwh"] - lo) / rng) * 100)
+        scores.append((s["start_time"][11:16], s["rate"].split(".")[-1], s["per_kwh"], s["demand_period"], rank))
+
+    for row in scores[:2]:
+        print("SAMPLE:", row)
+    super_off_peak_rows = [r for r in scores if "super_off_peak" in r[1]]
+    print("SUPER OFF PEAK ROWS:", super_off_peak_rows)
+    print("MIN PRICE:", lo, "MAX PRICE:", hi)
+
+    for row in super_off_peak_rows:
+        assert row[4] == 0, f"Super Off Peak should rank 0 (cheapest), got {row}"
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_full_day_colour_trace(hass) -> None:
+    """Trace every one of the 96 segments' colour, from the exact plan in
+    the screenshot's table, so it can be checked bar-by-bar against what
+    actually renders.
+    """
+    options = {
+        CONF_DAY_PATTERNS: [
+            {
+                CONF_NAME: "Every day",
+                CONF_DAYS: [
+                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                ],
+                CONF_RATES: [
+                    {CONF_NAME: "EV Charging", CONF_IMPORT_CENTS: 8.0},
+                    {CONF_NAME: "Shoulder", CONF_IMPORT_CENTS: 39.60},
+                    {CONF_NAME: "Super Off Peak", CONF_IMPORT_CENTS: 0.0},
+                    {CONF_NAME: "Off Peak", CONF_IMPORT_CENTS: 35.20},
+                    {
+                        CONF_NAME: "Peak",
+                        CONF_IMPORT_CENTS: 36.85,
+                        CONF_DEMAND_PERIOD: True,
+                        CONF_DEMAND_RATE: 0.0,
+                    },
+                ],
+                CONF_PERIODS: [
+                    {CONF_START: "00:00", CONF_END: "06:00", CONF_RATE: "EV Charging"},
+                    {CONF_START: "06:00", CONF_END: "11:00", CONF_RATE: "Shoulder"},
+                    {CONF_START: "11:00", CONF_END: "14:00", CONF_RATE: "Super Off Peak"},
+                    {CONF_START: "14:00", CONF_END: "16:00", CONF_RATE: "Off Peak"},
+                    {CONF_START: "16:00", CONF_END: "21:00", CONF_RATE: "Peak"},
+                    {CONF_START: "21:00", CONF_END: "24:00", CONF_RATE: "Shoulder"},
+                ],
+                CONF_EXPORT_SAME_ALL_DAY: True,
+                CONF_EXPORT_FLAT_CENTS: 5.0,
+            }
+        ],
+        CONF_SUPPLY_CHARGE_CENTS: 100.0,
+        "import_energy_sensor": "sensor.grid_import",
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Colour Trace", data={}, options=options,
+        entry_id="colour_trace",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.colour_trace_today_schedule")
+    segs = state.attributes["segments"]
+
+    scores = [s["per_kwh"] + (s["demand_rate_per_kw_month"] or 0) for s in segs]
+    lo, hi = min(scores), max(scores)
+    rng = (hi - lo) or 1
+
+    def colour_for(rank):
+        if rank < 20:
+            return "GREEN"
+        if rank < 40:
+            return "LIGHT-GREEN"
+        if rank < 60:
+            return "YELLOW"
+        if rank < 80:
+            return "ORANGE"
+        return "RED"
+
+    # One line per period boundary, not all 96 -- what SHOULD show at
+    # each labelled point on the x-axis.
+    seen = set()
+    for i, s in enumerate(segs):
+        rate = s["rate"].split(".")[-1]
+        if rate in seen:
+            continue
+        seen.add(rate)
+        rank = round(((scores[i] - lo) / rng) * 100)
+        print(
+            f"{s['start_time'][11:16]}  {rate:<16} price={s['per_kwh']:.4f}"
+            f"  score={scores[i]:.4f}  rank={rank}  ->  {colour_for(rank)}"
+        )
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

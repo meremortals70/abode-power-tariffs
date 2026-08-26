@@ -108,6 +108,19 @@ class RateTariffEntity(TariffEntity):
         self._rate_name = rate.name
         self._timetable = day_pattern.name
         self._export = export
+        # The full identifier is what unique_id, state values and ledger
+        # keys are built on — correctness needs the plan and the side, since
+        # an import rate and an export rate on the same timetable can share
+        # a name (rule 10). A human reading this entity's own name does not:
+        # the device it belongs to is already named after the plan, and
+        # which side a demand or allowance sensor is on is already implied
+        # by which loop created it — so the plan segment stayed here would
+        # just repeat the device's own name inside every entity under it.
+        # The timetable and the rate's own name are what actually vary
+        # entity to entity, so that is what the label shows.
+        self._attr_translation_placeholders = {
+            "rate": f"{day_pattern.name} {rate.name}"
+        }
 
     @property
     def rate(self) -> Rate | ExportRate | None:
