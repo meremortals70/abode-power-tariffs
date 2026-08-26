@@ -20,6 +20,7 @@ that costs money rather than display.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -185,6 +186,12 @@ class TariffCoordinator:
         self._gap_reason = ""
         self._forward_key: tuple[Any, ...] | None = None
         self._forward_series: list[intervals_module.Interval] = []
+        # A startup race, not a tunable setting: the meter's own integration
+        # may not have set up yet the moment this one does. Kept as instance
+        # attributes, not hardcoded, only so a test can set the delay to
+        # zero rather than genuinely block on real time.
+        self._seed_retry_attempts = 3
+        self._seed_retry_delay_seconds = 5.0
 
     # ------------------------------------------------------------------ setup
 
@@ -217,7 +224,7 @@ class TariffCoordinator:
             async_track_time_change(self.hass, self.async_refresh, second=0)
         )
 
-        self._seed_energy_total()
+        await self._seed_energy_total()
         self.async_refresh()
 
     @callback
@@ -657,11 +664,20 @@ class TariffCoordinator:
 
     # ------------------------------------------------------------- allowances
 
-    def _seed_energy_total(self) -> None:
+    async def _seed_energy_total(self) -> None:
+        """Read the meters' starting totals, retrying briefly if unavailable.
+
+        Home Assistant does not guarantee integrations finish loading in any
+        particular order, so the meter this depends on may genuinely not
+        have published its first state yet the moment this integration
+        starts — a startup race, not a real gap. Three attempts, five
+        seconds apart, before treating it as a genuine problem and opening
+        one.
+        """
         if self.counting_allowance:
             entity_id = self.options.get(CONF_IMPORT_ENERGY_SENSOR)
             if entity_id:
-                self._last_energy_total = self._read_float(entity_id)
+                self._last_energy_total = await self._read_float_retrying(entity_id)
                 if self._last_energy_total is None:
                     # The meter was not readable at startup, so the hole
                     # behind the restart cannot be measured and everything
@@ -670,9 +686,32 @@ class TariffCoordinator:
         if self.counting_export_allowance:
             export_entity_id = self.options.get(CONF_EXPORT_ENERGY_SENSOR)
             if export_entity_id:
-                self._last_export_energy_total = self._read_float(export_entity_id)
+                self._last_export_energy_total = await self._read_float_retrying(
+                    export_entity_id
+                )
                 if self._last_export_energy_total is None:
                     self._open_gap("the export meter was not readable at startup")
+
+    async def _read_float_retrying(self, entity_id: str) -> float | None:
+        """Read a meter, waiting between tries rather than giving up at once.
+
+        The delay comes first, every time, including before the first
+        attempt — the sensor's own integration may not have set up at all
+        yet, and reading immediately on startup is exactly the case this
+        exists to avoid.
+        """
+        for attempt in range(self._seed_retry_attempts):
+            await asyncio.sleep(self._seed_retry_delay_seconds)
+            reading = self._read_float(entity_id)
+            if reading is not None:
+                return reading
+            if attempt < self._seed_retry_attempts - 1:
+                _LOGGER.debug(
+                    "%s not yet readable at startup, retrying in %.0fs",
+                    entity_id,
+                    self._seed_retry_delay_seconds,
+                )
+        return None
 
     def _read_float(self, entity_id: str) -> float | None:
         state = self.hass.states.get(entity_id)

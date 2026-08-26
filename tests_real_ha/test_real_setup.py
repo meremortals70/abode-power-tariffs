@@ -10,7 +10,6 @@ price sensor holds a real value — not a mock standing in for one.
 from __future__ import annotations
 
 import pytest
-from homeassistant.helpers import entity_registry as er
 import voluptuous as vol
 
 # The newest Home Assistant installable from PyPI in this sandbox is
@@ -21,6 +20,7 @@ import voluptuous as vol
 # custom_components/abode_power_tariffs, so everything downstream is still
 # exercising the real integration code against a real (if older) hass.
 from homeassistant.helpers import entity_platform as _entity_platform
+from homeassistant.helpers import entity_registry as er
 
 if not hasattr(_entity_platform, "AddConfigEntryEntitiesCallback"):
     _entity_platform.AddConfigEntryEntitiesCallback = (
@@ -34,6 +34,7 @@ from custom_components.abode_power_tariffs.const import (
     CONF_DAYS,
     CONF_DEMAND_PERIOD,
     CONF_DEMAND_RATE,
+    CONF_END,
     CONF_EXPORT_FLAT_CENTS,
     CONF_EXPORT_SAME_ALL_DAY,
     CONF_IMPORT_CENTS,
@@ -42,10 +43,37 @@ from custom_components.abode_power_tariffs.const import (
     CONF_RATE,
     CONF_RATES,
     CONF_START,
-    CONF_END,
     CONF_SUPPLY_CHARGE_CENTS,
     DOMAIN,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_startup_delay():
+    """Skip the real seed-retry delay for this whole module.
+
+    Every test that calls hass.config_entries.async_setup goes through the
+    coordinator's real startup path, which now waits between meter-read
+    retries by design (a genuine Home Assistant startup race, not
+    something to test the actual timing of here). This is a correctness
+    suite, not a timing one — the retry behaviour itself is covered fast,
+    at the stub level, in tests/test_runtime.py. Patches the coordinator
+    module's own delay attribute default via TariffCoordinator.__init__,
+    not asyncio.sleep itself, so a genuine bug in the retry loop's control
+    flow would still surface.
+    """
+    from custom_components.abode_power_tariffs import coordinator as coordinator_module
+
+    original_init = coordinator_module.TariffCoordinator.__init__
+
+    def patched_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._seed_retry_delay_seconds = 0
+
+    coordinator_module.TariffCoordinator.__init__ = patched_init
+    yield
+    coordinator_module.TariffCoordinator.__init__ = original_init
+
 
 def _options() -> dict:
     return {
@@ -185,8 +213,9 @@ async def test_real_options_flow_adds_a_rate(hass) -> None:
     assert result["type"] == "menu", result
     assert result["step_id"] == "rates_menu"
     assert "Shoulder" in result["description_placeholders"]["rates"]
-    assert "real_options_test.every_day.import.shoulder" in (
-        result["description_placeholders"]["rates"]
+    assert (
+        "real_options_test.every_day.import.shoulder"
+        in (result["description_placeholders"]["rates"])
     )
 
     await hass.config_entries.async_unload(entry.entry_id)
@@ -252,9 +281,7 @@ async def test_setup_rate_screen_commits_on_continue_when_filled(hass) -> None:
     payload["name"] = "Peak"
     payload["import_cents"] = 45.0
     payload["on_submit"] = "continue"
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], payload
-    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
     print("STEP AFTER SUBMIT:", result["step_id"], result.get("errors"))
     assert result["step_id"] != "rates", (
         "stayed on rates with no error shown, or moved on without saving"
@@ -419,9 +446,7 @@ async def test_async_update_entry_persists_mid_flow(hass) -> None:
         "entry.options rates now:",
         [r["name"] for r in entry.options["day_patterns"][0]["rates"]],
     )
-    assert "Shoulder" in [
-        r["name"] for r in entry.options["day_patterns"][0]["rates"]
-    ]
+    assert "Shoulder" in [r["name"] for r in entry.options["day_patterns"][0]["rates"]]
     # And the flow is STILL alive after that -- config_entries.async_update_entry
     # does not touch or end the options flow at all.
     result = await hass.config_entries.options.async_configure(
@@ -484,12 +509,8 @@ async def test_real_rate_survives_without_ever_reaching_save(hass) -> None:
     # No "Save and finish" was ever reached. The dialog is simply abandoned
     # here, the way closing a browser tab would. The real config entry must
     # already have it.
-    saved_rates = [
-        r["name"] for r in entry.options["day_patterns"][0]["rates"]
-    ]
-    assert "Shoulder" in saved_rates, (
-        f"lost without an explicit save: {saved_rates}"
-    )
+    saved_rates = [r["name"] for r in entry.options["day_patterns"][0]["rates"]]
+    assert "Shoulder" in saved_rates, f"lost without an explicit save: {saved_rates}"
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
@@ -555,9 +576,7 @@ async def test_setup_rates_defaults_to_continue_once_something_is_entered(
     assert payload["on_submit"] == "add"
     payload["name"] = "Off Peak"
     payload["import_cents"] = 19.8
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], payload
-    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
     assert result["step_id"] == "rates"
 
     # Now the screen for a would-be second rate. Leave it entirely blank
@@ -568,9 +587,7 @@ async def test_setup_rates_defaults_to_continue_once_something_is_entered(
         f"{payload['on_submit']}"
     )
     assert payload["name"] == ""
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], payload
-    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
     print("STEP AFTER BLANK SUBMIT:", result["step_id"], result.get("errors"))
     assert result["step_id"] == "periods", (
         "a blank screen with rates already entered should move on by "
@@ -633,10 +650,12 @@ async def test_setup_last_rate_with_explicit_continue_is_committed(hass) -> None
     payload["name"] = "Peak"
     payload["import_cents"] = 45.0
     payload["on_submit"] = "continue"
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], payload
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
+    print(
+        "STEP AFTER LAST RATE + EXPLICIT CONTINUE:",
+        result["step_id"],
+        result.get("errors"),
     )
-    print("STEP AFTER LAST RATE + EXPLICIT CONTINUE:", result["step_id"], result.get("errors"))
     assert result["step_id"] == "periods", (
         f"typed rate with explicit continue was not committed: {result}"
     )
@@ -772,9 +791,7 @@ async def test_setup_rate_with_demand_charge_is_accepted(hass) -> None:
         "demand_interval": "30",
         "demand_basis": "day",
     }
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], payload
-    )
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], payload)
     print("STEP AFTER DEMAND RATE:", result["step_id"], result.get("errors"))
     assert result["step_id"] == "periods", (
         f"a rate with a real demand charge was rejected: {result}"
@@ -947,7 +964,14 @@ async def test_real_today_periods_attribute(hass) -> None:
             {
                 CONF_NAME: "Every day",
                 CONF_DAYS: [
-                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                    "mon",
+                    "tue",
+                    "wed",
+                    "thu",
+                    "fri",
+                    "sat",
+                    "sun",
+                    "holiday",
                 ],
                 CONF_RATES: [
                     {CONF_NAME: "Off Peak", CONF_IMPORT_CENTS: 19.8},
@@ -1004,7 +1028,14 @@ async def test_real_per_rate_entity_names_are_short(hass) -> None:
             {
                 CONF_NAME: "Every day",
                 CONF_DAYS: [
-                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                    "mon",
+                    "tue",
+                    "wed",
+                    "thu",
+                    "fri",
+                    "sat",
+                    "sun",
+                    "holiday",
                 ],
                 CONF_RATES: [
                     {
@@ -1067,7 +1098,14 @@ async def test_real_table_attribute_and_markdown_template(hass) -> None:
             {
                 CONF_NAME: "Every day",
                 CONF_DAYS: [
-                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                    "mon",
+                    "tue",
+                    "wed",
+                    "thu",
+                    "fri",
+                    "sat",
+                    "sun",
+                    "holiday",
                 ],
                 CONF_RATES: [
                     {CONF_NAME: "Off Peak", CONF_IMPORT_CENTS: 19.8},
@@ -1130,7 +1168,14 @@ async def test_real_super_off_peak_zero_price_ranks_lowest(hass) -> None:
             {
                 CONF_NAME: "Every day",
                 CONF_DAYS: [
-                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                    "mon",
+                    "tue",
+                    "wed",
+                    "thu",
+                    "fri",
+                    "sat",
+                    "sun",
+                    "holiday",
                 ],
                 CONF_RATES: [
                     {CONF_NAME: "EV Charging", CONF_IMPORT_CENTS: 8.0},
@@ -1147,7 +1192,11 @@ async def test_real_super_off_peak_zero_price_ranks_lowest(hass) -> None:
                 CONF_PERIODS: [
                     {CONF_START: "00:00", CONF_END: "06:00", CONF_RATE: "EV Charging"},
                     {CONF_START: "06:00", CONF_END: "11:00", CONF_RATE: "Shoulder"},
-                    {CONF_START: "11:00", CONF_END: "14:00", CONF_RATE: "Super Off Peak"},
+                    {
+                        CONF_START: "11:00",
+                        CONF_END: "14:00",
+                        CONF_RATE: "Super Off Peak",
+                    },
                     {CONF_START: "14:00", CONF_END: "16:00", CONF_RATE: "Off Peak"},
                     {CONF_START: "16:00", CONF_END: "21:00", CONF_RATE: "Peak"},
                     {CONF_START: "21:00", CONF_END: "24:00", CONF_RATE: "Shoulder"},
@@ -1181,7 +1230,15 @@ async def test_real_super_off_peak_zero_price_ranks_lowest(hass) -> None:
     scores = []
     for s in segs:
         rank = 100 if s["demand_period"] else round(((s["per_kwh"] - lo) / rng) * 100)
-        scores.append((s["start_time"][11:16], s["rate"].split(".")[-1], s["per_kwh"], s["demand_period"], rank))
+        scores.append(
+            (
+                s["start_time"][11:16],
+                s["rate"].split(".")[-1],
+                s["per_kwh"],
+                s["demand_period"],
+                rank,
+            )
+        )
 
     for row in scores[:2]:
         print("SAMPLE:", row)
@@ -1207,7 +1264,14 @@ async def test_real_full_day_colour_trace(hass) -> None:
             {
                 CONF_NAME: "Every day",
                 CONF_DAYS: [
-                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                    "mon",
+                    "tue",
+                    "wed",
+                    "thu",
+                    "fri",
+                    "sat",
+                    "sun",
+                    "holiday",
                 ],
                 CONF_RATES: [
                     {CONF_NAME: "EV Charging", CONF_IMPORT_CENTS: 8.0},
@@ -1224,7 +1288,11 @@ async def test_real_full_day_colour_trace(hass) -> None:
                 CONF_PERIODS: [
                     {CONF_START: "00:00", CONF_END: "06:00", CONF_RATE: "EV Charging"},
                     {CONF_START: "06:00", CONF_END: "11:00", CONF_RATE: "Shoulder"},
-                    {CONF_START: "11:00", CONF_END: "14:00", CONF_RATE: "Super Off Peak"},
+                    {
+                        CONF_START: "11:00",
+                        CONF_END: "14:00",
+                        CONF_RATE: "Super Off Peak",
+                    },
                     {CONF_START: "14:00", CONF_END: "16:00", CONF_RATE: "Off Peak"},
                     {CONF_START: "16:00", CONF_END: "21:00", CONF_RATE: "Peak"},
                     {CONF_START: "21:00", CONF_END: "24:00", CONF_RATE: "Shoulder"},
@@ -1237,7 +1305,10 @@ async def test_real_full_day_colour_trace(hass) -> None:
         "import_energy_sensor": "sensor.grid_import",
     }
     entry = MockConfigEntry(
-        domain=DOMAIN, title="Colour Trace", data={}, options=options,
+        domain=DOMAIN,
+        title="Colour Trace",
+        data={},
+        options=options,
         entry_id="colour_trace",
     )
     entry.add_to_hass(hass)
@@ -1288,7 +1359,14 @@ async def test_real_clearer_labels(hass) -> None:
             {
                 CONF_NAME: "Every day",
                 CONF_DAYS: [
-                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                    "mon",
+                    "tue",
+                    "wed",
+                    "thu",
+                    "fri",
+                    "sat",
+                    "sun",
+                    "holiday",
                 ],
                 CONF_RATES: [
                     {
@@ -1309,7 +1387,10 @@ async def test_real_clearer_labels(hass) -> None:
         "import_energy_sensor": "sensor.grid_import",
     }
     entry = MockConfigEntry(
-        domain=DOMAIN, title="Label Check", data={}, options=options,
+        domain=DOMAIN,
+        title="Label Check",
+        data={},
+        options=options,
         entry_id="label_check",
     )
     entry.add_to_hass(hass)
@@ -1326,7 +1407,11 @@ async def test_real_clearer_labels(hass) -> None:
     }
     for entity_id in checks:
         state = hass.states.get(entity_id)
-        print(entity_id, "->", state.attributes.get("friendly_name") if state else "MISSING")
+        print(
+            entity_id,
+            "->",
+            state.attributes.get("friendly_name") if state else "MISSING",
+        )
         assert state is not None, entity_id
 
     await hass.config_entries.async_unload(entry.entry_id)
@@ -1339,7 +1424,10 @@ async def test_real_rate_sensor_name_fields(hass) -> None:
     to check for a genuine concatenation bug rather than assume one.
     """
     entry = MockConfigEntry(
-        domain=DOMAIN, title="Ovo Original Plan", data={}, options=_options(),
+        domain=DOMAIN,
+        title="Ovo Original Plan",
+        data={},
+        options=_options(),
         entry_id="rate_name_check",
     )
     entry.add_to_hass(hass)
@@ -1347,6 +1435,7 @@ async def test_real_rate_sensor_name_fields(hass) -> None:
     await hass.async_block_till_done()
 
     from homeassistant.helpers import entity_registry as er
+
     registry = er.async_get(hass)
     entity_id = "sensor.ovo_original_plan_rate"
     entry_reg = registry.async_get(entity_id)
@@ -1357,7 +1446,9 @@ async def test_real_rate_sensor_name_fields(hass) -> None:
     print("registry.original_name:", entry_reg.original_name if entry_reg else None)
     print("registry.has_entity_name:", entry_reg.has_entity_name if entry_reg else None)
     print("registry.translation_key:", entry_reg.translation_key if entry_reg else None)
-    print("state.attributes.friendly_name:", repr(state.attributes.get("friendly_name")))
+    print(
+        "state.attributes.friendly_name:", repr(state.attributes.get("friendly_name"))
+    )
     print("state.state:", repr(state.state))
 
     await hass.config_entries.async_unload(entry.entry_id)
@@ -1375,7 +1466,14 @@ async def test_real_rate_sensor_short_state(hass) -> None:
             {
                 CONF_NAME: "Every day",
                 CONF_DAYS: [
-                    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday",
+                    "mon",
+                    "tue",
+                    "wed",
+                    "thu",
+                    "fri",
+                    "sat",
+                    "sun",
+                    "holiday",
                 ],
                 CONF_RATES: [
                     {CONF_NAME: "Every day Off Peak", CONF_IMPORT_CENTS: 19.8},
@@ -1397,7 +1495,10 @@ async def test_real_rate_sensor_short_state(hass) -> None:
         "import_energy_sensor": "sensor.grid_import",
     }
     entry = MockConfigEntry(
-        domain=DOMAIN, title="Short State Test", data={}, options=options,
+        domain=DOMAIN,
+        title="Short State Test",
+        data={},
+        options=options,
         entry_id="short_state_test",
     )
     entry.add_to_hass(hass)
@@ -1415,6 +1516,41 @@ async def test_real_rate_sensor_short_state(hass) -> None:
         "short_state_test.every_day.import.every_day_off_peak"
     )
     assert "Every day Peak" in state.attributes["options"]
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_startup_retries_a_slow_meter(hass) -> None:
+    """The literal reported behaviour: a meter unreadable at startup is
+    retried rather than treated as a gap immediately -- confirmed with a
+    real coordinator, a meter that only becomes available after the retry
+    fixture's patched (zero-length) delay, not just asserted from the
+    stub suite's own version of this.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Slow Meter Test",
+        data={},
+        options={**_options(), "import_energy_sensor": "sensor.grid_import"},
+        entry_id="slow_meter_test",
+    )
+    entry.add_to_hass(hass)
+    # No sensor.grid_import state set at all yet -- the meter's own
+    # integration has not "finished loading" from this test's point of view.
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = entry.runtime_data
+    # Confirms the retry loop actually ran its full course (three attempts,
+    # the fixture's own zero-length delay between them) rather than giving
+    # up after one immediate check.
+    assert coordinator._seed_retry_attempts == 3
+    # And since the meter never became available, the gap this is meant to
+    # protect against for a genuinely broken meter still opens correctly --
+    # the retry does not silently swallow a real problem.
+    assert coordinator.state.gap_since is not None
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

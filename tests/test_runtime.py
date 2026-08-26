@@ -214,6 +214,7 @@ class TestScheduling(CoordinatorCase):
         rather than hours.
         """
         coordinator = a_coordinator()
+        coordinator._seed_retry_delay_seconds = 0
         run(coordinator.async_start())
         ticks = [
             t
@@ -225,6 +226,7 @@ class TestScheduling(CoordinatorCase):
     def test_midnight_is_no_longer_a_barrier(self) -> None:
         """The allowance belongs to the slot, so the calendar resets nothing."""
         coordinator = a_coordinator()
+        coordinator._seed_retry_delay_seconds = 0
         run(coordinator.async_start())
         registered = [t for t in _ha_stubs.SCHEDULED.time_changes if t.get("hour") == 0]
         self.assertEqual(registered, [])
@@ -237,6 +239,7 @@ class TestScheduling(CoordinatorCase):
 
     def test_shutdown_releases_everything(self) -> None:
         coordinator = a_coordinator()
+        coordinator._seed_retry_delay_seconds = 0
         run(coordinator.async_start())
         coordinator.async_shutdown()
         self.assertIsNone(coordinator._boundary_unsubscribe)
@@ -351,6 +354,57 @@ class TestHolidays(CoordinatorCase):
         self.assertFalse(coordinator.is_holiday(date(2030, 1, 1)))
 
 
+class TestStartupMeterRetries(CoordinatorCase):
+    """The meter's own integration may not have loaded yet at startup.
+
+    A gap opened for that reason alone would be a false alarm every single
+    restart on a slower system, not a genuine data problem.
+    """
+
+    def test_production_defaults_are_three_attempts_five_seconds(self) -> None:
+        """The actual values used when nothing overrides them for a test."""
+        coordinator = a_coordinator()
+        self.assertEqual(coordinator._seed_retry_attempts, 3)
+        self.assertEqual(coordinator._seed_retry_delay_seconds, 5.0)
+
+    def test_a_meter_that_becomes_readable_partway_through_is_used(self) -> None:
+        """Succeeds on a later attempt, not just the first or none at all."""
+        options = sample_options()
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(options)
+        coordinator._seed_retry_delay_seconds = 0
+        attempts_before_available = 2
+
+        real_read_float = coordinator._read_float
+        calls = {"count": 0}
+
+        def flaky_read(entity_id: str) -> float | None:
+            calls["count"] += 1
+            if calls["count"] <= attempts_before_available:
+                return None
+            return real_read_float(entity_id)
+
+        coordinator._read_float = flaky_read
+        coordinator.hass.states.set("sensor.grid_import", "100.0")
+        run(coordinator._seed_energy_total())
+
+        self.assertEqual(calls["count"], attempts_before_available + 1)
+        self.assertAlmostEqual(coordinator._last_energy_total, 100.0)
+        self.assertIsNone(coordinator.state.gap_since)
+
+    def test_a_meter_that_never_becomes_readable_still_opens_the_gap(self) -> None:
+        """The retry does not silently swallow a genuine, ongoing problem."""
+        options = sample_options()
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(options)
+        coordinator._seed_retry_delay_seconds = 0
+        # sensor.grid_import is never given a state at all.
+        run(coordinator._seed_energy_total())
+        self.assertIsNone(coordinator._last_energy_total)
+        coordinator.async_refresh()
+        self.assertIsNotNone(coordinator.state.gap_since)
+
+
 class TestAllowanceAccounting(CoordinatorCase):
     def _capped(self) -> Any:
         options = sample_options()
@@ -359,7 +413,8 @@ class TestAllowanceAccounting(CoordinatorCase):
         options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(options)
         coordinator.hass.states.set("sensor.grid_import", "100.0")
-        coordinator._seed_energy_total()
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
         return coordinator
 
     def test_consumption_counts_against_the_allowance(self) -> None:
@@ -449,7 +504,8 @@ class TestDemandAccumulation(CoordinatorCase):
         opts[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(opts)
         coordinator.hass.states.set("sensor.grid_import", "0.0")
-        coordinator._seed_energy_total()
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
         return coordinator
 
     def test_energy_drawn_in_the_interval_becomes_the_peak_once_it_completes(
@@ -545,7 +601,8 @@ class TestDemandAccumulation(CoordinatorCase):
         }
         coordinator = a_coordinator(opts)
         coordinator.hass.states.set("sensor.grid_import", "0.0")
-        coordinator._seed_energy_total()
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
 
         weekday_ledger = coordinator.ledger_for(peak_name(coordinator, "Weekday"))
         weekend_ledger = coordinator.ledger_for(peak_name(coordinator, "Weekend"))
@@ -640,7 +697,8 @@ class TestGapDetection(CoordinatorCase):
         options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(options)
         coordinator.hass.states.set("sensor.grid_import", "100.0")
-        coordinator._seed_energy_total()
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
         return coordinator
 
     def test_an_unavailable_meter_opens_the_gap_immediately(self) -> None:
@@ -715,7 +773,8 @@ class TestGapDetection(CoordinatorCase):
         options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(options)
         coordinator.hass.states.set("sensor.grid_import", "0.0")
-        coordinator._seed_energy_total()
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
         PKG.coordinator.dt_util.NOW = at(17, 0, day=14)
         coordinator.async_refresh()
         coordinator.hass.states.set("sensor.grid_import", "unavailable")
@@ -829,7 +888,8 @@ class TestTheTraceHoldsStill(CoordinatorCase):
         data[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(data)
         coordinator.hass.states.set("sensor.grid_import", "100.0")
-        coordinator._seed_energy_total()
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
         return coordinator
 
     def _consume(self, coordinator: Any, total: str) -> None:
