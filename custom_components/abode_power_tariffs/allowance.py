@@ -75,17 +75,36 @@ def apply(day_pattern: DayPattern, rate: Rate, used_kwh: float) -> AllowanceStat
     )
 
 
+# A single reading-to-reading jump beyond this is treated the same as a
+# meter reset — implausible, not a real measurement. Real energy monitors
+# push updates at least every few minutes; even a very large service (say
+# 400A three-phase, roughly 250kW) drawing continuously for a full hour
+# between two readings comes nowhere near this. Generous on purpose: this
+# exists to catch a swapped-out meter entity or a hardware fault reporting
+# something absurd, not to second-guess a genuinely large household.
+MAX_PLAUSIBLE_DELTA_KWH = 10_000.0
+
+
 def accumulate(
     previous_total: float | None, new_total: float | None, used_kwh: float
 ) -> float:
     """Add the delta of a monotonic energy meter to this slot's usage.
 
     A meter that resets, or that reports nothing, contributes nothing rather
-    than a spurious negative or a spike.
+    than a spurious negative or a spike. A spike is not hypothetical: a
+    meter entity swapped out from under this component mid-session, or a
+    genuine hardware fault, produces exactly this — a single reading that
+    jumps by an amount no real household or small building draws between
+    two consecutive readings, silently accepted forever afterward because
+    a positive delta was the only thing ever checked for. The ceiling here
+    is deliberately generous — real energy monitors update at least every
+    few minutes, so even a very large service drawing continuously at its
+    limit for an hour falls well under it — not tuned to any one
+    installation's actual usage.
     """
     if previous_total is None or new_total is None:
         return used_kwh
     delta = new_total - previous_total
-    if delta <= 0:
+    if delta <= 0 or delta > MAX_PLAUSIBLE_DELTA_KWH:
         return used_kwh
     return used_kwh + delta

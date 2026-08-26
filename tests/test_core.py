@@ -1318,6 +1318,32 @@ class TestAllowance(unittest.TestCase):
     def test_accumulate_adds_the_delta(self) -> None:
         self.assertAlmostEqual(allowance.accumulate(5.0, 7.5, 12.0), 14.5)
 
+    def test_accumulate_ignores_an_implausible_spike(self) -> None:
+        """A meter entity swapped out from under this component, or a
+        genuine fault, jumping by millions of kWh in one reading is exactly
+        as untrustworthy as a reset — not a real household drawing that.
+        """
+        self.assertEqual(
+            allowance.accumulate(100.0, 5_000_000.0, 12.0),
+            12.0,
+        )
+
+    def test_accumulate_still_takes_a_large_but_plausible_delta(self) -> None:
+        """The ceiling is generous, not a second-guess of genuine large use."""
+        self.assertAlmostEqual(
+            allowance.accumulate(1000.0, 1000.0 + 500.0, 12.0), 512.0
+        )
+
+    def test_the_plausible_delta_ceiling_itself(self) -> None:
+        self.assertAlmostEqual(
+            allowance.accumulate(0.0, allowance.MAX_PLAUSIBLE_DELTA_KWH, 0.0),
+            allowance.MAX_PLAUSIBLE_DELTA_KWH,
+        )
+        self.assertEqual(
+            allowance.accumulate(0.0, allowance.MAX_PLAUSIBLE_DELTA_KWH + 0.01, 0.0),
+            0.0,
+        )
+
 
 class TestSerialise(unittest.TestCase):
     def test_windows_csv_has_a_row_per_window(self) -> None:
