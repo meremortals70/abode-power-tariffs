@@ -51,6 +51,22 @@ jobs:
             -m unittest discover -s tests -p "test_*.py"
           python -m coverage report --fail-under=90
 
+  real-ha:
+    name: Real Home Assistant suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r requirements_test.txt
+
+      - name: Real-HA tests
+        run: pytest tests_real_ha/
+
   hassfest:
     name: hassfest
     runs-on: ubuntu-latest
