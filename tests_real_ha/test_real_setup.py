@@ -1456,11 +1456,16 @@ async def test_real_rate_sensor_name_fields(hass) -> None:
 
 
 @pytest.mark.asyncio
-async def test_real_rate_sensor_short_state(hass) -> None:
+async def test_real_rate_sensor_short_state(hass, freezer) -> None:
     """The Rate sensor's state is short and readable, with deduplication
     when the rate's own name already starts with its timetable's name.
     The full qualified identifier survives as the scheduled_rate attribute.
+
+    Frozen at a fixed moment inside the Off Peak window (00:00-16:00) so
+    the assertion doesn't depend on what the real wall-clock time happens
+    to be when the test runs.
     """
+    freezer.move_to("2024-06-15T08:00:00-07:00")
     options = {
         CONF_DAY_PATTERNS: [
             {
