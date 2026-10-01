@@ -713,9 +713,9 @@ class Plan:
     valid_to: date | None = None
     description: str = ""
     monthly_charge: float = 0.0
-    # The day of the month the billing cycle starts. Declared and published;
-    # nothing is derived from it here. Working out where a cycle begins and
-    # ends, or how many days are left of one, is the consumer's arithmetic.
+    # The day of the month the billing cycle starts, 1 to 28. Every monthly
+    # reset is driven from it; accounting.py works out where a cycle begins
+    # and ends.
     billing_cycle_day: int | None = None
 
     def day_pattern_by_name(self, name: str) -> DayPattern | None:

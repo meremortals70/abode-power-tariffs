@@ -9,20 +9,36 @@
 # Reads the 'periods' attribute -- one entry per period as entered, each
 # with start, end, rate_name, per_kwh, demand_period, demand_rate_per_kw_month.
 
-type: custom:flex-table-card
-title: Today's rates
-entities:
-  include: sensor.electricity_today_schedule
-columns:
-  - name: Time
-    data: periods
-    modify: x.start + '–' + x.end
-  - name: Rate
-    data: periods
-    modify: x.rate_name
-  - name: Price
-    data: periods
-    modify: (x.per_kwh * 100).toFixed(2) + ' c/kWh'
-  - name: Demand
-    data: periods
-    modify: "x.demand_period ? '$' + x.demand_rate_per_kw_month.toFixed(2) + '/kW' : ''"
+type: vertical-stack
+cards:
+  # The red flag. Shown only while the Data gap sensor is on: an input is
+  # unreadable, a gap has opened this billing cycle, or the plan has run
+  # past its end date with nothing set up to replace it. Change
+  # binary_sensor.electricity_data_gap to your own channel's entity id.
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: binary_sensor.electricity_data_gap
+        state: "on"
+    card:
+      type: markdown
+      content: >-
+        🚩 **Data incomplete.** The figures for this billing cycle cannot be
+        trusted. See Settings → Repairs for the cause.
+  - type: custom:flex-table-card
+    title: Today's rates
+    entities:
+      include: sensor.electricity_today_schedule
+    columns:
+      - name: Time
+        data: periods
+        modify: x.start + '–' + x.end
+      - name: Rate
+        data: periods
+        modify: x.rate_name
+      - name: Price
+        data: periods
+        modify: (x.per_kwh * 100).toFixed(2) + ' c/kWh'
+      - name: Demand
+        data: periods
+        modify: "x.demand_period ? '$' + x.demand_rate_per_kw_month.toFixed(2) + '/kW' : ''"

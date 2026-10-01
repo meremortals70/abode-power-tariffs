@@ -2150,3 +2150,127 @@ class TestTheRateFormIsSectioned(unittest.TestCase):
         rate = plan.rate_by_name("Every day Peak", "Every day")
         assert rate is not None
         self.assertFalse(rate.coasting_permitted)
+
+
+class FakeFlowManager:
+    """Records the config flow a step starts, and reports it created."""
+
+    def __init__(self) -> None:
+        self.started: list[tuple[str, dict[str, Any]]] = []
+
+    async def async_init(
+        self, domain: str, *, context: Any = None, data: Any = None
+    ) -> dict[str, Any]:
+        self.started.append((domain, data))
+        return {"type": "create_entry"}
+
+
+class TestTheMeterMatchesTheWriteBack(unittest.TestCase):
+    """DR-047. The meter's tariffs are what the select write-back sends."""
+
+    def test_the_meter_is_created_with_the_published_identifiers(self) -> None:
+        driver = OptionsDriver()
+        flows = FakeFlowManager()
+        driver.flow.hass.config_entries.flow = flows
+        driver.start()
+        driver.choose("usage_tracking")
+        driver.choose("meter_create")
+        driver.submit(name="By rate", source_energy_sensor="sensor.grid_import")
+        _, data = flows.started[0]
+        plan = Plan.from_dict({**sample_options(), CONST.CONF_NAME: "Test Plan"})
+        sent_by_write_back = [
+            PKG.plan.qualified_name(plan.name, day_pattern.name, rate.name)
+            for day_pattern, rate in plan.rates_with_pattern()
+        ]
+        self.assertEqual(data[PKG.config_flow.UM_CONF_TARIFFS], sent_by_write_back)
+
+
+class TestHolidaySensorGaps(CoordinatorCase):
+    """DR-006. An unreadable holiday sensor is a gap like a missing meter."""
+
+    def _with_sensors(self) -> Any:
+        options = sample_options()
+        options[CONST.CONF_HOLIDAY_SENSOR] = "binary_sensor.workday"
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(options)
+        coordinator.hass.states.set("sensor.grid_import", "100.0")
+        return coordinator
+
+    def test_an_unreadable_holiday_sensor_opens_a_gap(self) -> None:
+        coordinator = self._with_sensors()
+        coordinator.hass.states.set("binary_sensor.workday", "unavailable")
+        coordinator.async_refresh()
+        self.assertFalse(coordinator.state.data_complete)
+        self.assertFalse(coordinator.state.cycle_complete)
+
+    def test_the_holiday_sensor_returning_closes_its_gap(self) -> None:
+        coordinator = self._with_sensors()
+        coordinator.hass.states.set("binary_sensor.workday", "unavailable")
+        coordinator.async_refresh()
+        coordinator.hass.states.set("binary_sensor.workday", "on")
+        coordinator.async_refresh()
+        self.assertTrue(coordinator.state.data_complete)
+        self.assertFalse(coordinator.state.cycle_complete)
+
+    def test_the_meter_reading_does_not_close_the_holiday_gap(self) -> None:
+        coordinator = self._with_sensors()
+        coordinator.hass.states.set("binary_sensor.workday", "unavailable")
+        coordinator.async_refresh()
+        coordinator._accumulate_energy("sensor.grid_import")
+        self.assertFalse(coordinator.state.data_complete)
+
+
+class OtherEntry:
+    """Another of this integration's config entries."""
+
+    def __init__(self, entry_id: str, options: dict[str, Any]) -> None:
+        self.entry_id = entry_id
+        self.title = "Next plan"
+        self.options = options
+
+
+class TestArchivedIsNotExpired(CoordinatorCase):
+    """DR-007. Only a plan that ran out with no successor raises the alert."""
+
+    def _expired(self) -> Any:
+        options = sample_options()
+        options[CONST.CONF_VALID_TO] = "2026-01-01"
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        return a_coordinator(options)
+
+    def _successor(self, meter: str) -> OtherEntry:
+        options = sample_options()
+        options[CONST.CONF_VALID_FROM] = "2026-01-02"
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = meter
+        return OtherEntry("entry2", options)
+
+    def test_with_no_successor_the_alert_is_raised(self) -> None:
+        coordinator = self._expired()
+        module = sys.modules["homeassistant.helpers.issue_registry"]
+        module.RAISED.clear()
+        coordinator.async_refresh()
+        self.assertFalse(coordinator.state.plan_replaced)
+        self.assertIn(
+            coordinator._expired_issue_id, [issue for issue, _ in module.RAISED]
+        )
+
+    def test_with_a_successor_on_the_same_meter_it_is_archived(self) -> None:
+        coordinator = self._expired()
+        coordinator.hass.config_entries.entries = [
+            self._successor("sensor.grid_import")
+        ]
+        module = sys.modules["homeassistant.helpers.issue_registry"]
+        module.RAISED.clear()
+        coordinator.async_refresh()
+        self.assertTrue(coordinator.state.plan_replaced)
+        self.assertNotIn(
+            coordinator._expired_issue_id, [issue for issue, _ in module.RAISED]
+        )
+
+    def test_a_plan_for_another_meter_is_not_a_successor(self) -> None:
+        coordinator = self._expired()
+        coordinator.hass.config_entries.entries = [
+            self._successor("sensor.other_meter")
+        ]
+        coordinator.async_refresh()
+        self.assertFalse(coordinator.state.plan_replaced)

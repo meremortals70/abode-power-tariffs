@@ -47,8 +47,9 @@ async def async_setup_entry(
                     coordinator, day_pattern, export_rate, export=True
                 )
             )
-    if coordinator.accounts:
-        entities.append(DataCompleteBinarySensor(coordinator))
+    # Every plan: a holiday sensor gap or an expired plan makes the figures
+    # untrustworthy whether or not anything is being accumulated.
+    entities.append(DataCompleteBinarySensor(coordinator))
     async_add_entities(entities)
 
 
@@ -63,35 +64,64 @@ class ConstraintBinarySensor(TariffEntity, BinarySensorEntity):
         self._attr_translation_key = None
         self._attr_name = constraint.replace("_", " ").capitalize()
 
+    def _import_rate(self) -> Rate | None:
+        """Return the import rate in force, if it carries this constraint."""
+        rate = self.coordinator.state.effective_rate
+        if rate is None or self._constraint not in rate.constraints:
+            return None
+        return rate
+
+    def _export_rate(self) -> ExportRate | None:
+        """Return the export rate in force, if it carries this constraint.
+
+        Import and export are separate flows, and a rule can be declared on
+        either. A flat all-day feed-in price has no named rate, so nothing to
+        carry a rule.
+        """
+        resolution = self.coordinator.state.export_resolution
+        if resolution is None or resolution.rate_name is None:
+            return None
+        rate = resolution.day_pattern.export_rate_by_name(resolution.rate_name)
+        if rate is None or self._constraint not in rate.constraints:
+            return None
+        return rate
+
     @property
     def is_on(self) -> bool:
-        """Return whether the constraint applies right now."""
-        rate = self.coordinator.state.effective_rate
-        return rate is not None and self._constraint in rate.constraints
+        """Return whether a rate in force on either side carries this rule."""
+        return self._import_rate() is not None or self._export_rate() is not None
 
     @property
     def enforceable(self) -> bool:
-        """Return whether the rate in force declares this rule enforceable.
+        """Return whether a rate in force declares this rule enforceable.
 
         A declaration about what the rate means, not an instruction. Whether
         anything acts on it is the consuming system's decision.
         """
-        rate = self.coordinator.state.effective_rate
-        return rate is not None and self._constraint in rate.enforceable_constraints
+        rates: list[Rate | ExportRate] = [
+            rate for rate in (self._import_rate(), self._export_rate()) if rate
+        ]
+        return any(self._constraint in rate.enforceable_constraints for rate in rates)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return the period this constraint is currently attached to."""
-        resolution = self.coordinator.state.resolution
-        if resolution is None or not self.is_on:
-            return {"constraint": self._constraint, "enforceable": self.enforceable}
-        return {
+        """Return the rate and period, on each side, this rule is attached to."""
+        attributes: dict[str, Any] = {
             "constraint": self._constraint,
             "enforceable": self.enforceable,
-            "rate": resolution.qualified_name,
-            "period_start": format_time(resolution.period.start),
-            "period_end": format_time(resolution.period.end),
         }
+        resolution = self.coordinator.state.resolution
+        if resolution is not None and self._import_rate() is not None:
+            attributes["rate"] = resolution.qualified_name
+            attributes["period_start"] = format_time(resolution.period.start)
+            attributes["period_end"] = format_time(resolution.period.end)
+        export = self.coordinator.state.export_resolution
+        if export is not None and self._export_rate() is not None:
+            attributes["export_rate"] = export.qualified_name
+            if export.period is not None:
+                attributes["export_period_start"] = format_time(export.period.start)
+                attributes["export_period_end"] = format_time(export.period.end)
+        return attributes
 
 
 def _slug(value: str) -> str:
@@ -160,8 +190,19 @@ class DataCompleteBinarySensor(TariffEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        """On means there is a problem — an input is unreadable right now."""
-        return not self.coordinator.state.data_complete
+        """On means the figures cannot be trusted: the red flag.
+
+        On while an input is unreadable, for the rest of a billing cycle a
+        gap has opened in, and while the plan has run past its valid_to with
+        no successor in force. Whether an input is unreadable right now is
+        the ``input_unreadable`` attribute.
+        """
+        state = self.coordinator.state
+        return (
+            not state.data_complete
+            or not state.cycle_complete
+            or (state.plan_expired and not state.plan_replaced)
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -171,6 +212,8 @@ class DataCompleteBinarySensor(TariffEntity, BinarySensorEntity):
             # The persistent flag. Off means the whole cycle so far is
             # unaffected; it does not come back on for a gap that has closed.
             "cycle_complete": state.cycle_complete,
+            "input_unreadable": not state.data_complete,
+            "plan_expired": state.plan_expired and not state.plan_replaced,
             "gap_since": state.gap_since.isoformat() if state.gap_since else None,
             "gap_minutes_this_cycle": round(state.gap_minutes, 1),
         }

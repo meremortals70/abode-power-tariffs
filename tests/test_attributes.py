@@ -249,8 +249,11 @@ class TestTranslationsMatch(unittest.TestCase):
         self.strings = json.loads((PACKAGE / "strings.json").read_text())
 
     def test_en_matches_strings(self) -> None:
-        english = json.loads((PACKAGE / "translations" / "en.json").read_text())
-        self.assertEqual(english, self.strings, "translations/en.json is out of date")
+        # Byte for byte (rule 16), not just the same parsed content: a
+        # formatting difference is still two files that disagree.
+        english = (PACKAGE / "translations" / "en.json").read_bytes()
+        strings = (PACKAGE / "strings.json").read_bytes()
+        self.assertEqual(english, strings, "translations/en.json is out of date")
 
     def test_flow_steps_have_strings(self) -> None:
         source = (PACKAGE / "config_flow.py").read_text()

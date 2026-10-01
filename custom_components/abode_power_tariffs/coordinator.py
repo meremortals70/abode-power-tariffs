@@ -62,7 +62,7 @@ from .const import (
     ISSUE_PLAN_EXPIRED,
     SIGNAL_UPDATE,
 )
-from .plan import ExportResolution, Plan, Rate, Resolution, format_time
+from .plan import ExportResolution, Plan, PlanError, Rate, Resolution, format_time
 from .validate import validate_plan
 
 _LOGGER = logging.getLogger(__name__)
@@ -112,6 +112,9 @@ class TariffState:
     next_change: datetime | None = None
     next_export_change: datetime | None = None
     plan_expired: bool = False
+    # Whether another plan for the same meter is in force today. An expired
+    # plan with a successor was archived; one without simply ran out.
+    plan_replaced: bool = False
     trace: tuple[str, ...] = ()
 
     # The export mirror of the five fields above (Gap #4). None throughout
@@ -184,6 +187,10 @@ class TariffCoordinator:
         self._export_energy_warned = False
         self._expired_warned = False
         self._gap_reason = ""
+        # Every input currently unreadable. The gap closes only when all of
+        # them are readable again, so one input recovering cannot clear a gap
+        # another input still has open.
+        self._unreadable: set[str] = set()
         self._forward_key: tuple[Any, ...] | None = None
         self._forward_series: list[intervals_module.Interval] = []
         # A startup race, not a tunable setting: the meter's own integration
@@ -355,10 +362,17 @@ class TariffCoordinator:
                     entity_id,
                 )
                 self._holiday_warned = True
+            # Today's timetable is a guess while this is down, so the figures
+            # may be against the wrong rates: the same truth failure as a
+            # missing meter, with the same treatment.
+            self._open_gap(
+                entity_id, f"{entity_id} is unavailable, unknown or not a number"
+            )
             return False
         if self._holiday_warned:
             _LOGGER.info("Holiday sensor %s is available again", entity_id)
             self._holiday_warned = False
+        self._close_gap(entity_id)
         # A workday sensor is on when it is a working day, so a public holiday
         # is the off state. The option is documented as a holiday sensor, so
         # the inversion is applied here rather than asked of the user.
@@ -373,10 +387,15 @@ class TariffCoordinator:
         trace: list[str] = []
 
         self.state.plan_expired = not self.plan.is_active_on(today)
-        if self.state.plan_expired:
+        self.state.plan_replaced = self.state.plan_expired and self._has_successor(
+            today
+        )
+        if self.state.plan_expired and not self.state.plan_replaced:
             trace.append("plan validity has passed; holding the expired plan")
             self._open_expired_issue()
         else:
+            if self.state.plan_replaced:
+                trace.append("plan archived; a successor plan is in force")
             self._close_expired_issue()
 
         resolution = intervals_module.resolve_at(
@@ -557,7 +576,9 @@ class TariffCoordinator:
             # Recovery does not retrieve what was missed, so the flag stays up
             # for the rest of the cycle it happened in — and comes down only
             # here, when a fresh cycle starts with nothing missing from it.
-            self.state.cycle_complete = True
+            # An input still unreadable as the cycle starts means the new
+            # cycle is already missing something.
+            self.state.cycle_complete = self.state.data_complete
 
     def _refresh_interval(
         self,
@@ -682,7 +703,9 @@ class TariffCoordinator:
                     # The meter was not readable at startup, so the hole
                     # behind the restart cannot be measured and everything
                     # after it under-counts.
-                    self._open_gap("the import meter was not readable at startup")
+                    self._open_gap(
+                        entity_id, "the import meter was not readable at startup"
+                    )
         if self.counting_export_allowance:
             export_entity_id = self.options.get(CONF_EXPORT_ENERGY_SENSOR)
             if export_entity_id:
@@ -690,7 +713,10 @@ class TariffCoordinator:
                     export_entity_id
                 )
                 if self._last_export_energy_total is None:
-                    self._open_gap("the export meter was not readable at startup")
+                    self._open_gap(
+                        export_entity_id,
+                        "the export meter was not readable at startup",
+                    )
 
     async def _read_float_retrying(self, entity_id: str) -> float | None:
         """Read a meter, waiting between tries rather than giving up at once.
@@ -760,12 +786,14 @@ class TariffCoordinator:
                     entity_id,
                 )
                 self._energy_warned = True
-            self._open_gap(f"{entity_id} is unavailable, unknown or not a number")
+            self._open_gap(
+                entity_id, f"{entity_id} is unavailable, unknown or not a number"
+            )
             return
         if self._energy_warned:
             _LOGGER.info("Import energy sensor %s is available again", entity_id)
             self._energy_warned = False
-        self._close_gap()
+        self._close_gap(entity_id)
 
         resolution = self.state.resolution
         if resolution is None:
@@ -805,12 +833,14 @@ class TariffCoordinator:
                     entity_id,
                 )
                 self._export_energy_warned = True
-            self._open_gap(f"{entity_id} is unavailable, unknown or not a number")
+            self._open_gap(
+                entity_id, f"{entity_id} is unavailable, unknown or not a number"
+            )
             return
         if self._export_energy_warned:
             _LOGGER.info("Export energy sensor %s is available again", entity_id)
             self._export_energy_warned = False
-        self._close_gap()
+        self._close_gap(entity_id)
 
         export_resolution = self.state.export_resolution
         if export_resolution is None or export_resolution.rate_name is None:
@@ -836,7 +866,7 @@ class TariffCoordinator:
 
     # ------------------------------------------------------------------ gaps
 
-    def _open_gap(self, reason: str) -> None:
+    def _open_gap(self, source: str, reason: str) -> None:
         """Record that an input stopped being readable, and raise the repair.
 
         A Home Assistant repair issue the moment a gap opens, cleared
@@ -846,6 +876,7 @@ class TariffCoordinator:
         flag is not decoration — it is the only thing between an incomplete
         cycle and a confident wrong answer.
         """
+        self._unreadable.add(source)
         self._gap_reason = reason
         if not self.state.data_complete:
             return
@@ -870,14 +901,16 @@ class TariffCoordinator:
             },
         )
 
-    def _close_gap(self) -> None:
-        """Record that the input is readable again, and clear the repair.
+    def _close_gap(self, source: str) -> None:
+        """Record that an input is readable again, and clear the repair.
 
-        The immediate flag comes down and the repair clears. The cycle's flag
-        does not: it clears when the cycle rolls, and the cycle closes marked
-        incomplete.
+        Only once every input is readable: while another one is still down,
+        the gap is still open. Then the immediate flag comes down and the
+        repair clears. The cycle's flag does not: it clears when the cycle
+        rolls, and the cycle closes marked incomplete.
         """
-        if self.state.data_complete:
+        self._unreadable.discard(source)
+        if self._unreadable or self.state.data_complete:
             return
         if self.state.gap_since is not None:
             self.state.gap_minutes += round(
@@ -901,11 +934,10 @@ class TariffCoordinator:
         Gap #6: the architecture treats this as the same truth failure a data
         gap is, and gives it the same immediate treatment — a repair issue
         the moment it happens, not just a flag sitting in diagnostics.
-        Archiving is excluded structurally: an archived plan's own valid_to
-        was set by the user with a successor in hand, and is_active_on
-        already reports it as inactive without this method being told
-        which case it is — the case this raises for is specifically the one
-        nobody told the service to stop being true, it just ran out.
+        Not raised for an archived plan: the caller only calls this when no
+        successor is in force (``_has_successor``). The case this raises for
+        is the one nobody told the service to stop being true; it just ran
+        out.
         """
         if self._expired_warned:
             return
@@ -924,6 +956,30 @@ class TariffCoordinator:
                 ),
             },
         )
+
+    def _has_successor(self, today: date) -> bool:
+        """Return whether another plan for the same meter is in force today.
+
+        A plan is the tariff for one meter, and the import energy sensor is
+        that meter, so a successor is another of this integration's plans
+        with the same import sensor whose validity contains today. That is
+        what tells a plan the user archived from one that simply ran out.
+        """
+        meter = self.options.get(CONF_IMPORT_ENERGY_SENSOR)
+        if not meter:
+            return False
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+            if entry.entry_id == self.entry_id:
+                continue
+            if entry.options.get(CONF_IMPORT_ENERGY_SENSOR) != meter:
+                continue
+            try:
+                other = Plan.from_dict({**entry.options, "name": entry.title})
+            except (PlanError, ValueError, TypeError):
+                continue
+            if other.is_active_on(today):
+                return True
+        return False
 
     def _close_expired_issue(self) -> None:
         """Clear the repair once the plan is active again."""

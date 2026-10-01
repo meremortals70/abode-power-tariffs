@@ -1559,3 +1559,58 @@ async def test_real_startup_retries_a_slow_meter(hass) -> None:
 
     await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_real_created_meter_is_switched_by_the_write_back(hass) -> None:
+    """DR-047. A meter Configure creates has the tariffs the write-back sends.
+
+    It used to be created with bare rate names while the write-back sent the
+    four-segment identifier, so the meter's select never had a matching
+    option and was never switched.
+    """
+    hass.states.async_set(
+        "sensor.grid_import",
+        "100.0",
+        {"device_class": "energy", "unit_of_measurement": "kWh"},
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Meter Test",
+        data={},
+        options=_options(),
+        entry_id="real_meter_1",
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "usage_tracking"}
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "meter_create"}
+    )
+    assert result["step_id"] == "meter_create", result
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"name": "By rate", "source_energy_sensor": "sensor.grid_import"},
+    )
+    await hass.async_block_till_done()
+
+    selects = [
+        state
+        for state in hass.states.async_all("select")
+        if "meter_test.every_day.import.peak" in state.attributes.get("options", [])
+    ]
+    assert len(selects) == 1, [s.attributes for s in hass.states.async_all("select")]
+    select_id = selects[0].entity_id
+
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "tariff_selects": [select_id]}
+    )
+    await hass.async_block_till_done()
+    entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(select_id).state == "meter_test.every_day.import.peak"

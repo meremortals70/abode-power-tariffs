@@ -183,12 +183,18 @@ class FakeConfigEntries:
     a reload would have happened.
     """
 
+    def __init__(self) -> None:
+        self.entries: list[Any] = []
+
     def async_update_entry(
         self, entry: Any, *, options: dict[str, Any] | None = None
     ) -> bool:
         if options is not None:
             entry.options = options
         return True
+
+    def async_entries(self, domain: str | None = None) -> list[Any]:
+        return list(self.entries)
 
 
 class FakeHass:

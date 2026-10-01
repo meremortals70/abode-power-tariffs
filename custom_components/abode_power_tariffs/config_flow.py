@@ -3030,7 +3030,11 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                     UM_CONF_SOURCE: user_input[CONF_SOURCE_ENERGY_SENSOR],
                     UM_CONF_CYCLE: UM_CYCLE_MONTHLY,
                     UM_CONF_OFFSET: 0,
-                    UM_CONF_TARIFFS: names,
+                    # The same identifiers the select write-back sends
+                    # (rule 10), or the meter has no option to switch to.
+                    UM_CONF_TARIFFS: [
+                        rate_id(self.config_entry.title, rate) for rate in self._rates()
+                    ],
                     UM_CONF_NET_CONSUMPTION: False,
                     UM_CONF_DELTA_VALUES: False,
                     UM_CONF_PERIODICALLY_RESETTING: True,

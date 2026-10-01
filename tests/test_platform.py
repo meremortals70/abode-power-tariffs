@@ -987,9 +987,43 @@ class TestBinarySensorPlatform(PlatformCase):
         return self.added
 
     def test_one_per_declared_constraint(self) -> None:
-        keys = {entity._key for entity in self._added().entities}
+        keys = {
+            entity._key
+            for entity in self._added().entities
+            if entity._key.startswith("constraint_")
+        }
         self.assertEqual(
             keys, {"constraint_grid_charge_battery", "constraint_no_grid_import"}
+        )
+
+    def test_a_rule_on_the_export_rate_in_force_is_on(self) -> None:
+        """DR-019. A rule declared only on an export rate reaches its sensor."""
+        data = options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Feed-in",
+            }
+        ]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {
+                CONST.CONF_NAME: "Feed-in",
+                CONST.CONF_EXPORT_CENTS: 5.0,
+                CONST.CONF_CONSTRAINTS: ["export_limited"],
+                CONST.CONF_ENFORCEABLE_CONSTRAINTS: ["export_limited"],
+            }
+        ]
+        self.coordinator = a_coordinator(data)
+        self.entry.runtime_data = self.coordinator
+        sensor = self._added().by_key("constraint_export_limited")
+        self.assertTrue(sensor.is_on)
+        self.assertTrue(sensor.enforceable)
+        self.assertEqual(
+            sensor.extra_state_attributes["export_rate"],
+            "test.every_day.export.feed_in",
         )
 
     def test_on_only_while_its_rate_is_in_force(self) -> None:
@@ -1083,9 +1117,28 @@ class TestBinarySensorPlatform(PlatformCase):
             demand.extra_state_attributes["demand_rate_per_kw_month"], 0.184
         )
 
-    def test_no_data_complete_sensor_when_the_plan_accounts_for_nothing(self) -> None:
+    def test_data_complete_exists_even_when_the_plan_accounts_for_nothing(
+        self,
+    ) -> None:
+        """A holiday gap or an expired plan needs the flag on every plan."""
         keys = {entity._key for entity in self._added().entities}
-        self.assertNotIn("data_complete", keys)
+        self.assertIn("data_complete", keys)
+
+    def test_the_flag_stays_up_for_the_rest_of_the_cycle(self) -> None:
+        sensor = self._added().by_key("data_complete")
+        self.coordinator.state.data_complete = True
+        self.coordinator.state.cycle_complete = False
+        self.assertTrue(sensor.is_on)
+        self.assertFalse(sensor.extra_state_attributes["input_unreadable"])
+
+    def test_an_expired_plan_with_no_successor_raises_the_flag(self) -> None:
+        """DR-007. Expiry drives the same flag as a gap."""
+        data = options(**{CONST.CONF_VALID_TO: "2026-01-01"})
+        self.coordinator = a_coordinator(data)
+        self.entry.runtime_data = self.coordinator
+        sensor = self._added().by_key("data_complete")
+        self.assertTrue(sensor.is_on)
+        self.assertTrue(sensor.extra_state_attributes["plan_expired"])
 
     def test_data_complete_appears_when_the_plan_accounts(self) -> None:
         data = options(**{CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid"})
