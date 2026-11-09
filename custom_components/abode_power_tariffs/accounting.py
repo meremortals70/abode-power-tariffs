@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from calendar import monthrange
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 
 from .const import (
     ALLOWANCE_PERIOD_MONTH,
@@ -266,17 +266,27 @@ class RateLedger:
         self.peak_at = None
         self.incomplete = False
 
-    def close_interval(self, moment: datetime, interval_minutes: int) -> float:
+    def close_interval(
+        self, moment: datetime, interval_minutes: int, zone: tzinfo
+    ) -> float:
         """Finish the interval in progress and return its average draw in kW.
 
         Only a completed interval is a peak candidate, so this is the only
-        place a peak can move.
+        place a peak can move. The timestamp recorded is when the interval
+        started, not when it closed, because the bill is built on the
+        half-hour (or other interval) that reached the peak, not the instant
+        it finished.
         """
         drawn = average_kw(self.interval_kwh, interval_minutes)
         self.interval_kwh = 0.0
         if drawn > self.peak_kw:
             self.peak_kw = drawn
-            self.peak_at = moment
+            # ``moment`` is the instant the interval closed (the boundary),
+            # which is also the start of the next interval. The completed
+            # interval began one interval length earlier.
+            start_moment = moment - timedelta(minutes=interval_minutes)
+            start = interval_start(start_moment, interval_minutes, zone)
+            self.peak_at = start if start is not None else moment
         return drawn
 
 

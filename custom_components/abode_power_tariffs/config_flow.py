@@ -13,7 +13,6 @@ from __future__ import annotations
 import copy
 import functools
 import logging
-import traceback
 from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
@@ -627,9 +626,12 @@ def guarded_setup(func: Any) -> Any:
     ) -> ConfigFlowResult:
         try:
             return await func(self, user_input)
-        except Exception:  # Deliberate: nothing may escape into an empty dialog
+        except Exception as exc:  # Deliberate: nothing may escape into an empty dialog
             _LOGGER.exception("Setup step %s failed", func.__name__)
-            self._failure = traceback.format_exc()
+            self._failure = (
+                f"{type(exc).__name__}: {exc}\n\n"
+                "The full traceback has been written to the Home Assistant log."
+            )
             return await self.async_step_setup_failure()
 
     return wrapper
@@ -746,6 +748,8 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         state is what makes the second pass an edit of the same timetable
         rather than a phantom new one.
         """
+        if not self._patterns:
+            return
         pattern = self._patterns.pop()
         self._pattern_name = str(pattern[CONF_NAME])
         self._pattern_days = list(pattern[CONF_DAYS])
@@ -1636,9 +1640,12 @@ def guarded(func: StepHandler) -> StepHandler:
     ) -> ConfigFlowResult:
         try:
             result = await func(self, user_input)
-        except Exception:  # Deliberate: nothing may escape into an empty dialog
+        except Exception as exc:  # Deliberate: nothing may escape into an empty dialog
             _LOGGER.exception("Configuration step %s failed", func.__name__)
-            self._failure = traceback.format_exc()
+            self._failure = (
+                f"{type(exc).__name__}: {exc}\n\n"
+                "The full traceback has been written to the Home Assistant log."
+            )
             return await self.async_step_failure()
         if self._working is not None and result.get("type") != "create_entry":
             self.hass.config_entries.async_update_entry(
@@ -1969,13 +1976,16 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                         # stays as it is (rule 14).
                         existing.clear()
                         existing.update(built)
+                        if previous and previous != name:
+                            self._rename_rate(previous, name, previous_timetable)
                     else:
                         # Moved to a different timetable: leave the old one,
-                        # nest into the new one.
+                        # nest into the new one. A rename follows into the
+                        # new timetable, not the old one.
                         self._remove_rate(existing)
                         self._add_rate(timetable, built)
-                    if previous and previous != name:
-                        self._rename_rate(previous, name, previous_timetable)
+                        if previous and previous != name:
+                            self._rename_rate(previous, name, timetable)
                 self._rate_index = None
                 return await self.async_step_rates_menu()
 
@@ -2676,8 +2686,11 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             elif not user_input.get(CONF_IMPORT_ENERGY_SENSOR):
                 # Mandatory for every plan (Gap #7, rule 6 revoked).
                 errors[CONF_IMPORT_ENERGY_SENSOR] = "energy_sensor_required"
-            elif plan is not None and any(
-                "validity" in str(problem) for problem in validate_plan(plan)
+            elif (
+                plan is not None
+                and plan.valid_from is not None
+                and plan.valid_to is not None
+                and plan.valid_from > plan.valid_to
             ):
                 errors[CONF_VALID_TO] = "validity_backwards"
             else:

@@ -6,7 +6,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -182,7 +185,7 @@ class DataCompleteBinarySensor(TariffEntity, BinarySensorEntity):
     asking about.
     """
 
-    _attr_device_class = "problem"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
 
     def __init__(self, coordinator: TariffCoordinator) -> None:
         """Initialise the data-complete sensor."""

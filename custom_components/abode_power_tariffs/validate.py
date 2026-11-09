@@ -7,6 +7,7 @@ when six periods are on screen.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date
 
@@ -230,7 +231,8 @@ def validate_rates(plan: Plan) -> list[Problem]:
         qualified_name(plan.name, day_pattern.name, rate.name)
         for day_pattern, rate in plan.rates_with_pattern()
     ]
-    clashing = sorted({name for name in identifiers if identifiers.count(name) > 1})
+    counts = Counter(identifiers)
+    clashing = sorted(name for name, count in counts.items() if count > 1)
     if clashing:
         problems.append(
             Problem("", f"two rates end up with the same id: {', '.join(clashing)}")

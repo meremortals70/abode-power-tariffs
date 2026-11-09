@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy, UnitOfPower
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
@@ -372,8 +372,9 @@ class TodayScheduleSensor(TariffEntity, SensorEntity):
 
     # Rebuilt on the resolution grid, several times an hour, several KB of
     # it. Keeping a history of past pictures of "today's schedule" has no
-    # value — the whole point is that it is one fact per day.
-    _unrecorded_attributes = frozenset({"segments", "periods", "table"})
+    # value — the whole point is that it is one fact per day. The "now"
+    # timestamp also changes every minute and is not worth recording.
+    _unrecorded_attributes = frozenset({"segments", "periods", "table", "now"})
 
     def __init__(self, coordinator: TariffCoordinator) -> None:
         """Initialise the today-schedule sensor."""
@@ -506,7 +507,7 @@ class AllowanceUsedSensor(_AccumulatingSensor):
     """
 
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
+    _attr_device_class = SensorDeviceClass.ENERGY
     _attr_suggested_display_precision = 2
 
     def __init__(
@@ -581,7 +582,7 @@ class AllowanceRemainingSensor(_AccumulatingSensor):
     """
 
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
+    _attr_device_class = SensorDeviceClass.ENERGY
     _attr_suggested_display_precision = 2
 
     def __init__(
@@ -709,7 +710,7 @@ class DemandPeakSensor(_AccumulatingSensor):
         return attributes
 
 
-class DemandPeakAtSensor(RateTariffEntity, SensorEntity):
+class DemandPeakAtSensor(RateTariffEntity, RestoreSensor):
     """The timestamp of the interval that set this cycle's demand peak.
 
     Not when the peak was noticed or written down — when the half-hour (or
@@ -731,6 +732,30 @@ class DemandPeakAtSensor(RateTariffEntity, SensorEntity):
         super().__init__(
             coordinator, KEY_DEMAND_PEAK_AT, day_pattern, rate, export=export
         )
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the timestamp, but only if it belongs to this cycle."""
+        await super().async_added_to_hass()
+        ledger = self.coordinator.ledger_for(self._qualified_name)
+        if ledger is None:
+            return
+        last = await self.async_get_last_sensor_data()
+        if last is None or last.native_value is None:
+            return
+        cycle = None
+        if (state := await self.async_get_last_state()) is not None:
+            cycle = state.attributes.get(ATTR_CYCLE_START)
+        current = (
+            self.coordinator.state.cycle_start.isoformat()
+            if self.coordinator.state.cycle_start
+            else None
+        )
+        if cycle is None or cycle != current:
+            return
+        try:
+            ledger.peak_at = datetime.fromisoformat(str(last.native_value))
+        except (TypeError, ValueError):
+            return
 
     @property
     def native_value(self) -> datetime | None:
@@ -903,7 +928,7 @@ class BillingCycleProgressSensor(TariffEntity, SensorEntity):
     same number of days it always did.
     """
 
-    _attr_native_unit_of_measurement = "%"
+    _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_suggested_display_precision = 0
 

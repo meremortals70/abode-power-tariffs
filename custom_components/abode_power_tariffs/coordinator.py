@@ -24,7 +24,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, tzinfo
 from typing import Any
 
 from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
@@ -193,6 +193,8 @@ class TariffCoordinator:
         self._unreadable: set[str] = set()
         self._forward_key: tuple[Any, ...] | None = None
         self._forward_series: list[intervals_module.Interval] = []
+        self._today_key: tuple[date, int] | None = None
+        self._today_series: list[intervals_module.Interval] = []
         # A startup race, not a tunable setting: the meter's own integration
         # may not have set up yet the moment this one does. Kept as instance
         # attributes, not hardcoded, only so a test can set the delay to
@@ -338,7 +340,7 @@ class TariffCoordinator:
         return existing
 
     @property
-    def zone(self) -> Any:
+    def zone(self) -> tzinfo:
         """Return Home Assistant's configured time zone."""
         return dt_util.get_default_time_zone()
 
@@ -613,7 +615,7 @@ class TariffCoordinator:
         if key != ledger.interval_key:
             # The clock has moved past the interval that was open, so it
             # completed. This is the only place a peak can move.
-            ledger.close_interval(now, demand_interval)
+            ledger.close_interval(now, demand_interval, self.zone)
             ledger.interval_key = key
 
     def _leave_intervals_except(self, active: set[str]) -> None:
@@ -1114,19 +1116,25 @@ class TariffCoordinator:
         generate()`` anchored to midnight with ``hours=24`` rather than a
         separate walk, so the real-instants DST handling
         (``instants_at``) is inherited, not reimplemented.
+
+        The result is cached because several sensors and services read it
+        every time attributes are requested.
         """
         now = dt_util.now()
-        midnight = intervals_module.instants_at(
-            now.astimezone(self.zone).date(), 0, self.zone
-        )[0]
-        return intervals_module.generate(
-            self.plan,
-            midnight,
-            self.zone,
-            self.is_holiday,
-            hours=24,
-            resolution_minutes=resolution_minutes,
-        )
+        today = now.astimezone(self.zone).date()
+        key = (today, resolution_minutes)
+        if key != self._today_key:
+            midnight = intervals_module.instants_at(today, 0, self.zone)[0]
+            self._today_series = intervals_module.generate(
+                self.plan,
+                midnight,
+                self.zone,
+                self.is_holiday,
+                hours=24,
+                resolution_minutes=resolution_minutes,
+            )
+            self._today_key = key
+        return self._today_series
 
     def today_schedule_segments(self, resolution_minutes: int) -> list[dict[str, Any]]:
         """Return today's schedule as plain dicts, for a service or a sensor.
