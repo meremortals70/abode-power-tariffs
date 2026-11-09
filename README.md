@@ -1,5 +1,11 @@
 # Abode Power Tariffs
 
+[![GitHub Release](https://img.shields.io/github/release/meremortals70/abode-power-tariffs.svg)](https://github.com/meremortals70/abode-power-tariffs/releases)
+[![License](https://img.shields.io/github/license/meremortals70/abode-power-tariffs.svg)](LICENSE)
+[![Project Maintenance](https://img.shields.io/maintenance/yes/2026.svg)](https://github.com/meremortals70/abode-power-tariffs/commits/main)
+[![Hassfest](https://github.com/meremortals70/abode-power-tariffs/actions/workflows/ci.yml/badge.svg)](https://github.com/meremortals70/abode-power-tariffs/actions/workflows/ci.yml)
+[![Open your Home Assistant instance and open this repository in the Marketplace.](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=meremortals70&repository=abode-power-tariffs&category=integration)
+
 Enter your electricity plan once, in the Home Assistant interface, and stop
 building it out of helpers.
 
@@ -60,7 +66,22 @@ accumulating sensor's attributes say so.
 
 ## Installing
 
-### HACS
+### Home Assistant Marketplace (recommended)
+
+Starting with Home Assistant 2026.11 the Marketplace replaces HACS. It is built
+into Home Assistant and needs no extra install.
+
+[![Open your Home Assistant instance and open this repository in the Marketplace.](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=meremortals70&repository=abode-power-tariffs&category=integration)
+
+1. Open the Marketplace (Settings → Marketplace) or click the badge above.
+2. Add this repository if it is not in the catalog: `meremortals70/abode-power-tariffs`, category **Integration**.
+3. Install **Abode Power Tariffs**.
+4. Restart Home Assistant if you installed manually; Marketplace installs with a config flow load right away.
+5. **Settings → Devices & services → Add integration → Abode Power Tariffs**
+
+<!-- ha-marketplace:exclude-start -->
+
+### HACS (Home Assistant 2026.10 and older)
 
 1. HACS → three-dot menu → **Custom repositories**
 2. Repository `meremortals70/abode-power-tariffs`, type **Integration**
@@ -72,6 +93,8 @@ accumulating sensor's attributes say so.
 
 Copy `custom_components/abode_power_tariffs` into your `config/custom_components`
 directory and restart, then add the integration as above.
+
+<!-- ha-marketplace:exclude-end -->
 
 ### Setup
 
@@ -89,7 +112,9 @@ day. Nothing is broken while you edit it.
 Settings → Devices & services → Abode Power Tariffs → the three-dot menu on the
 entry → **Delete**. Entities and the device go with it.
 
-If you installed through HACS, remove it there as well, then restart.
+If you installed through the Marketplace, open the Marketplace, find
+**Abode Power Tariffs** and remove it, then restart. If you installed through
+HACS (Home Assistant 2026.10 or older), remove it there instead.
 
 Anything you pointed at it — Energy dashboard sources, automations triggering on
 the constraint sensors, `utility_meter` selects it was driving — needs its own
