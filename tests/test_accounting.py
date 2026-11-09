@@ -377,25 +377,26 @@ class TestTheLedger(unittest.TestCase):
         ledger = accounting.RateLedger("weekday.peak")
         moment = datetime(2026, 5, 20, 17, 30, tzinfo=SYDNEY)
         ledger.interval_kwh = 2.5
-        drawn = ledger.close_interval(moment, 30)
+        drawn = ledger.close_interval(moment, 30, SYDNEY)
         self.assertAlmostEqual(drawn, 5.0, places=6)
         self.assertAlmostEqual(ledger.peak_kw, 5.0, places=6)
-        self.assertEqual(ledger.peak_at, moment)
+        # The peak is timestamped at the start of the interval, not when it closed.
+        self.assertEqual(ledger.peak_at, datetime(2026, 5, 20, 17, 0, tzinfo=SYDNEY))
 
     def test_closing_a_smaller_interval_leaves_the_peak_alone(self) -> None:
         ledger = accounting.RateLedger("weekday.peak")
         first = datetime(2026, 5, 20, 17, 30, tzinfo=SYDNEY)
         ledger.interval_kwh = 2.5
-        ledger.close_interval(first, 30)
+        ledger.close_interval(first, 30, SYDNEY)
         ledger.interval_kwh = 0.5
-        ledger.close_interval(datetime(2026, 5, 20, 18, 0, tzinfo=SYDNEY), 30)
+        ledger.close_interval(datetime(2026, 5, 20, 18, 0, tzinfo=SYDNEY), 30, SYDNEY)
         self.assertAlmostEqual(ledger.peak_kw, 5.0, places=6)
-        self.assertEqual(ledger.peak_at, first)
+        self.assertEqual(ledger.peak_at, datetime(2026, 5, 20, 17, 0, tzinfo=SYDNEY))
 
     def test_closing_an_interval_empties_it(self) -> None:
         ledger = accounting.RateLedger("weekday.peak")
         ledger.interval_kwh = 2.5
-        ledger.close_interval(datetime(2026, 5, 20, 17, 30, tzinfo=SYDNEY), 30)
+        ledger.close_interval(datetime(2026, 5, 20, 17, 30, tzinfo=SYDNEY), 30, SYDNEY)
         self.assertEqual(ledger.interval_kwh, 0.0)
 
 

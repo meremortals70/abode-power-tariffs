@@ -827,6 +827,25 @@ class TestForwardSeriesIsHeld(CoordinatorCase):
         self.assertIsNot(first, reloaded.forward_intervals(24, 30))
 
 
+class TestTodayScheduleIsCached(CoordinatorCase):
+    """P31: today's schedule is read from attributes several times a minute."""
+
+    def test_the_same_day_reuses_the_schedule(self) -> None:
+        coordinator = a_coordinator()
+        self.assertIs(coordinator.today_schedule(15), coordinator.today_schedule(15))
+
+    def test_a_different_resolution_rebuilds_it(self) -> None:
+        coordinator = a_coordinator()
+        first = coordinator.today_schedule(15)
+        self.assertIsNot(first, coordinator.today_schedule(30))
+
+    def test_a_new_day_rebuilds_it(self) -> None:
+        coordinator = a_coordinator()
+        first = coordinator.today_schedule(15)
+        PKG.coordinator.dt_util.NOW = at(10, 30).replace(day=at(10, 30).day + 1)
+        self.assertIsNot(first, coordinator.today_schedule(15))
+
+
 class TestForwardSeriesAcrossTheFallBack(CoordinatorCase):
     """P26: the cache key must tell the two passes of a repeated hour apart.
 
@@ -1046,6 +1065,60 @@ class TestEntityBase(CoordinatorCase):
         self.assertTrue(entity._attr_has_entity_name)
         self.assertEqual(entity._attr_translation_key, "import_price")
 
+    def test_handle_update_writes_state(self) -> None:
+        """Line 71: _handle_update calls async_write_ha_state."""
+        coordinator = a_coordinator()
+        entity = PKG.entity.TariffEntity(coordinator, "import_price")
+        entity.hass = coordinator.hass
+        entity._handle_update()
+
+    def _with_export_rate(self) -> Any:
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {CONST.CONF_START: "00:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Day"}
+        ]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {CONST.CONF_NAME: "Day", CONST.CONF_EXPORT_CENTS: 5.0}
+        ]
+        coordinator = a_coordinator(data)
+        coordinator.async_refresh()
+        return coordinator
+
+    def test_rate_tariff_entity_looks_up_its_rate(self) -> None:
+        """Line 137: pattern gone returns None; otherwise rate is looked up."""
+        coordinator = a_coordinator()
+        coordinator.async_refresh()
+        day_pattern = coordinator.plan.day_pattern_by_name("Every day")
+        rate = day_pattern.rate_by_name("Every day Peak")
+        entity = PKG.entity.RateTariffEntity(
+            coordinator, "demand_peak", day_pattern, rate
+        )
+        self.assertIsNotNone(entity.rate)
+        entity._timetable = "Missing"
+        self.assertIsNone(entity.rate)
+
+    def test_rate_tariff_entity_looks_up_export_rate(self) -> None:
+        """Line 139: export branch of the rate lookup."""
+        coordinator = self._with_export_rate()
+        day_pattern = coordinator.plan.day_pattern_by_name("Every day")
+        rate = day_pattern.export_rate_by_name("Day")
+        entity = PKG.entity.RateTariffEntity(
+            coordinator, "demand_peak", day_pattern, rate, export=True
+        )
+        self.assertIsNotNone(entity.rate)
+
+    def test_rate_tariff_entity_in_force_export(self) -> None:
+        """Lines 152-153: export in_force."""
+        coordinator = self._with_export_rate()
+        day_pattern = coordinator.plan.day_pattern_by_name("Every day")
+        rate = day_pattern.export_rate_by_name("Day")
+        entity = PKG.entity.RateTariffEntity(
+            coordinator, "demand_peak", day_pattern, rate, export=True
+        )
+        self.assertTrue(entity.in_force)
+
 
 class FakeEntry:
     """The parts of ConfigEntry the options flow reads."""
@@ -1084,6 +1157,282 @@ class OptionsDriver:
     @property
     def step(self) -> str:
         return str(self.result.get("step_id", self.result.get("type")))
+
+
+class TestStripRendering(unittest.TestCase):
+    def _plan(self, **kwargs: Any) -> Any:
+        data = sample_options()
+        data.update(kwargs)
+        return Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+
+    def test_name_width(self) -> None:
+        """Line 63."""
+        plan = self._plan()
+        self.assertIsInstance(PKG.strip.name_width(plan), int)
+
+    def test_export_allowance_with_fallback(self) -> None:
+        """Lines 112-113: export allowance fallback price note."""
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {CONST.CONF_START: "00:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Day"}
+        ]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {
+                CONST.CONF_NAME: "Day",
+                CONST.CONF_EXPORT_CENTS: 5.0,
+                CONST.CONF_EXPORT_ALLOWANCE_KWH: 10.0,
+                CONST.CONF_EXPORT_FALLBACK_CENTS: 1.0,
+            }
+        ]
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        note = PKG.strip._rate_note(plan.export_rates[0])
+        self.assertIn("allowance", note)
+        self.assertIn("then 0.0100/kWh", note)
+
+    def test_export_row_with_missing_rate(self) -> None:
+        """Line 148->131: export period names a missing rate."""
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {CONST.CONF_START: "00:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Missing"}
+        ]
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        row = PKG.strip.render_export_row(plan, plan.day_patterns[0])
+        self.assertIn("rate missing", row)
+
+    def test_export_demand_note(self) -> None:
+        """Line 151: export rate note is appended."""
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {CONST.CONF_START: "00:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Day"}
+        ]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {
+                CONST.CONF_NAME: "Day",
+                CONST.CONF_EXPORT_CENTS: 5.0,
+                CONST.CONF_DEMAND_PERIOD: True,
+                CONST.CONF_DEMAND_RATE: 15.0,
+            }
+        ]
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        row = PKG.strip.render_export_row(plan, plan.day_patterns[0])
+        self.assertIn("demand", row)
+
+    def test_rate_plan_card_seasonal(self) -> None:
+        """Lines 275-277."""
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_SEASON_FROM] = "12-01"
+        pattern[CONST.CONF_SEASON_TO] = "02-28"
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        card = PKG.strip.render_rate_plan_card(plan)
+        self.assertIn("Season", card)
+
+    def test_rate_plan_card_missing_rate(self) -> None:
+        """Lines 284-288."""
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_PERIODS][0][CONST.CONF_RATE] = "Missing"
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        card = PKG.strip.render_rate_plan_card(plan)
+        self.assertIn("rate missing", card)
+
+
+class TestOptionsFlowUtilities(unittest.TestCase):
+    def test_get_options_flow(self) -> None:
+        """Line 1608."""
+        result = PKG.config_flow.AbodePowerTariffsConfigFlow.async_get_options_flow(
+            None
+        )
+        self.assertIsInstance(result, OptionsFlow)
+
+    def test_guarded_catches_exception(self) -> None:
+        """Lines 1643-1649."""
+        driver = OptionsDriver()
+        driver.start()
+
+        async def boom(self: Any, user_input: Any | None = None) -> Any:
+            raise RuntimeError("deliberate")
+
+        driver.flow.async_step_rates_menu = PKG.config_flow.guarded(boom).__get__(
+            driver.flow, OptionsFlow
+        )
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        result = run(driver.flow.async_step_rates_menu())
+        self.assertEqual(result["step_id"], "failure")
+        self.assertIn("deliberate", result["description_placeholders"]["detail"])
+
+    def test_plan_text_when_plan_is_unreadable(self) -> None:
+        """Lines 1706-1707, 1712."""
+        driver = OptionsDriver()
+        driver.start()
+        driver.flow.working[CONST.CONF_DAY_PATTERNS] = [{"name": ""}]
+        text = driver.flow._plan_text()
+        self.assertIn("cannot be read", text)
+
+    def test_plan_text_shows_warnings(self) -> None:
+        """Line 1723."""
+        options = sample_options()
+        pattern = options[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 10.0
+        pattern[CONST.CONF_RATES][0][CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        pattern[CONST.CONF_PERIODS] = [
+            {
+                CONST.CONF_START: "22:00",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Every day Off Peak",
+            },
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "06:00",
+                CONST.CONF_RATE: "Every day Off Peak",
+            },
+        ]
+        driver = OptionsDriver(options)
+        driver.start()
+        text = driver.flow._plan_text()
+        self.assertIn("Worth checking", text)
+
+    def test_add_rate_to_missing_pattern_does_nothing(self) -> None:
+        """Line 1751->exit."""
+        driver = OptionsDriver()
+        driver.start()
+        before = len(driver.flow._rates())
+        driver.flow._add_rate("Missing", {CONST.CONF_NAME: "Spare"})
+        self.assertEqual(len(driver.flow._rates()), before)
+
+    def test_remove_rate_from_missing_pattern_does_nothing(self) -> None:
+        """Lines 1757->exit, 1759->exit."""
+        driver = OptionsDriver()
+        driver.start()
+        driver.flow._remove_rate({CONST.CONF_TIMETABLE: "Missing", CONST.CONF_NAME: "X"})
+        self.assertEqual(len(driver.flow._day_patterns()[0][CONST.CONF_RATES]), 2)
+
+    def test_day_pattern_by_name_missing(self) -> None:
+        """Line 1766."""
+        driver = OptionsDriver()
+        driver.start()
+        self.assertIsNone(driver.flow._day_pattern_by_name("Missing"))
+
+    def test_remove_rate_not_in_list(self) -> None:
+        """Line 1759->exit."""
+        driver = OptionsDriver()
+        driver.start()
+        before = len(driver.flow._rates())
+        driver.flow._remove_rate(
+            {CONST.CONF_TIMETABLE: "Every day", CONST.CONF_NAME: "Missing"}
+        )
+        self.assertEqual(len(driver.flow._rates()), before)
+
+    def test_rate_index_by_id_missing(self) -> None:
+        """Line 1802."""
+        driver = OptionsDriver()
+        driver.start()
+        self.assertIsNone(driver.flow._rate_index_by_id("not-a-rate"))
+
+    def test_failure_step_returns_to_menu(self) -> None:
+        """Line 1834."""
+        driver = OptionsDriver()
+        driver.start()
+        result = run(driver.flow.async_step_failure({}))
+        self.assertEqual(result["step_id"], "init")
+
+    def test_rate_plan_card_returns_to_menu(self) -> None:
+        """Line 1874."""
+        driver = OptionsDriver()
+        driver.start()
+        result = run(driver.flow.async_step_rate_plan_card({}))
+        self.assertEqual(result["step_id"], "init")
+
+    def test_rename_rate_missing_pattern(self) -> None:
+        """Line 2025."""
+        driver = OptionsDriver()
+        driver.start()
+        driver.flow._rename_rate("Old", "New", "Missing")
+
+    def test_rename_export_rate_missing_pattern(self) -> None:
+        """Line 2043."""
+        driver = OptionsDriver()
+        driver.start()
+        driver.flow._rename_export_rate("Old", "New", "Missing")
+
+    def test_duplicate_into_missing_patterns(self) -> None:
+        """Line 2073."""
+        driver = OptionsDriver()
+        driver.start()
+        driver.flow._duplicate_into("Missing", "Also missing")
+
+    def test_add_export_rate_missing_pattern(self) -> None:
+        """Line 2477->exit."""
+        driver = OptionsDriver()
+        driver.start()
+        driver.flow._add_export_rate("Missing", {CONST.CONF_NAME: "Day"})
+
+    def test_remove_export_rate_missing_pattern(self) -> None:
+        """Lines 2482->exit, 2484->exit."""
+        driver = OptionsDriver()
+        driver.start()
+        driver.flow._remove_export_rate(
+            {CONST.CONF_TIMETABLE: "Missing", CONST.CONF_NAME: "Day"}
+        )
+
+    def test_rate_add_name_required(self) -> None:
+        """Line 1954."""
+        driver = OptionsDriver()
+        driver.start()
+        driver.choose("rates_menu")
+        driver.choose("rate_add")
+        result = driver.submit(name="")
+        self.assertEqual(result["errors"].get(CONST.CONF_NAME), "name_required")
+
+    def test_rate_add_timetable_required(self) -> None:
+        """Line 1956."""
+        options = sample_options()
+        options[CONST.CONF_DAY_PATTERNS] = []
+        driver = OptionsDriver(options)
+        driver.start()
+        driver.choose("rates_menu")
+        driver.choose("rate_add")
+        result = driver.submit(name="Peak", import_cents=30.0, timetable="")
+        self.assertEqual(result["errors"].get(CONST.CONF_TIMETABLE), "timetable_required")
+
+    def test_rate_add_duplicate(self) -> None:
+        """Line 1958."""
+        driver = OptionsDriver()
+        driver.start()
+        driver.choose("rates_menu")
+        driver.choose("rate_add")
+        result = driver.submit(name="Every day Peak", import_cents=30.0)
+        self.assertEqual(result["errors"].get(CONST.CONF_NAME), "rate_exists")
+
+    def test_rate_add_demand_without_rate(self) -> None:
+        """Line 1962."""
+        driver = OptionsDriver()
+        driver.start()
+        driver.choose("rates_menu")
+        driver.choose("rate_add")
+        result = driver.submit(
+            name="Peak",
+            import_cents=30.0,
+            demand_period=True,
+            demand_rate_per_kw_month=0.0,
+        )
+        self.assertEqual(result["errors"].get(CONST.CONF_DEMAND_RATE), "demand_rate_required")
+
+    def test_periods_pick_with_no_patterns_adds_one(self) -> None:
+        """Lines 2413-2414."""
+        options = sample_options()
+        options[CONST.CONF_DAY_PATTERNS] = []
+        driver = OptionsDriver(options)
+        driver.start()
+        result = driver.choose("periods_pick_day_pattern")
+        self.assertEqual(result["step_id"], "day_pattern_add")
 
 
 class TestOptionsFlow(unittest.TestCase):
@@ -1652,6 +2001,122 @@ class TestTheSetupFormCanSetRules(unittest.TestCase):
             record[CONST.CONF_CONSTRAINTS], ["no_grid_import", "precool_opportunity"]
         )
         self.assertEqual(record[CONST.CONF_ENFORCEABLE_CONSTRAINTS], ["no_grid_import"])
+
+
+class TestValidateExport(unittest.TestCase):
+    def _plan(self, **kwargs: Any) -> Any:
+        data = sample_options()
+        data.update(kwargs)
+        return Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+
+    def test_duplicate_export_rate_names(self) -> None:
+        """Line 154."""
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {CONST.CONF_NAME: "Day", CONST.CONF_EXPORT_CENTS: 5.0},
+            {CONST.CONF_NAME: "Day", CONST.CONF_EXPORT_CENTS: 6.0},
+        ]
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        problems = [str(p) for p in PKG.validate.validate_plan(plan)]
+        self.assertTrue(
+            any("two export rates" in p for p in problems)
+        )
+
+    def test_export_enforceable_not_carried(self) -> None:
+        """Line 161."""
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {
+                CONST.CONF_NAME: "Flat",
+                CONST.CONF_EXPORT_CENTS: 5.0,
+                CONST.CONF_ENFORCEABLE_CONSTRAINTS: ["no_grid_import"],
+            }
+        ]
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        problems = [str(p) for p in PKG.validate.validate_export(plan)]
+        self.assertTrue(any("enforceable" in p for p in problems))
+
+    def test_export_periods_missing(self) -> None:
+        """Lines 174-175."""
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {CONST.CONF_NAME: "Day", CONST.CONF_EXPORT_CENTS: 5.0}
+        ]
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        problems = [str(p) for p in PKG.validate.validate_export(plan)]
+        self.assertTrue(any("no time periods" in p for p in problems))
+
+    def test_export_period_gap(self) -> None:
+        """Line 187."""
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {CONST.CONF_START: "00:00", CONST.CONF_END: "12:00", CONST.CONF_RATE: "Day"}
+        ]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {CONST.CONF_NAME: "Day", CONST.CONF_EXPORT_CENTS: 5.0}
+        ]
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        problems = [str(p) for p in PKG.validate.validate_export(plan)]
+        self.assertTrue(any("nothing covers" in p for p in problems))
+
+    def test_export_period_overlap(self) -> None:
+        """Line 194."""
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {CONST.CONF_START: "00:00", CONST.CONF_END: "14:00", CONST.CONF_RATE: "Day"},
+            {CONST.CONF_START: "12:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Day"},
+        ]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {CONST.CONF_NAME: "Day", CONST.CONF_EXPORT_CENTS: 5.0}
+        ]
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        problems = [str(p) for p in PKG.validate.validate_export(plan)]
+        self.assertTrue(any("overlaps" in p for p in problems))
+
+    def test_multiple_seasonal_timetables(self) -> None:
+        """Line 100."""
+        data = sample_options()
+        pattern1 = dict(data[CONST.CONF_DAY_PATTERNS][0])
+        pattern1[CONST.CONF_NAME] = "Summer"
+        pattern1[CONST.CONF_SEASON_FROM] = "12-01"
+        pattern1[CONST.CONF_SEASON_TO] = "02-28"
+        pattern2 = dict(data[CONST.CONF_DAY_PATTERNS][0])
+        pattern2[CONST.CONF_NAME] = "Hot"
+        pattern2[CONST.CONF_SEASON_FROM] = "12-01"
+        pattern2[CONST.CONF_SEASON_TO] = "02-28"
+        data[CONST.CONF_DAY_PATTERNS] = [pattern1, pattern2]
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        problems = [str(p) for p in PKG.validate.validate_day_coverage(plan)]
+        self.assertTrue(any("seasonal timetable" in p for p in problems))
+
+    def test_export_capped_across_midnight_warning(self) -> None:
+        """Lines 381-383 and 406."""
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {CONST.CONF_START: "22:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Night"},
+            {CONST.CONF_START: "00:00", CONST.CONF_END: "06:00", CONST.CONF_RATE: "Night"},
+        ]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {
+                CONST.CONF_NAME: "Night",
+                CONST.CONF_EXPORT_CENTS: 5.0,
+                CONST.CONF_EXPORT_ALLOWANCE_KWH: 10.0,
+            }
+        ]
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        warnings = [str(p) for p in PKG.validate.plan_warnings(plan)]
+        self.assertTrue(any("export Night" in w and "midnight" in w for w in warnings))
 
 
 class TestCountingSitsWithTheCap(unittest.TestCase):

@@ -289,6 +289,7 @@ def install() -> None:
     const.STATE_OFF = "off"
     const.STATE_UNAVAILABLE = "unavailable"
     const.STATE_UNKNOWN = "unknown"
+    const.PERCENTAGE = "%"
 
     class _UnitOfEnergy:
         KILO_WATT_HOUR = "kWh"
@@ -421,6 +422,9 @@ def install() -> None:
 
     binary_mod = _module("homeassistant.components.binary_sensor")
     binary_mod.BinarySensorEntity = type("BinarySensorEntity", (_Entity,), {})
+    binary_mod.BinarySensorDeviceClass = type(
+        "BinarySensorDeviceClass", (), {"PROBLEM": "problem"}
+    )
 
     platform = _module("homeassistant.helpers.entity_platform")
     platform.AddConfigEntryEntitiesCallback = object

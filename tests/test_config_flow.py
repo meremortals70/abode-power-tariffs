@@ -812,5 +812,191 @@ class TestBothRateFormsAskTheSameFilteredQuestion(unittest.TestCase):
             self.assertLessEqual(shown, set(fields))
 
 
+class TestSetupValidationBranches(unittest.TestCase):
+    """Error paths that the happy-path tests above do not reach."""
+
+    def test_user_name_is_required(self) -> None:
+        """Line 775."""
+        driver = FlowDriver()
+        driver.start()
+        result = driver.submit(plan_name="")
+        self.assertEqual(driver.errors.get(CONST.CONF_PLAN_NAME), "name_required")
+        self.assertEqual(result["step_id"], "user")
+
+    def test_billing_day_out_of_range(self) -> None:
+        """Line 831."""
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test")
+        result = driver.submit(
+            daily_supply_charge_cents=0.0,
+            monthly_charge=0.0,
+            billing_cycle_day=31,
+            import_energy_sensor="sensor.grid_import",
+        )
+        self.assertEqual(
+            driver.errors.get(CONST.CONF_BILLING_CYCLE_DAY), "billing_day_out_of_range"
+        )
+        self.assertEqual(result["step_id"], "charges")
+
+    def test_import_sensor_is_required(self) -> None:
+        """Line 839."""
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test")
+        result = driver.submit(
+            daily_supply_charge_cents=0.0,
+            monthly_charge=0.0,
+            import_energy_sensor="",
+        )
+        self.assertEqual(
+            driver.errors.get(CONST.CONF_IMPORT_ENERGY_SENSOR), "energy_sensor_required"
+        )
+        self.assertEqual(result["step_id"], "charges")
+
+    def test_days_name_is_required(self) -> None:
+        """Line 1131."""
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test")
+        driver.submit()
+        result = driver.submit(name="", same_every_day=True)
+        self.assertEqual(driver.errors.get(CONST.CONF_NAME), "name_required")
+        self.assertEqual(result["step_id"], "days")
+
+    def test_days_selection_is_required(self) -> None:
+        """Line 1133."""
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test")
+        driver.submit()
+        result = driver.submit(name="Weekend", same_every_day=False, days=[])
+        self.assertEqual(driver.errors.get(CONST.CONF_DAYS), "days_required")
+        self.assertEqual(result["step_id"], "days")
+
+    def test_rate_rule_in_both_lists(self) -> None:
+        """Line 1064."""
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test")
+        driver.submit()
+        driver.submit(name="Every day", same_every_day=True)
+        driver.submit(
+            name="Peak",
+            import_cents=30.0,
+            information_constraints=["no_grid_import"],
+            enforceable_constraints=["no_grid_import"],
+            on_submit=CONST.SUBMIT_ADD,
+        )
+        self.assertEqual(
+            driver.errors.get(CONST.CONF_ENFORCEABLE_CONSTRAINTS), "rule_in_both_lists"
+        )
+
+    def test_demand_period_requires_a_rate(self) -> None:
+        """Line 1066."""
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test")
+        driver.submit()
+        driver.submit(name="Every day", same_every_day=True)
+        driver.submit(
+            name="Peak",
+            import_cents=30.0,
+            demand_period=True,
+            demand_rate_per_kw_month=0.0,
+            on_submit=CONST.SUBMIT_ADD,
+        )
+        self.assertEqual(
+            driver.errors.get(CONST.CONF_DEMAND_RATE), "demand_rate_required"
+        )
+
+    def test_period_bad_time_format(self) -> None:
+        """Lines 1186-1187."""
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test")
+        driver.submit()
+        driver.submit(name="Every day", same_every_day=True)
+        driver.submit(
+            name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE
+        )
+        driver.submit(
+            start="not-a-time", end="24:00:00", rate="Peak", on_submit=CONST.SUBMIT_ADD
+        )
+        self.assertEqual(driver.errors.get("base"), "bad_time")
+
+    def test_export_rate_name_required(self) -> None:
+        """Line 1274."""
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test", has_export=True)
+        driver.submit()
+        driver.submit(name="Every day", same_every_day=True)
+        driver.submit(
+            name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE
+        )
+        driver.submit(
+            start="00:00", end="00:00", rate="Peak", on_submit=CONST.SUBMIT_CONTINUE
+        )
+        # feed_in screen
+        driver.submit(export_same_all_day=False, export_flat_cents=0.0)
+        result = driver.submit(on_submit=CONST.SUBMIT_CONTINUE)
+        self.assertEqual(driver.errors.get(CONST.CONF_NAME), "name_required")
+        self.assertEqual(result["step_id"], "export_rates")
+
+    def test_export_rate_duplicate(self) -> None:
+        """Line 1286."""
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test", has_export=True)
+        driver.submit()
+        driver.submit(name="Every day", same_every_day=True)
+        driver.submit(
+            name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE
+        )
+        driver.submit(
+            start="00:00", end="00:00", rate="Peak", on_submit=CONST.SUBMIT_CONTINUE
+        )
+        driver.submit(export_same_all_day=False, export_flat_cents=0.0)
+        driver.submit(name="Day", export_cents=5.0, on_submit=CONST.SUBMIT_ADD)
+        driver.submit(
+            name="Day", export_cents=6.0, on_submit=CONST.SUBMIT_ADD
+        )
+        self.assertEqual(driver.errors.get(CONST.CONF_NAME), "rate_exists")
+
+    def test_export_period_bad_time(self) -> None:
+        """Lines 1382-1383."""
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test", has_export=True)
+        driver.submit()
+        driver.submit(name="Every day", same_every_day=True)
+        driver.submit(
+            name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE
+        )
+        driver.submit(
+            start="00:00", end="00:00", rate="Peak", on_submit=CONST.SUBMIT_CONTINUE
+        )
+        driver.submit(export_same_all_day=False, export_flat_cents=0.0)
+        driver.submit(name="Day", export_cents=5.0, on_submit=CONST.SUBMIT_CONTINUE)
+        driver.submit(
+            start="not-a-time", end="24:00:00", rate="Day", on_submit=CONST.SUBMIT_ADD
+        )
+        self.assertEqual(driver.errors.get("base"), "bad_time")
+
+    def test_setup_failure_aborts(self) -> None:
+        """Line 678."""
+        driver = FlowDriver()
+        driver.result = run(driver.flow.async_step_setup_failure({}))
+        self.assertEqual(driver.result["type"], _ha_stubs.FlowResultType.ABORT)
+        self.assertEqual(driver.result["reason"], "setup_failed")
+
+    def test_restore_pattern_when_none_stored(self) -> None:
+        """Line 752."""
+        driver = FlowDriver()
+        driver.start()
+        driver.flow._restore_pattern()
+
+
 if __name__ == "__main__":
     unittest.main()

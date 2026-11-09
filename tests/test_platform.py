@@ -783,6 +783,44 @@ class TestDemandSensors(PlatformCase):
         ledger.peak_at = moment
         self.assertEqual(sensor.native_value, moment)
 
+    def test_the_peak_at_restores_when_it_belongs_to_the_current_cycle(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_at")
+        sensor.hass = self.coordinator.hass
+        self.coordinator.async_refresh()
+        cycle = self.coordinator.state.cycle_start.isoformat()
+        moment = datetime(2026, 5, 20, 17, 0, tzinfo=BRISBANE)
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(
+            native_value=moment.isoformat()
+        )
+        module.RestoreSensor.RESTORED_STATE = types.SimpleNamespace(
+            attributes={CONST.ATTR_CYCLE_START: cycle}
+        )
+        run(sensor.async_added_to_hass())
+        ledger = self.coordinator.ledger_for(sensor._qualified_name)
+        self.assertEqual(ledger.peak_at, moment)
+        module.RestoreSensor.RESTORED = None
+        module.RestoreSensor.RESTORED_STATE = None
+
+    def test_a_peak_at_from_a_different_cycle_is_discarded(self) -> None:
+        added = self.sensors(self._demand_data())
+        sensor = added.by_key("demand_peak_at")
+        sensor.hass = self.coordinator.hass
+        self.coordinator.async_refresh()
+        module = _ha_stubs.sys.modules["homeassistant.components.sensor"]
+        module.RestoreSensor.RESTORED = types.SimpleNamespace(
+            native_value=datetime(2026, 5, 20, 17, 0, tzinfo=BRISBANE).isoformat()
+        )
+        module.RestoreSensor.RESTORED_STATE = types.SimpleNamespace(
+            attributes={CONST.ATTR_CYCLE_START: "2001-01-01"}
+        )
+        run(sensor.async_added_to_hass())
+        ledger = self.coordinator.ledger_for(sensor._qualified_name)
+        self.assertIsNone(ledger.peak_at)
+        module.RestoreSensor.RESTORED = None
+        module.RestoreSensor.RESTORED_STATE = None
+
     def test_an_unqualified_rate_makes_the_entity_unavailable(self) -> None:
         """If the rate is edited away from under it, the entity says so."""
         added = self.sensors(self._demand_data())
@@ -1153,6 +1191,87 @@ class TestBinarySensorPlatform(PlatformCase):
         self.assertTrue(sensor.is_on)
         self.assertFalse(sensor.extra_state_attributes["cycle_complete"])
 
+    def test_data_complete_is_always_available(self) -> None:
+        """Line 227."""
+        sensor = self._added().by_key("data_complete")
+        self.assertTrue(sensor.available)
+
+    def test_export_demand_sensor_is_created(self) -> None:
+        """Line 48: an export rate with a demand charge gets a sensor."""
+        data = options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {CONST.CONF_START: "00:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Day"}
+        ]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {
+                CONST.CONF_NAME: "Day",
+                CONST.CONF_EXPORT_CENTS: 5.0,
+                CONST.CONF_DEMAND_PERIOD: True,
+                CONST.CONF_DEMAND_RATE: 15.0,
+            }
+        ]
+        self.coordinator = a_coordinator(data)
+        self.entry.runtime_data = self.coordinator
+        keys = {entity._key for entity in self._added().entities}
+        self.assertIn("demand_period_active", keys)
+
+    def test_export_rate_without_the_constraint_returns_none(self) -> None:
+        """Line 89: export rate in force does not carry this rule."""
+        data = options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {CONST.CONF_START: "00:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Day"}
+        ]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {
+                CONST.CONF_NAME: "Day",
+                CONST.CONF_EXPORT_CENTS: 5.0,
+                CONST.CONF_CONSTRAINTS: ["export_only_rule"],
+            }
+        ]
+        self.coordinator = a_coordinator(data)
+        self.entry.runtime_data = self.coordinator
+        # The "no_grid_import" sensor checks the export side; the export rate
+        # does not declare it, so _export_rate returns None (line 89).
+        sensor = self._added().by_key("constraint_no_grid_import")
+        self.assertIsNone(sensor._export_rate())
+
+    def test_flat_export_constraint_has_no_period_attributes(self) -> None:
+        """Line 124->127: flat all-day export has no period."""
+        data = options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {
+                CONST.CONF_NAME: "Flat",
+                CONST.CONF_EXPORT_CENTS: 5.0,
+                CONST.CONF_CONSTRAINTS: ["flat_rule"],
+            }
+        ]
+        # Keep same_all_day true so export_resolution.rate_name is None.
+        self.coordinator = a_coordinator(data)
+        self.entry.runtime_data = self.coordinator
+        sensor = self._added().by_key("constraint_flat_rule")
+        attrs = sensor.extra_state_attributes
+        self.assertNotIn("export_period_start", attrs)
+        self.assertNotIn("export_period_end", attrs)
+
+    def test_demand_sensor_attributes_when_rate_vanishes(self) -> None:
+        """Line 168: rate lookup returns None after an edit removes the rate."""
+        data = options()
+        rate_in(data, 1)[CONST.CONF_DEMAND_PERIOD] = True
+        rate_in(data, 1)[CONST.CONF_DEMAND_RATE] = 18.4
+        self.coordinator = a_coordinator(data)
+        self.entry.runtime_data = self.coordinator
+        sensor = self._added().by_key("demand_period_active")
+        # Simulate the rate being removed from the plan after entity creation.
+        sensor._timetable = "Gone"
+        self.assertEqual(
+            sensor.extra_state_attributes, {"demand_rate_per_kw_month": None}
+        )
+
 
 class TestSetupAndUnload(PlatformCase):
     def setUp(self) -> None:
@@ -1228,6 +1347,36 @@ class TestSetupAndUnload(PlatformCase):
         entry = FakeEntry()
         run(PKG.async_setup_entry(self.coordinator.hass, entry))
         self.assertTrue(run(PKG.async_unload_entry(self.coordinator.hass, entry)))
+
+    def test_unload_returns_false_when_platforms_refuse(self) -> None:
+        entry = FakeEntry()
+        run(PKG.async_setup_entry(self.coordinator.hass, entry))
+
+        class RefusingConfigEntries:
+            async def async_unload_platforms(
+                self, entry: Any, platforms: Any
+            ) -> bool:
+                return False
+
+        original = self.coordinator.hass.config_entries
+        self.coordinator.hass.config_entries = RefusingConfigEntries()
+        try:
+            self.assertFalse(
+                run(PKG.async_unload_entry(self.coordinator.hass, entry))
+            )
+        finally:
+            self.coordinator.hass.config_entries = original
+
+    def test_options_update_listener_reloads_the_entry(self) -> None:
+        reloaded: list[str] = []
+        entry = FakeEntry()
+
+        async def fake_reload(entry_id: str) -> None:
+            reloaded.append(entry_id)
+
+        self.coordinator.hass.config_entries.async_reload = fake_reload
+        run(PKG._async_options_updated(self.coordinator.hass, entry))
+        self.assertEqual(reloaded, ["entry1"])
 
 
 class TestTheAction(PlatformCase):
@@ -1319,6 +1468,57 @@ class TestTheCsvExportAction(PlatformCase):
         self.assertIn(peak_name(self.coordinator), response["rates_csv"])
         self.assertIn("rate_id", response["periods_csv"])
         self.assertIn("rate_id", response["export_rates_csv"])
+
+    def test_an_unknown_entry_is_a_validation_error(self) -> None:
+        error = sys.modules["homeassistant.exceptions"].ServiceValidationError
+        with self.assertRaises(error):
+            self._call(**{CONST.ATTR_CONFIG_ENTRY_ID: "nope"})
+
+    def test_an_unloaded_entry_is_a_validation_error(self) -> None:
+        self.entry.runtime_data = None
+        error = sys.modules["homeassistant.exceptions"].ServiceValidationError
+        with self.assertRaises(error):
+            self._call(**{CONST.ATTR_CONFIG_ENTRY_ID: "entry1"})
+
+
+class TestTheDayScheduleAction(PlatformCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.registered: dict[str, Any] = {}
+        outer = self
+
+        class FakeServices(_ha_stubs.FakeServices):
+            def async_register(
+                self, domain: str, service: str, handler: Any, **kwargs: Any
+            ) -> None:
+                outer.registered[service] = handler
+
+        self.coordinator.hass.services = FakeServices()
+
+        class FakeConfigEntries:
+            def async_get_entry(self, entry_id: str) -> Any:
+                return outer.entry if entry_id == "entry1" else None
+
+        self.coordinator.hass.config_entries = FakeConfigEntries()
+        run(PKG.async_setup(self.coordinator.hass, {}))
+
+    def _call(self, **data: Any) -> Any:
+        payload = {CONST.ATTR_RESOLUTION_MINUTES: 60}
+        payload.update(data)
+        return run(
+            self.registered[CONST.SERVICE_GET_DAY_SCHEDULE](
+                types.SimpleNamespace(data=payload)
+            )
+        )
+
+    def test_the_action_is_registered(self) -> None:
+        self.assertIn(CONST.SERVICE_GET_DAY_SCHEDULE, self.registered)
+
+    def test_it_returns_todays_segments(self) -> None:
+        response = self._call(**{CONST.ATTR_CONFIG_ENTRY_ID: "entry1"})
+        self.assertIn("segments", response)
+        self.assertIn("now", response)
+        self.assertEqual(len(response["segments"]), 24)
 
     def test_an_unknown_entry_is_a_validation_error(self) -> None:
         error = sys.modules["homeassistant.exceptions"].ServiceValidationError
