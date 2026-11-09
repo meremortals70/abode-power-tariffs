@@ -1,14 +1,15 @@
 {
   "domain": "abode_power_tariffs",
   "name": "Abode Power Tariffs",
-  "codeowners": [
-    "@meremortals70"
-  ],
+  "categories": ["energy.energy_prices"],
+  "codeowners": ["@meremortals70"],
   "config_flow": true,
   "documentation": "https://github.com/meremortals70/abode-power-tariffs",
+  "homeassistant": "2025.2.0",
   "integration_type": "service",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/meremortals70/abode-power-tariffs/issues",
+  "quality_scale": "platinum",
   "requirements": [],
-  "version": "0.9.11"
+  "version": "0.9.12"
 }

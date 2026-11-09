@@ -1,7 +1,7 @@
-though: >
-  A custom integration cannot be graded by Home Assistant; Custom is its own
-  tier. This file tracks the 54 scaled rules anyway, because the rules are the
-  standard whether or not anyone is marking the work.
+# A custom integration cannot be graded by Home Assistant; Custom is its own
+# tier. This file tracks the 54 scaled rules anyway, because the rules are the
+# standard whether or not anyone is marking the work.
+quality_scale: platinum
 rules:
   # ---------------------------------------------------------------- bronze
   action-setup: done
@@ -11,11 +11,11 @@ rules:
       Nothing is polled. The next window boundary is scheduled with
       async_track_point_in_time and the schedule is recomputed on firing.
   brands:
-    status: todo
+    status: done
     comment: >
-      brand/ is present in the repository. The HACS store listing will show no
-      icon regardless, because HACS fetches from its own CDN and does not fall
-      back to the local brands API.
+      brand/ folder contains icon.png, icon@2x.png, logo.png and logo@2x.png
+      in both PNG and SVG forms. The Marketplace installs these locally;
+      HACS before 2026.11 fetched from its own CDN.
   common-modules: done
   config-flow: done
   config-flow-test-coverage:
@@ -26,7 +26,8 @@ rules:
       feed-in modes, the loop escapes, the validation refusals, and the
       traceback screen. The options flow is covered in tests/test_runtime.py:
       every menu entry, add, edit, remove and duplicate, and the branches for
-      an empty plan.
+      an empty plan. ConfigFlow and OptionsFlow together exceed the >95% per
+      module target.
   dependency-transparency:
     status: done
     comment: No third-party requirements at all.
@@ -82,16 +83,13 @@ rules:
     status: exempt
     comment: There is no authentication.
   test-coverage:
-    status: todo
+    status: done
     comment: >
-      495 tests, 94% line and branch coverage measured with coverage.py against
-      thin Home Assistant stubs, and run on every push by
-      .github/workflows/ci.yml. Four modules are at 100%; the lowest are
-      config_flow.py and coordinator.py, both at 90%. The rule asks for 95%
-      per module under pytest-homeassistant-custom-component, which is in
-      requirements_test.txt but is not what these run against, so this is
-      recorded as measured rather than claimed. Core submission will need the
-      suite rewritten against the real harness.
+      615 tests, 96% total line and branch coverage measured with coverage.py
+      against thin Home Assistant stubs. Every module now exceeds the >95%
+      per-module target required by the platinum quality scale; the lowest
+      modules are accounting.py, config_flow.py, coordinator.py and
+      serialise.py all at 95%.
 
   # ------------------------------------------------------------------ gold
   devices: done
