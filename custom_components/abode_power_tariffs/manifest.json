@@ -5,7 +5,6 @@
   "codeowners": ["@meremortals70"],
   "config_flow": true,
   "documentation": "https://github.com/meremortals70/abode-power-tariffs",
-  "homeassistant": "2025.2.0",
   "integration_type": "service",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/meremortals70/abode-power-tariffs/issues",
