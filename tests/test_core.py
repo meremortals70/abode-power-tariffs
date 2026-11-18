@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _pure import load
 
 _pkg = load()
+CONST = _pkg.const
 allowance = _pkg.allowance
 intervals = _pkg.intervals
 serialise = _pkg.serialise
@@ -923,6 +924,74 @@ class TestTheMidnightWarning(unittest.TestCase):
     def test_a_capped_rate_that_does_not_wrap_says_nothing(self) -> None:
         plan = self._plan(capped=True, wraps=False)
         self.assertEqual(_pkg.validate.plan_warnings(plan), [])
+
+
+class TestTheWithdrawnInstantaneousOption(unittest.TestCase):
+    """'Instantaneous' was offered as a demand interval; no tariff bills it.
+
+    Every demand charge is an average over a metering interval — 30 minutes in
+    Australia, 15 in the United States, half-hourly for UK capacity charges. A
+    sample of one instant is an artefact of when the meter was polled, and a
+    single motor start would set a monthly charge. The option is withdrawn. A
+    plan that stored zero is read as 30 minutes and is told so, rather than
+    quietly changing meaning.
+    """
+
+    def _options(self, interval: Any, *, export: bool = False) -> dict[str, Any]:
+        key = CONST.CONF_EXPORT_RATES if export else CONST.CONF_RATES
+        return {
+            CONST.CONF_DAY_PATTERNS: [
+                {
+                    CONST.CONF_NAME: "Every day",
+                    key: [
+                        {
+                            CONST.CONF_NAME: "Peak",
+                            CONST.CONF_DEMAND_INTERVAL: interval,
+                        }
+                    ],
+                }
+            ]
+        }
+
+    def test_zero_is_no_longer_an_offered_interval(self) -> None:
+        self.assertEqual(CONST.DEMAND_INTERVALS, (15, 30, 60))
+
+    def test_a_stored_zero_reads_as_thirty_minutes(self) -> None:
+        rate = Rate.from_dict(
+            {"name": "Peak", "import_cents": 30.0, "demand_interval": 0}
+        )
+        self.assertEqual(rate.demand_interval, 30)
+        export_rate = ExportRate.from_dict(
+            {"name": "Day", "export_cents": 5.0, "demand_interval": 0}
+        )
+        self.assertEqual(export_rate.demand_interval, 30)
+
+    def test_a_stored_zero_is_reported(self) -> None:
+        problems = _pkg.validate.instantaneous_demand_problems(self._options(0))
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(problems[0].scope, "Peak")
+        self.assertIn("instantaneous", problems[0].message)
+        self.assertIn("30 minutes", problems[0].message)
+
+    def test_an_export_rate_is_reported_too(self) -> None:
+        problems = _pkg.validate.instantaneous_demand_problems(
+            self._options(0, export=True)
+        )
+        self.assertEqual([problem.scope for problem in problems], ["Peak"])
+
+    def test_a_zero_stored_as_text_is_reported(self) -> None:
+        """The form stores what the selector gave it, which is a string."""
+        problems = _pkg.validate.instantaneous_demand_problems(self._options("0"))
+        self.assertEqual([problem.scope for problem in problems], ["Peak"])
+
+    def test_a_real_interval_is_not_reported(self) -> None:
+        self.assertEqual(
+            _pkg.validate.instantaneous_demand_problems(self._options(15)), []
+        )
+
+    def test_a_plan_that_declares_no_demand_says_nothing(self) -> None:
+        options = {CONST.CONF_DAY_PATTERNS: [{CONST.CONF_NAME: "Every day"}]}
+        self.assertEqual(_pkg.validate.instantaneous_demand_problems(options), [])
 
 
 class TestRateScoping(unittest.TestCase):

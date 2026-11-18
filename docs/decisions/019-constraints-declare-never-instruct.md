@@ -42,12 +42,12 @@ A consumer decides what enforceable means for it.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.** A sensor is
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** A sensor is
 on while a rate in force on either side carries its rule, and reports the
 rate and period on each side it is attached to.
 
-- `const.py:75` - `KNOWN_CONSTRAINTS` - suggested names, not a closed list
-- `plan.py:795-800` - `export_rate.constraints` - names gathered from both sides
-- `binary_sensor.py:67` - `_import_rate` - the import rate in force
-- `binary_sensor.py:74` - `_export_rate` - the export rate in force
-- `binary_sensor.py:90` - `def is_on` - either side
+- `const.py:92` - `KNOWN_CONSTRAINTS` - suggested names, not a closed list
+- `plan.py:878` - `export_rate.constraints` - names gathered from both sides
+- `binary_sensor.py:70` - `_import_rate` - the import rate in force
+- `binary_sensor.py:77` - `_export_rate` - the export rate in force
+- `binary_sensor.py:93` - `def is_on` - either side

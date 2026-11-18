@@ -54,6 +54,7 @@ async def async_get_config_entry_diagnostics(
             "export_allowance_used_kwh": state.export_allowance_used_kwh,
             "export_allowance_remaining_kwh": state.export_allowance_remaining_kwh,
             "plan_expired": state.plan_expired,
+            "plan_not_yet_in_force": state.plan_not_yet_in_force,
             "trace": list(state.trace),
         },
         "options": {

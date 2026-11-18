@@ -297,6 +297,18 @@ weekday tokens.
 The import energy sensor is mandatory. Every plan requires one, whether or
 not any rate in it declares a demand charge or an allowance.
 
+**Each energy sensor declares its unit.** A state is a bare number, and a
+meter counts in Wh, kWh or MWh without saying which in the number itself.
+`CONF_IMPORT_ENERGY_UNIT` and `CONF_EXPORT_ENERGY_UNIT` hold the declared unit
+per meter, kWh by default, and `ENERGY_UNIT_TO_KWH` scales every reading to
+kWh before it reaches a ledger — so one unit runs through the allowances, the
+demand averages and every published figure downstream. At each read the unit
+the meter's own state reports is compared with the declared one; a mismatch
+logs a warning and raises a repair naming the meter, what it reports and what
+the plan expects, and the repair clears when they agree. It never refuses the
+reading: the declaration is what the number means, and the mismatch is a chance
+to correct it, not a veto.
+
 **External outputs** are the sensors and entities the component publishes,
 each holding one true fact about cost or state right now:
 
@@ -336,7 +348,9 @@ each holding one true fact about cost or state right now:
   billing cycle. This is the number the demand charge is built on — the
   true figure only exists once the cycle closes, the same true-so-far
   distinction the ledger section makes. **Demand peak at** is the timestamp
-  of the interval that set it.
+  of the interval that set it. The interval is always an average over a
+  declared 15, 30 or 60 minutes: no tariff bills demand from a single
+  instant, so there is no instantaneous basis to declare.
 - **Demand cost to date**, **demand cost projected** — per rate, what the
   peak reached so far has cost over the days elapsed in the cycle, and
   what it would cost if nothing higher is reached before the cycle ends.

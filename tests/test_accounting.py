@@ -129,7 +129,8 @@ class TestIntervalAlignment(unittest.TestCase):
         start = accounting.interval_start(moment, 15, SYDNEY)
         self.assertEqual(start.astimezone(SYDNEY).minute, 45)
 
-    def test_instantaneous_has_no_interval(self) -> None:
+    def test_a_zero_interval_has_no_interval_and_cannot_divide(self) -> None:
+        """No declaration produces zero now; the guard is what keeps it safe."""
         moment = datetime(2026, 5, 20, 14, 47, tzinfo=SYDNEY)
         self.assertIsNone(accounting.interval_start(moment, 0, SYDNEY))
         self.assertIsNone(accounting.interval_key(moment, 0, SYDNEY))
@@ -240,7 +241,8 @@ class TestIntervalCompletion(unittest.TestCase):
         moment = datetime(2026, 4, 4, 16, 0, tzinfo=UTC)
         self.assertTrue(accounting.interval_is_complete(moment, start, 30))
 
-    def test_an_instantaneous_declaration_never_completes(self) -> None:
+    def test_a_zero_interval_never_completes(self) -> None:
+        """Defensive: a zero interval is not a length of time to complete."""
         start = datetime(2026, 5, 20, 14, 0, tzinfo=SYDNEY)
         moment = datetime(2026, 5, 20, 23, 0, tzinfo=SYDNEY)
         self.assertFalse(accounting.interval_is_complete(moment, start, 0))
@@ -273,6 +275,188 @@ class TestAverageDraw(unittest.TestCase):
 
     def test_the_same_energy_over_an_hour_is_half_the_draw(self) -> None:
         self.assertAlmostEqual(accounting.average_kw(2.5, 60), 2.5, places=6)
+
+
+class TestSplittingAStraddlingReading(unittest.TestCase):
+    """A reading either side of a boundary is divided, not credited to one side.
+
+    The meter says how much was drawn between two readings, not when. Even
+    attribution across the real time between them is the only honest estimate
+    available, and it is the whole of build 4.
+    """
+
+    def test_a_delta_is_split_at_one_boundary_by_elapsed_time(self) -> None:
+        start = datetime(2026, 8, 14, 20, 50, tzinfo=SYDNEY)
+        boundary = datetime(2026, 8, 14, 21, 0, tzinfo=SYDNEY)
+        end = datetime(2026, 8, 14, 21, 10, tzinfo=SYDNEY)
+        slices = accounting.split_delta(6.0, start, end, [boundary])
+        self.assertEqual(len(slices), 2)
+        self.assertAlmostEqual(slices[0][1], 3.0, places=9)
+        self.assertAlmostEqual(slices[1][1], 3.0, places=9)
+        self.assertEqual(slices[0][0].astimezone(UTC), boundary.astimezone(UTC))
+        self.assertEqual(slices[1][0].astimezone(UTC), end.astimezone(UTC))
+
+    def test_two_boundaries_make_three_stretches(self) -> None:
+        start = datetime(2026, 8, 14, 15, 0, tzinfo=SYDNEY)
+        first = datetime(2026, 8, 14, 16, 0, tzinfo=SYDNEY)
+        second = datetime(2026, 8, 14, 21, 0, tzinfo=SYDNEY)
+        end = datetime(2026, 8, 14, 22, 0, tzinfo=SYDNEY)
+        slices = accounting.split_delta(7.0, start, end, [first, second])
+        self.assertEqual(len(slices), 3)
+        self.assertAlmostEqual(slices[0][1], 1.0, places=9)
+        self.assertAlmostEqual(slices[1][1], 5.0, places=9)
+        self.assertAlmostEqual(slices[2][1], 1.0, places=9)
+
+    def test_no_boundary_leaves_the_delta_whole(self) -> None:
+        start = datetime(2026, 8, 14, 17, 0, tzinfo=SYDNEY)
+        end = datetime(2026, 8, 14, 17, 10, tzinfo=SYDNEY)
+        slices = accounting.split_delta(4.0, start, end, [])
+        self.assertEqual(len(slices), 1)
+        self.assertAlmostEqual(slices[0][1], 4.0, places=9)
+
+    def test_a_boundary_exactly_at_the_reading_belongs_to_the_stretch_before(
+        self,
+    ) -> None:
+        """A meter read on the boundary reports what was drawn up to it."""
+        start = datetime(2026, 8, 14, 20, 50, tzinfo=SYDNEY)
+        end = datetime(2026, 8, 14, 21, 0, tzinfo=SYDNEY)
+        slices = accounting.split_delta(3.0, start, end, [end])
+        self.assertEqual(len(slices), 2)
+        self.assertAlmostEqual(slices[0][1], 3.0, places=9)
+        self.assertAlmostEqual(slices[1][1], 0.0, places=9)
+
+    def test_the_repeated_hour_is_two_hours_to_a_meter(self) -> None:
+        """Subtracting two same-tzinfo datetimes would halve the first share.
+
+        The clocks go back at 02:00 on 5 April. From 02:15 (first pass) to
+        02:45 (second pass) is ninety real minutes. A boundary at 02:30
+        (first pass) is fifteen of them, one sixth of the delta. On the wall
+        clock the two readings look half an hour apart and the boundary sits
+        exactly half way.
+        """
+        start = datetime(2026, 4, 5, 2, 15, tzinfo=SYDNEY, fold=0)
+        boundary = datetime(2026, 4, 5, 2, 30, tzinfo=SYDNEY, fold=0)
+        end = datetime(2026, 4, 5, 2, 45, tzinfo=SYDNEY, fold=1)
+        slices = accounting.split_delta(12.0, start, end, [boundary])
+        self.assertEqual(len(slices), 2)
+        self.assertAlmostEqual(slices[0][1], 2.0, places=9)
+        self.assertAlmostEqual(slices[1][1], 10.0, places=9)
+
+    def test_a_reading_at_the_same_instant_is_not_divided(self) -> None:
+        moment = datetime(2026, 8, 14, 21, 0, tzinfo=SYDNEY)
+        slices = accounting.split_delta(2.0, moment, moment, [moment])
+        self.assertEqual(len(slices), 1)
+        self.assertAlmostEqual(slices[0][1], 2.0, places=9)
+
+    def test_a_meter_reset_contributes_nothing(self) -> None:
+        start = datetime(2026, 8, 14, 20, 50, tzinfo=SYDNEY)
+        end = datetime(2026, 8, 14, 21, 10, tzinfo=SYDNEY)
+        self.assertEqual(accounting.split_delta(0.0, start, end, []), [])
+
+
+class TestALateTail(unittest.TestCase):
+    """A reading covering the tail arrives after its interval has closed."""
+
+    def _ledger(self) -> accounting.RateLedger:
+        ledger = accounting.RateLedger("weekday.peak")
+        moment = datetime(2026, 5, 20, 17, 30, tzinfo=SYDNEY)
+        ledger.interval_key = "2026-05-20T07:00:00+00:00"  # 17:00 local
+        ledger.interval_minutes = 30
+        ledger.interval_kwh = 2.0
+        ledger.close_interval(moment, 30, SYDNEY)
+        return ledger
+
+    def test_closing_an_interval_keeps_what_it_measured(self) -> None:
+        ledger = self._ledger()
+        self.assertEqual(ledger.last_closed_key, "2026-05-20T07:00:00+00:00")
+        self.assertAlmostEqual(ledger.last_closed_kwh, 2.0, places=9)
+        self.assertEqual(ledger.interval_kwh, 0.0)
+
+    def test_a_tail_raises_the_peak_the_interval_already_set(self) -> None:
+        ledger = self._ledger()
+        self.assertAlmostEqual(ledger.peak_kw, 4.0, places=6)
+        ledger.credit_interval(
+            "2026-05-20T07:00:00+00:00",
+            1.0,
+            30,
+            datetime(2026, 5, 20, 17, 35, tzinfo=SYDNEY),
+            SYDNEY,
+        )
+        self.assertAlmostEqual(ledger.last_closed_kwh, 3.0, places=9)
+        self.assertAlmostEqual(ledger.peak_kw, 6.0, places=6)
+        self.assertEqual(ledger.peak_at, datetime(2026, 5, 20, 17, 0, tzinfo=SYDNEY))
+
+    def test_a_tail_that_does_not_beat_the_peak_leaves_it_alone(self) -> None:
+        ledger = self._ledger()
+        ledger.peak_kw = 10.0
+        ledger.credit_interval(
+            "2026-05-20T07:00:00+00:00",
+            0.5,
+            30,
+            datetime(2026, 5, 20, 17, 35, tzinfo=SYDNEY),
+            SYDNEY,
+        )
+        self.assertAlmostEqual(ledger.peak_kw, 10.0, places=6)
+
+    def test_the_first_energy_in_an_interval_opens_it(self) -> None:
+        """A reading inside an interval the ledger has not seen opens it."""
+        ledger = accounting.RateLedger("weekday.peak")
+        key = "2026-05-20T07:00:00+00:00"
+        ledger.credit_interval(
+            key,
+            1.5,
+            30,
+            datetime(2026, 5, 20, 17, 5, tzinfo=SYDNEY),
+            SYDNEY,
+        )
+        self.assertEqual(ledger.interval_key, key)
+        self.assertAlmostEqual(ledger.interval_kwh, 1.5, places=9)
+
+    def test_energy_for_an_interval_the_ledger_has_left_is_dropped(self) -> None:
+        """Keys only move forward. Anything older is a discarded interval."""
+        ledger = accounting.RateLedger("weekday.peak")
+        ledger.interval_key = "2026-05-20T07:30:00+00:00"
+        ledger.interval_minutes = 30
+        ledger.credit_interval(
+            "2026-05-20T07:00:00+00:00",
+            9.0,
+            30,
+            datetime(2026, 5, 20, 17, 35, tzinfo=SYDNEY),
+            SYDNEY,
+        )
+        self.assertEqual(ledger.interval_kwh, 0.0)
+        self.assertEqual(ledger.peak_kw, 0.0)
+
+    def test_a_later_interval_closes_the_one_open_before_it(self) -> None:
+        """A stale open interval completes before the next one takes energy."""
+        ledger = accounting.RateLedger("weekday.peak")
+        ledger.interval_key = "2026-05-20T07:00:00+00:00"
+        ledger.interval_minutes = 30
+        ledger.interval_kwh = 2.0
+        ledger.credit_interval(
+            "2026-05-20T07:30:00+00:00",
+            1.0,
+            30,
+            datetime(2026, 5, 20, 17, 35, tzinfo=SYDNEY),
+            SYDNEY,
+        )
+        self.assertEqual(ledger.last_closed_key, "2026-05-20T07:00:00+00:00")
+        self.assertAlmostEqual(ledger.last_closed_kwh, 2.0, places=9)
+        self.assertAlmostEqual(ledger.peak_kw, 4.0, places=6)
+        self.assertEqual(ledger.interval_key, "2026-05-20T07:30:00+00:00")
+        self.assertAlmostEqual(ledger.interval_kwh, 1.0, places=9)
+
+    def test_a_tail_with_no_closed_interval_goes_nowhere(self) -> None:
+        ledger = accounting.RateLedger("weekday.peak")
+        ledger.credit_closed_interval(1.0, 30, SYDNEY)
+        self.assertEqual(ledger.last_closed_kwh, 0.0)
+        self.assertEqual(ledger.peak_kw, 0.0)
+
+    def test_a_new_cycle_forgets_the_closed_interval(self) -> None:
+        ledger = self._ledger()
+        ledger.roll_cycle("2026-06-12")
+        self.assertIsNone(ledger.last_closed_key)
+        self.assertEqual(ledger.last_closed_kwh, 0.0)
 
 
 class TestAllowanceKeys(unittest.TestCase):
@@ -410,9 +594,9 @@ class TestTheNewRateFields(unittest.TestCase):
 
     def test_a_plan_stored_before_p35_gets_the_market_defaults(self) -> None:
         rate = self._rate()
-        # Not zero. A zero interval reads as instantaneous and would count no
-        # completed interval at all, so a demand charge on a migrated plan
-        # would silently report a peak of nothing.
+        # Not zero. A zero interval would count no completed interval at all,
+        # so a demand charge on a migrated plan would silently report a peak
+        # of nothing.
         self.assertEqual(rate.demand_interval, 30)
         self.assertEqual(rate.demand_basis, "day")
         self.assertEqual(rate.allowance_period, "slot")
@@ -438,8 +622,21 @@ class TestTheNewRateFields(unittest.TestCase):
         self.assertEqual(self._rate(demand_interval=7).demand_interval, 30)
         self.assertEqual(self._rate(demand_interval="nonsense").demand_interval, 30)
 
-    def test_instantaneous_is_a_permitted_declaration(self) -> None:
-        self.assertEqual(self._rate(demand_interval=0).demand_interval, 0)
+    def test_a_stored_instantaneous_interval_is_read_as_thirty_minutes(self) -> None:
+        """Zero is no longer offered, and is not left meaning something else.
+
+        It used to mean "measure the instantaneous draw", which no tariff
+        bills, so the rate was measured over no interval at all and reported a
+        peak of nothing. Thirty minutes is the Australian basis and the
+        default this field has always had.
+        """
+        self.assertEqual(self._rate(demand_interval=0).demand_interval, 30)
+
+    def test_zero_is_still_refused_by_the_interval_arithmetic(self) -> None:
+        """No declaration can be zero now, but a hand-written one cannot divide."""
+        moment = datetime(2026, 5, 20, 17, 5, tzinfo=SYDNEY)
+        self.assertIsNone(accounting.interval_start(moment, 0, SYDNEY))
+        self.assertFalse(accounting.interval_is_complete(moment, moment, 0))
 
     def test_a_monthly_allowance_is_recognised_only_when_capped(self) -> None:
         uncapped = self._rate(allowance_period="month")

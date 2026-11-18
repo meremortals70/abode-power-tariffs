@@ -37,10 +37,10 @@ matches the occurrence running now.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `const.py:137` - `ALLOWANCE_PERIODS` - slot or month, declared
-- `plan.py:229` - `counts_monthly_allowance` - which one this rate has
+- `const.py:164` - `ALLOWANCE_PERIODS` - slot or month, declared
+- `plan.py:248` - `counts_monthly_allowance` - which one this rate has
 - `accounting.py:160` - `slot_key` - one occurrence of one slot
 - `accounting.py:170` - `allowance_key` - slot or cycle
-- `sensor.py:535` - `allowance_key` - a restored count is kept only for the same occurrence
+- `sensor.py:554` - `allowance_key` - a restored count is kept only for the same occurrence

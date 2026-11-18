@@ -1313,7 +1313,13 @@ class TestSetupAndUnload(PlatformCase):
         run(PKG.async_setup_entry(self.coordinator.hass, FakeEntry()))
         issues = sys.modules["homeassistant.helpers.issue_registry"]
         self.assertEqual(issues.RAISED, [])
-        self.assertEqual(issues.DELETED, ["invalid_plan_entry1"])
+        # Both clear on setup: an invalid plan, and a stored rate that still
+        # declares the withdrawn instantaneous demand interval. Clearing
+        # unconditionally is what lets a corrected plan drop the repair after
+        # a restart, when nothing else would ever withdraw it.
+        self.assertEqual(
+            issues.DELETED, ["invalid_plan_entry1", "instantaneous_demand_entry1"]
+        )
 
     def test_an_invalid_plan_raises_a_repair_issue_and_still_sets_up(self) -> None:
         broken = options()
@@ -1353,17 +1359,13 @@ class TestSetupAndUnload(PlatformCase):
         run(PKG.async_setup_entry(self.coordinator.hass, entry))
 
         class RefusingConfigEntries:
-            async def async_unload_platforms(
-                self, entry: Any, platforms: Any
-            ) -> bool:
+            async def async_unload_platforms(self, entry: Any, platforms: Any) -> bool:
                 return False
 
         original = self.coordinator.hass.config_entries
         self.coordinator.hass.config_entries = RefusingConfigEntries()
         try:
-            self.assertFalse(
-                run(PKG.async_unload_entry(self.coordinator.hass, entry))
-            )
+            self.assertFalse(run(PKG.async_unload_entry(self.coordinator.hass, entry)))
         finally:
             self.coordinator.hass.config_entries = original
 

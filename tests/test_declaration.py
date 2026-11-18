@@ -165,6 +165,10 @@ def populated_options() -> dict[str, Any]:
                 # The two P32 added, and the two a rebuild drops.
                 CONST.CONF_EXPORT_ALLOWANCE_KWH: 10.0,
                 CONST.CONF_EXPORT_FALLBACK_CENTS: 2.0,
+                # What that cap covers. Deliberately not the default, so a
+                # screen that rebuilt the declaration from its own idea of the
+                # period would be caught rather than silently reset to 'slot'.
+                CONST.CONF_EXPORT_ALLOWANCE_PERIOD: "month",
             }
         ],
         CONST.CONF_SUPPLY_CHARGE_CENTS: 116.6,
@@ -177,6 +181,10 @@ def populated_options() -> dict[str, Any]:
         CONST.CONF_HOLIDAY_SENSOR: None,
         CONST.CONF_EXPORT_ENERGY_SENSOR: None,
         CONST.CONF_IMPORT_ENERGY_SENSOR: "sensor.grid_import",
+        # The unit each meter reports in, stored beside it. kWh is what the
+        # plan's own arithmetic is in, so it is also the default.
+        CONST.CONF_IMPORT_ENERGY_UNIT: "kWh",
+        CONST.CONF_EXPORT_ENERGY_UNIT: "kWh",
     }
 
 

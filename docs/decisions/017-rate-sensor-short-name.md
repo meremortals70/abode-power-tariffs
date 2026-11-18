@@ -36,8 +36,8 @@ away.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `sensor.py:319` - `RateSensor` - short state
-- `sensor.py:355` - `scheduled_rate` - the identifier as an attribute
-- `plan.py:143` - `display_name` - the short form, prefixed once at most
+- `sensor.py:337` - `RateSensor` - short state
+- `sensor.py:373` - `scheduled_rate` - the identifier as an attribute
+- `plan.py:160` - `display_name` - the short form, prefixed once at most

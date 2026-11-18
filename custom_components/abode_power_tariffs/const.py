@@ -37,6 +37,23 @@ CONF_IMPORT_ENERGY_SENSOR: Final = "import_energy_sensor"
 # demand charge or an allowance, in which case there is nothing for this
 # meter to be measured against and nothing is lost by leaving it unset.
 CONF_EXPORT_ENERGY_SENSOR: Final = "export_energy_sensor"
+# The unit each meter reports in. The plan's own arithmetic is in kWh, so a
+# reading is scaled by the unit chosen here before it becomes a delta. Absent
+# means kWh, so an entry made before this field existed reads exactly as it did
+# — a default, not a migration.
+CONF_IMPORT_ENERGY_UNIT: Final = "import_energy_unit"
+CONF_EXPORT_ENERGY_UNIT: Final = "export_energy_unit"
+ENERGY_UNIT_WH: Final = "Wh"
+ENERGY_UNIT_KWH: Final = "kWh"
+ENERGY_UNIT_MWH: Final = "MWh"
+ENERGY_UNITS: Final = (ENERGY_UNIT_WH, ENERGY_UNIT_KWH, ENERGY_UNIT_MWH)
+DEFAULT_ENERGY_UNIT: Final = ENERGY_UNIT_KWH
+# Multipliers to the kWh the plan is written in.
+ENERGY_UNIT_TO_KWH: Final = {
+    ENERGY_UNIT_WH: 0.001,
+    ENERGY_UNIT_KWH: 1.0,
+    ENERGY_UNIT_MWH: 1000.0,
+}
 CONF_TARIFF_SELECTS: Final = "tariff_selects"
 CONF_SOURCE_ENERGY_SENSOR: Final = "source_energy_sensor"
 
@@ -86,6 +103,11 @@ SECTION_ALLOWANCE: Final = "allowance"
 SECTION_CONSTRAINTS: Final = "constraints_section"
 CONF_RATE_ALLOWANCE_KWH: Final = "rate_allowance_kwh"
 CONF_EXPORT_ALLOWANCE_KWH: Final = "export_allowance_kwh"
+# What a flat all-day feed-in cap covers: each day it is in force, or the
+# whole billing cycle — the same declaration an import rate already carries
+# under CONF_ALLOWANCE_PERIOD. Its own key because it lives on the timetable
+# rather than on a rate: there is no named export rate on that shape.
+CONF_EXPORT_ALLOWANCE_PERIOD: Final = "export_allowance_period"
 CONF_FALLBACK_RATE: Final = "fallback_rate"
 # Declares an allowance the same way CONF_DEMAND_PERIOD declares a demand
 # charge — a flag, not inferred from whether the typed amount is zero. Unlike
@@ -103,14 +125,19 @@ CONF_DEMAND_PERIOD: Final = "demand_period"
 
 # How the meter averages a demand charge. Not a property of when the rate is
 # in force — the timetable already carries that — but of how the retailer
-# measures the draw inside it. Minutes; zero means instantaneous.
+# measures the draw inside it. Minutes.
+#
+# There is no instantaneous basis. It was offered once (as zero) and withdrawn:
+# every tariff bills demand as an average over a metering interval, 30 minutes
+# in Australia, because a sample of one instant is an artefact of when the
+# meter was polled and a single motor start would set a monthly charge. Zero is
+# still refused by the arithmetic and still reported when a stored plan carries
+# it; it is simply no longer offered or accepted as a declaration.
 CONF_DEMAND_INTERVAL: Final = "demand_interval"
-DEMAND_INTERVAL_INSTANTANEOUS: Final = 0
 DEMAND_INTERVAL_15: Final = 15
 DEMAND_INTERVAL_30: Final = 30
 DEMAND_INTERVAL_60: Final = 60
 DEMAND_INTERVALS: Final = (
-    DEMAND_INTERVAL_INSTANTANEOUS,
     DEMAND_INTERVAL_15,
     DEMAND_INTERVAL_30,
     DEMAND_INTERVAL_60,
@@ -170,6 +197,14 @@ ISSUE_DATA_GAP: Final = "input_data_gap"
 # Architecture: this is a truth failure the same way a missing input is one,
 # and gets the same treatment.
 ISSUE_PLAN_EXPIRED: Final = "plan_expired"
+# Raised when a meter's own reported unit disagrees with the unit chosen for
+# it. Advisory: the chosen unit is what the arithmetic uses, and the repair
+# points at Configure, where the choice is made.
+ISSUE_METER_UNIT: Final = "meter_unit_mismatch"
+# Raised when a stored plan still declares the withdrawn instantaneous demand
+# interval. Advisory: the rate is measured over the 30-minute default, and the
+# repair says so rather than letting the meaning change quietly.
+ISSUE_INSTANTANEOUS_DEMAND: Final = "instantaneous_demand"
 
 # Front-page setup shortcuts. Both are asked once, before any rate.
 CONF_SINGLE_RATE: Final = "single_rate_plan"

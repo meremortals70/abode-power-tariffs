@@ -217,6 +217,7 @@ class DataCompleteBinarySensor(TariffEntity, BinarySensorEntity):
             "cycle_complete": state.cycle_complete,
             "input_unreadable": not state.data_complete,
             "plan_expired": state.plan_expired and not state.plan_replaced,
+            "plan_not_yet_in_force": state.plan_not_yet_in_force,
             "gap_since": state.gap_since.isoformat() if state.gap_since else None,
             "gap_minutes_this_cycle": round(state.gap_minutes, 1),
         }

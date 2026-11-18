@@ -226,6 +226,7 @@ class ImportPriceSensor(_PriceSensor):
             # Says plainly whether this price accounts for a cap being spent.
             "allowance_counted": self.coordinator.counting_allowance,
             "plan_expired": state.plan_expired,
+            "plan_not_yet_in_force": state.plan_not_yet_in_force,
             "trace": list(state.trace),
         }
 
@@ -280,14 +281,21 @@ class ExportPriceSensor(_PriceSensor):
         rate, day_pattern and the forecast series were all import's facts,
         mislabelled as this entity's own. ExportRate has no constraints,
         no enforceable_constraints and no coasting_permitted (rule 5's
-        separate flows again), and nothing accumulates against an export
-        allowance the way an import one does, so allowance_exhausted and
-        allowance_counted have no export equivalent — omitted rather than
-        filled with an import answer or a fabricated one.
+        separate flows again).
+
+        The cap is counted here as it is on the import side, so the count,
+        what is left and whether it is spent are published beside the
+        declaration they belong to. Declaring a cap is not counting against
+        it (rule 7): with no export meter nominated the count stays zero and
+        ``allowance_counted`` says why.
         """
         resolution = self.coordinator.export_resolution_now()
         period = resolution.period if resolution else None
         pricing = resolution.pricing if resolution else None
+        state = self.coordinator.state
+        counted = bool(self.coordinator.counting_export_allowance and pricing)
+        if pricing is None or pricing.allowance_kwh is None:
+            counted = False
 
         attributes: dict[str, Any] = {
             "rate_name": period.rate if period else None,
@@ -301,7 +309,17 @@ class ExportPriceSensor(_PriceSensor):
             "period_end": format_time(period.end) if period else None,
             "allowance_kwh": pricing.allowance_kwh if pricing else None,
             "fallback_per_kwh": pricing.fallback_price if pricing else None,
-            "plan_expired": self.coordinator.state.plan_expired,
+            "allowance_period": resolution.allowance_period if resolution else None,
+            "allowance_counted": counted,
+            "allowance_used_kwh": state.export_allowance_used_kwh if counted else None,
+            "allowance_remaining_kwh": (
+                state.export_allowance_remaining_kwh if counted else None
+            ),
+            "allowance_exhausted": state.export_allowance_exhausted
+            if counted
+            else None,
+            "plan_expired": state.plan_expired,
+            "plan_not_yet_in_force": state.plan_not_yet_in_force,
         }
 
         # evcc reads a list of {start, end, value} from a named attribute.
@@ -854,7 +872,10 @@ class _SupplyChargeAccrualSensor(TariffEntity, RestoreSensor):
     """Common behaviour for the two accrued supply charge sensors."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    # Both values reset — daily at local midnight, cycle at the cycle day.
+    # TOTAL_INCREASING makes Home Assistant treat every reset as a
+    # contradiction and discard it, leaving long-term statistics flat.
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_suggested_display_precision = 2
 
     def __init__(self, coordinator: TariffCoordinator, key: str, currency: str) -> None:

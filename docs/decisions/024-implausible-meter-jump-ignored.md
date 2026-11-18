@@ -36,7 +36,7 @@ as it already did.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
 - `allowance.py:85` - `MAX_PLAUSIBLE_DELTA_KWH` - the ceiling
 - `allowance.py:88` - `def accumulate` - rejects it

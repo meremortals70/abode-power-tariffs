@@ -39,9 +39,9 @@ with an option it already has.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.** The only service call
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** The only service call
 the coordinator makes is `select.select_option` on nominated entities.
 
-- `coordinator.py:998` - `_async_write_tariff_selects` - the one write
-- `coordinator.py:1004` - `CONF_TARIFF_SELECTS` - only selects the user nominated
-- `coordinator.py:1038` - `select_option` - the call itself
+- `coordinator.py:1449` - `_async_write_tariff_selects` - the one write
+- `coordinator.py:1455` - `CONF_TARIFF_SELECTS` - only selects the user nominated
+- `coordinator.py:1489` - `select_option` - the call itself

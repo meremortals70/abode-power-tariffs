@@ -31,8 +31,8 @@ cannot be renamed (DR-037) and carries a comment instead.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
 - `plan.py:297` - `_cents_to_dollars` - import demand rate, cents in
 - `plan.py:444` - `_cents_to_dollars` - export demand rate, cents in
-- `plan.py:202` - `A stored key cannot be renamed` - the misnamed key's comment
+- `plan.py:219` - `A stored key cannot be renamed` - the misnamed key's comment

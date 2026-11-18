@@ -151,6 +151,6 @@ rules:
   strict-typing:
     status: done
     comment: >
-      mypy strict is clean on the seven pure modules. The Home Assistant
+      mypy strict is clean on the eight pure modules. The Home Assistant
       modules are fully annotated and are checked in an environment with Home
       Assistant installed.

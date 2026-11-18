@@ -29,6 +29,6 @@ The unscoped fallback had to be kept alive in every lookup.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Superseded.** The unscoped
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Superseded.** The unscoped
 fallback was removed with the pointer field (DR-013); old-shape plans are no
 longer read.

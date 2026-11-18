@@ -34,7 +34,7 @@ a daylight-saving bug for a year.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
 - `intervals.py:71-72` - `isoformat` - intervals published local, with offset
 - `intervals.py:103` - `as_evcc_entry` - the evcc forecast, same form

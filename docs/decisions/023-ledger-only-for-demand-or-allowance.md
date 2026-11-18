@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Superseded in part by DR-051 |
 | Since | Import at 0.8.9 (P35); export by 0.9.10 (2026-08-27) |
 | Origin | Finding A5; `ARCHITECTURE-GAPS.md` item 4 |
 | Related | DR-003, DR-016, DR-021, DR-022 |
@@ -40,10 +40,17 @@ than an orphan.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Partly.** One per rate
+still holds, keyed on the four-segment identifier, either side, and a rate with
+neither a demand charge nor an allowance still has none. What the Decision does
+not cover is the timetable's flat all-day feed-in declaration: it is not a rate,
+declares a cap, and is now counted under `plan.timetable.export` (Build 6). That
+is a second ledger identity the record does not name, so it is marked Partly
+rather than quietly rewritten.
 
-- `accounting.py:220` - `class RateLedger` - the moving figures
-- `coordinator.py:323` - `def ledger` - one per identifier
-- `coordinator.py:306` - `ledger_for` - nothing for a rate no longer in the plan
-- `coordinator.py:817` - `_accumulate_export_energy` - the export side
-- `sensor.py:525` - `async_added_to_hass` - restored within its own period
+- `accounting.py:271` - `class RateLedger` - the moving figures
+- `coordinator.py:399` - `def ledger` - one per identifier
+- `coordinator.py:382` - `ledger_for` - nothing for a rate no longer in the plan
+- `coordinator.py:1088` - `_accumulate_export_energy` - the export side
+- `sensor.py:544` - `async_added_to_hass` - restored within its own period
+- `plan.py:144` - `all_day_export_key` - the flat all-day declaration's own key, three segments

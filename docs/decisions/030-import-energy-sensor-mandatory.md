@@ -32,7 +32,7 @@ The export energy sensor and the holiday sensor stay optional.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `config_flow.py:828-835` - `energy_sensor_required` - refused at setup
-- `config_flow.py:2676-2678` - `energy_sensor_required` - refused in Configure
+- `config_flow.py:861` - `energy_sensor_required` - refused at setup
+- `config_flow.py:2784` - `energy_sensor_required` - refused in Configure

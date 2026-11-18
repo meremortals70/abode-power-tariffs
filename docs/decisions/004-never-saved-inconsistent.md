@@ -36,10 +36,10 @@ refusals.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `validate.py:29` - `validate_periods` - each side covers the day
-- `validate.py:74` - `validate_day_coverage` - every day has a timetable
-- `validate.py:211` - `validate_rates` - names and fallbacks resolve
-- `validate.py:295` - `validate_plan` - every check, every save
-- `config_flow.py:1548` - `async_step_setup_invalid` - the fix-it loop
+- `validate.py:38` - `validate_periods` - each side covers the day
+- `validate.py:83` - `validate_day_coverage` - every day has a timetable
+- `validate.py:220` - `validate_rates` - names and fallbacks resolve
+- `validate.py:305` - `validate_plan` - every check, every save
+- `config_flow.py:1613` - `async_step_setup_invalid` - the fix-it loop

@@ -31,6 +31,7 @@ from homeassistant.util import slugify
 
 from .const import (
     ALL_DAY_TOKENS,
+    ALLOWANCE_PERIOD_MONTH,
     ALLOWANCE_PERIODS,
     CONF_AFTER_ALLOWANCE_CENTS,
     CONF_ALLOWANCE_PERIOD,
@@ -45,8 +46,10 @@ from .const import (
     CONF_END,
     CONF_ENFORCEABLE_CONSTRAINTS,
     CONF_EXPORT_ALLOWANCE_KWH,
+    CONF_EXPORT_ALLOWANCE_PERIOD,
     CONF_EXPORT_CENTS,
     CONF_EXPORT_ENERGY_SENSOR,
+    CONF_EXPORT_ENERGY_UNIT,
     CONF_EXPORT_FALLBACK_CENTS,
     CONF_EXPORT_FLAT_CENTS,
     CONF_EXPORT_PERIODS,
@@ -59,6 +62,7 @@ from .const import (
     CONF_HOLIDAY_SENSOR,
     CONF_IMPORT_CENTS,
     CONF_IMPORT_ENERGY_SENSOR,
+    CONF_IMPORT_ENERGY_UNIT,
     CONF_INFORMATION_CONSTRAINTS,
     CONF_MONTHLY_CHARGE,
     CONF_NAME,
@@ -83,10 +87,12 @@ from .const import (
     DEFAULT_ALLOWANCE_PERIOD,
     DEFAULT_DEMAND_BASIS,
     DEFAULT_DEMAND_INTERVAL,
+    DEFAULT_ENERGY_UNIT,
     DEFAULT_GST_PERCENT,
     DEMAND_BASES,
     DEMAND_INTERVALS,
     DOMAIN,
+    ENERGY_UNITS,
     KNOWN_CONSTRAINTS,
     MAX_BILLING_CYCLE_DAY,
     MINUTES_PER_DAY,
@@ -121,7 +127,7 @@ from .plan import (
     qualified_name,
 )
 from .strip import render_day_pattern, render_plan, render_rate_plan_card
-from .validate import plan_warnings, validate_plan
+from .validate import instantaneous_demand_problems, plan_warnings, validate_plan
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -655,12 +661,18 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._has_export: bool = False
         # Plan-level, collected on the rate screen beside the cap it belongs to.
         self._energy_sensor: str | None = None
+        # The unit that meter reports in, chosen beside it. Part of the meter:
+        # a reading cannot be interpreted without it.
+        self._import_unit: str = DEFAULT_ENERGY_UNIT
         self._monthly_charge: float = 0.0
         self._patterns: list[dict[str, Any]] = []
         self._export_same_all_day: bool = True
         self._export_flat: float = 0.0
         self._export_allowance: float | None = None
         self._export_fallback: float | None = None
+        # What the flat all-day cap covers. Declared beside it, the same way
+        # an import rate's cap says whether it runs per slot or per cycle.
+        self._export_allowance_period: str = DEFAULT_ALLOWANCE_PERIOD
         self._export_rates: list[dict[str, Any]] = []
         self._export_periods: list[dict[str, Any]] = []
         self._rates: list[dict[str, Any]] = []
@@ -720,6 +732,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_EXPORT_SAME_ALL_DAY: self._export_same_all_day,
                     CONF_EXPORT_FLAT_CENTS: self._export_flat,
                     CONF_EXPORT_ALLOWANCE_KWH: self._export_allowance,
+                    CONF_EXPORT_ALLOWANCE_PERIOD: self._export_allowance_period,
                     CONF_EXPORT_FALLBACK_CENTS: self._export_fallback,
                 },
             )
@@ -732,6 +745,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._export_flat = 0.0
         self._export_allowance = None
         self._export_fallback = None
+        self._export_allowance_period = DEFAULT_ALLOWANCE_PERIOD
 
     def _restore_pattern(self) -> None:
         """Undo _store_pattern, the exact inverse, field for field.
@@ -759,6 +773,9 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
         self._export_flat = float(pattern[CONF_EXPORT_FLAT_CENTS])
         self._export_allowance = pattern[CONF_EXPORT_ALLOWANCE_KWH]
         self._export_fallback = pattern[CONF_EXPORT_FALLBACK_CENTS]
+        self._export_allowance_period = str(
+            pattern.get(CONF_EXPORT_ALLOWANCE_PERIOD) or DEFAULT_ALLOWANCE_PERIOD
+        )
 
     # ---------------------------------------------------------------- 1 name
 
@@ -825,6 +842,11 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
             self._gst_percent = float(user_input[CONF_GST_PERCENT])
             self._monthly_charge = float(user_input[CONF_MONTHLY_CHARGE])
             day = int(user_input.get(CONF_BILLING_CYCLE_DAY) or 0)
+            # Kept even if another field fails validation, so the form comes
+            # back with the unit the user chose rather than the default.
+            self._import_unit = str(
+                user_input.get(CONF_IMPORT_ENERGY_UNIT) or DEFAULT_ENERGY_UNIT
+            )
             if day > MAX_BILLING_CYCLE_DAY:
                 # A cycle starts on the same day every month, so the day has to
                 # be one every month has.
@@ -899,6 +921,11 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                             domain="sensor", device_class="energy"
                         )
                     ),
+                    vol.Required(
+                        CONF_IMPORT_ENERGY_UNIT, default=self._import_unit
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=list(ENERGY_UNITS))
+                    ),
                 }
             ),
             errors=errors,
@@ -926,6 +953,14 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_RATE_ALLOWANCE_KWH: user_input.get(CONF_RATE_ALLOWANCE_KWH)
                 or None,
                 CONF_FALLBACK_RATE: "Additional",
+                # "An amount for the first part of your usage, then a different
+                # price for the rest of the billing period" — the sentence this
+                # shortcut is made of, and the one the README repeats. The rate
+                # underneath is an ordinary all-day one, whose period runs
+                # 00:00-24:00, so the model's default of "slot" means one
+                # occurrence a day and the cap refilled at midnight. Declared
+                # here so the plan says what the screen promised.
+                CONF_ALLOWANCE_PERIOD: ALLOWANCE_PERIOD_MONTH,
             }
             additional: dict[str, Any] = {
                 CONF_NAME: "Additional",
@@ -969,6 +1004,12 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_EXPORT_SAME_ALL_DAY: True,
                         CONF_EXPORT_FLAT_CENTS: export_flat,
                         CONF_EXPORT_ALLOWANCE_KWH: export_allowance,
+                        # The same period the import cap just declared. The
+                        # screen's two caps are described in one breath —
+                        # "the first part of your usage, then a different
+                        # price for the rest of the billing period" — so one
+                        # of them running daily would contradict the other.
+                        CONF_EXPORT_ALLOWANCE_PERIOD: ALLOWANCE_PERIOD_MONTH,
                         CONF_EXPORT_FALLBACK_CENTS: export_fallback,
                     },
                 )
@@ -1475,6 +1516,13 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                 if self._export_same_all_day
                 else None
             )
+            # What that cap covers, declared beside it: each day the price is
+            # in force, or the whole billing cycle. Kept even on the periods
+            # branch, where nothing reads it, so the timetable always stores a
+            # complete declaration.
+            self._export_allowance_period = str(
+                user_input.get(CONF_EXPORT_ALLOWANCE_PERIOD) or DEFAULT_ALLOWANCE_PERIOD
+            )
             if self._export_same_all_day:
                 return await self.async_step_timetable_done()
             return await self.async_step_export_rates()
@@ -1514,6 +1562,19 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
                             max=1000,
                             step=0.01,
                             mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    # The same choice an import rate's cap carries. The
+                    # default is the slot: for a window running the whole day
+                    # that is one day, which is what rule 11 says rather than
+                    # a special case for this screen.
+                    vol.Optional(
+                        CONF_EXPORT_ALLOWANCE_PERIOD,
+                        default=self._export_allowance_period,
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(ALLOWANCE_PERIODS),
+                            mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
                 }
@@ -1589,6 +1650,7 @@ class AbodePowerTariffsConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_GST_PERCENT: self._gst_percent,
             CONF_BILLING_CYCLE_DAY: self._billing_cycle_day,
             CONF_IMPORT_ENERGY_SENSOR: self._energy_sensor,
+            CONF_IMPORT_ENERGY_UNIT: self._import_unit,
         }
 
     def _create(self) -> ConfigFlowResult:
@@ -1719,6 +1781,7 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         # Warnings do not stop a save. They are configurations only the user
         # can judge, so they are said out loud rather than enforced.
         warnings = plan_warnings(plan)
+        warnings += instantaneous_demand_problems(self.working)
         if warnings:
             summary += "\n\nWorth checking:\n" + "\n".join(f"  {w}" for w in warnings)
         return summary
@@ -2082,6 +2145,9 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
         if source.get(CONF_EXPORT_SAME_ALL_DAY, True):
             target[CONF_EXPORT_FLAT_CENTS] = source.get(CONF_EXPORT_FLAT_CENTS, 0.0)
             target[CONF_EXPORT_ALLOWANCE_KWH] = source.get(CONF_EXPORT_ALLOWANCE_KWH)
+            target[CONF_EXPORT_ALLOWANCE_PERIOD] = source.get(
+                CONF_EXPORT_ALLOWANCE_PERIOD, DEFAULT_ALLOWANCE_PERIOD
+            )
             target[CONF_EXPORT_FALLBACK_CENTS] = source.get(CONF_EXPORT_FALLBACK_CENTS)
             target[CONF_EXPORT_PERIODS] = []
             target[CONF_EXPORT_RATES] = []
@@ -2236,6 +2302,15 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                         if all_day
                         else None
                     ),
+                    # What the all-day cap covers. Carried whether or not the
+                    # tickbox is on, the same way the import rate's period is:
+                    # the record keeps a complete declaration and only the
+                    # flat shape reads it.
+                    CONF_EXPORT_ALLOWANCE_PERIOD: str(
+                        user_input.get(CONF_EXPORT_ALLOWANCE_PERIOD)
+                        or existing.get(CONF_EXPORT_ALLOWANCE_PERIOD)
+                        or DEFAULT_ALLOWANCE_PERIOD
+                    ),
                 }
                 record = merged(DayPattern, existing or None, fields)
                 if index is None:
@@ -2325,6 +2400,21 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                             max=1000,
                             step=0.01,
                             mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                    # What that cap covers: each day the all-day price is in
+                    # force, or the whole billing cycle. The same choice an
+                    # import rate offers beside its own cap.
+                    vol.Optional(
+                        CONF_EXPORT_ALLOWANCE_PERIOD,
+                        default=str(
+                            existing.get(CONF_EXPORT_ALLOWANCE_PERIOD)
+                            or DEFAULT_ALLOWANCE_PERIOD
+                        ),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(ALLOWANCE_PERIODS),
+                            mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
                 }
@@ -2675,6 +2765,12 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
             self.working[CONF_EXPORT_ENERGY_SENSOR] = (
                 user_input.get(CONF_EXPORT_ENERGY_SENSOR) or None
             )
+            self.working[CONF_IMPORT_ENERGY_UNIT] = (
+                user_input.get(CONF_IMPORT_ENERGY_UNIT) or DEFAULT_ENERGY_UNIT
+            )
+            self.working[CONF_EXPORT_ENERGY_UNIT] = (
+                user_input.get(CONF_EXPORT_ENERGY_UNIT) or DEFAULT_ENERGY_UNIT
+            )
             self.working[CONF_MONTHLY_CHARGE] = user_input[CONF_MONTHLY_CHARGE]
             day = int(user_input.get(CONF_BILLING_CYCLE_DAY) or 0)
             self.working[CONF_BILLING_CYCLE_DAY] = day or None
@@ -2758,6 +2854,14 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                             domain="sensor", device_class="energy"
                         )
                     ),
+                    vol.Required(
+                        CONF_IMPORT_ENERGY_UNIT,
+                        default=str(
+                            options.get(CONF_IMPORT_ENERGY_UNIT) or DEFAULT_ENERGY_UNIT
+                        ),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=list(ENERGY_UNITS))
+                    ),
                     vol.Optional(
                         CONF_EXPORT_ENERGY_SENSOR,
                         description={
@@ -2765,6 +2869,14 @@ class AbodePowerTariffsOptionsFlow(OptionsFlow):
                         },
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(domain="sensor")
+                    ),
+                    vol.Required(
+                        CONF_EXPORT_ENERGY_UNIT,
+                        default=str(
+                            options.get(CONF_EXPORT_ENERGY_UNIT) or DEFAULT_ENERGY_UNIT
+                        ),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=list(ENERGY_UNITS))
                     ),
                     vol.Required(
                         CONF_MONTHLY_CHARGE,

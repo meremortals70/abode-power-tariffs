@@ -36,8 +36,8 @@ Misnamed keys stay: `gst_percent`, `prices_include_gst` and
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.** No `VERSION` and no
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** No `VERSION` and no
 `async_migrate_entry` anywhere in the integration.
 
-- `plan.py:202` - `A stored key cannot be renamed` - a misnamed key's comment
+- `plan.py:219` - `A stored key cannot be renamed` - a misnamed key's comment
 - `manifest.json:13` - `version` - the build number only

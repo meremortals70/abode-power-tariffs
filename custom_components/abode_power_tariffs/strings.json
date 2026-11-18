@@ -26,14 +26,16 @@
           "gst_percent": "Tax rate (%)",
           "monthly_charge": "Monthly charge",
           "billing_cycle_day": "Billing cycle starts on day of month (0 for none)",
-          "import_energy_sensor": "Import energy sensor"
+          "import_energy_sensor": "Import energy sensor",
+          "import_energy_unit": "Import meter unit"
         },
         "data_description": {
           "daily_supply_charge_cents": "The fixed charge per day. Zero if you do not have one.",
           "prices_include_gst": "Bills quote prices with tax included in some countries — Australian ones with GST, for instance — and without it in most European and US rate sheets.",
           "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
           "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28.",
-          "import_energy_sensor": "The household's total imported energy, cumulative and increasing. Mandatory for every plan, whatever any individual rate declares."
+          "import_energy_sensor": "The household's total imported energy, cumulative and increasing. Mandatory for every plan, whatever any individual rate declares.",
+          "import_energy_unit": "The unit that meter reports in — Wh, kWh or MWh. It is read beside the meter because a reading cannot be interpreted without it. If the meter's own reported unit differs, a repair is raised after the first reading so it can be corrected."
         }
       },
       "single_rate": {
@@ -82,7 +84,7 @@
             "data_description": {
               "demand_period": "Turns on counting: the highest completed interval while this rate is in force becomes the published peak.",
               "demand_rate_per_kw_month": "Cents, like every other price on the form. Zero if you do not have one. Charged on the highest completed interval while this rate is in force.",
-              "demand_interval": "0 for instantaneous. 30 minutes is the Australian default; use what your meter and bill actually measure.",
+              "demand_interval": "15, 30 or 60 minutes. 30 is the Australian default; use what your bill actually measures.",
               "demand_basis": "'period' charges the peak once for the billing cycle. 'day' charges it for every day of the cycle. The same peak is a very different bill either way."
             }
           },
@@ -188,13 +190,15 @@
           "export_same_all_day": "One price all day",
           "export_flat_cents": "You are paid (c/kWh)",
           "export_allowance_kwh": "Export allowance before the price changes (kWh)",
-          "export_fallback_cents": "Export price after the allowance (c/kWh)"
+          "export_fallback_cents": "Export price after the allowance (c/kWh)",
+          "export_allowance_period": "What the allowance covers"
         },
         "data_description": {
           "export_same_all_day": "Turn off if the feed-in price changes through the day on this timetable.",
           "export_flat_cents": "Used only when the switch is on. Zero if you do not export.",
-          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet.",
-          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent."
+          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported, and it is counted from your export meter.",
+          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent.",
+          "export_allowance_period": "'slot' starts the count again for each day this price is in force. 'month' carries it across the whole billing cycle and starts again on the billing day."
         }
       },
       "timetable_done": {
@@ -283,7 +287,7 @@
             "data_description": {
               "demand_period": "Turns on counting: the highest completed interval while this rate is in force becomes the published peak.",
               "demand_rate_per_kw_month": "Cents, like every other price on the form. Zero if you do not have one. Charged on the highest completed interval while this rate is in force.",
-              "demand_interval": "0 for instantaneous. 30 minutes is the Australian default; use what your meter and bill actually measure.",
+              "demand_interval": "15, 30 or 60 minutes. 30 is the Australian default; use what your bill actually measures.",
               "demand_basis": "'period' charges the peak once for the billing cycle. 'day' charges it for every day of the cycle. The same peak is a very different bill either way."
             }
           },
@@ -352,7 +356,8 @@
           "export_same_all_day": "Feed-in is one price all day",
           "export_flat_cents": "Feed-in price (c/kWh)",
           "export_allowance_kwh": "Export allowance before the price changes (kWh)",
-          "export_fallback_cents": "Export price after the allowance (c/kWh)"
+          "export_fallback_cents": "Export price after the allowance (c/kWh)",
+          "export_allowance_period": "What the allowance covers"
         },
         "data_description": {
           "same_every_day": "Leave this on unless weekends, weekdays or public holidays are priced differently.",
@@ -361,8 +366,9 @@
           "season_to": "Optional. Leave both empty for all year.",
           "export_same_all_day": "Turn off if the feed-in price changes through the day on this timetable, then set the feed-in rates and their times under Feed-in.",
           "export_flat_cents": "Used only while the switch above is on.",
-          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported. Declared only - nothing is counted against it yet. Used only while the switch above is on.",
-          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent. Used only while the switch above is on."
+          "export_allowance_kwh": "Zero for none. What you are paid changes once this much has been exported, and it is counted from your export meter. Used only while the switch above is on.",
+          "export_fallback_cents": "What you are paid per kilowatt hour exported once the export allowance is spent. Used only while the switch above is on.",
+          "export_allowance_period": "'slot' starts the count again for each day this price is in force. 'month' carries it across the whole billing cycle and starts again on the billing day. Used only while the switch above is on."
         }
       },
       "day_pattern_duplicate": {
@@ -429,7 +435,9 @@
           "valid_to": "Plan valid to",
           "holiday_sensor": "Public holiday sensor",
           "import_energy_sensor": "Import energy sensor",
+          "import_energy_unit": "Import meter unit",
           "export_energy_sensor": "Export energy sensor",
+          "export_energy_unit": "Export meter unit",
           "monthly_charge": "Monthly charge",
           "billing_cycle_day": "Billing cycle starts on day of month (0 for none)"
         },
@@ -439,7 +447,9 @@
           "valid_to": "Optional. When your retailer reprices, set this and add a new channel for the new plan, so past costs stay correct against the price that was actually in force.",
           "holiday_sensor": "Optional. A Workday sensor from Home Assistant's built-in Workday integration, which is off on a public holiday. Needed only if holidays are priced differently.",
           "import_energy_sensor": "The household's total imported energy, cumulative and increasing. Mandatory for every plan, whatever any individual rate declares.",
+          "import_energy_unit": "The unit the import meter reports in — Wh, kWh or MWh. Counting is in kWh, so a reading is scaled by this.",
           "export_energy_sensor": "Optional. The household's total exported energy, cumulative and increasing. Needed only if an export rate declares a demand charge or an allowance — nothing counts against either without it.",
+          "export_energy_unit": "The unit the export meter reports in — Wh, kWh or MWh. Ignored while no export meter is set.",
           "monthly_charge": "A subscription or plan fee charged once a month. Zero if you do not have one.",
           "billing_cycle_day": "The day of the month your retailer's billing cycle starts. Published as stated; nothing is counted from it. It has to be a day every month has, so 1 to 28."
         }
@@ -688,6 +698,14 @@
     "input_data_gap": {
       "title": "An input for {title} is unreadable",
       "description": "{reason}, since {since}. Consumption in this gap is not being counted, so the current cycle's figures will read low until it closes. Reconnecting the input does not recover what was missed."
+    },
+    "instantaneous_demand": {
+      "title": "The tariff plan for {title} declares a demand interval that is no longer offered",
+      "description": "{rates}: demand is always measured as an average over a metering interval, never from a single instant, so this rate is being measured over {interval} minutes. Open Configure, edit the rate and choose 15, 30 or 60 minutes to match your bill."
+    },
+    "meter_unit_mismatch": {
+      "title": "The tariff plan for {title} reads a meter in the wrong unit",
+      "description": "{meter} reports {measured}, but this plan is set to read it as {chosen}. Counting uses {chosen}, so every energy figure will be wrong until the two agree. Open Configure, then General, and set the meter unit to {measured}."
     },
     "plan_expired": {
       "title": "The tariff plan for {title} has expired",

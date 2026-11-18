@@ -38,16 +38,20 @@ whether this cycle is unaffected. Every ledger is marked incomplete with it.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.** Every input
-that becomes unreadable, the holiday sensor included, opens a gap, raises
-the repair and marks the cycle and every ledger incomplete. The gap closes
-only when every input is readable again. The cycle flag clears only when a
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** Every input
+that becomes unreadable opens a gap, raises the repair and marks the cycle and
+every ledger incomplete. The holiday sensor counts only where a timetable
+declares holidays: a plan with no holiday timetable cannot be mispriced by it,
+so a blip in that sensor leaves the plan alone (Build 2). A meter unreadable at
+startup opens the gap once its background retries are spent, not before, and
+the reason names which side it was (Build 7). The gap closes only when every
+input is readable again. The cycle flag clears only when a
 cycle rolls with no input down. `Data gap` is on for the rest of the cycle,
 and the example dashboard cards show a red flag at the top while it is.
 
-- `coordinator.py:869` - `_open_gap` - repair issue, flag down, cycle and ledgers marked
-- `coordinator.py:904` - `_close_gap` - closes only when every input is readable
-- `coordinator.py:368` - `_open_gap` - the holiday sensor opens a gap
-- `coordinator.py:581` - `cycle_complete` - a new cycle starts incomplete if an input is down
-- `binary_sensor.py:192` - `def is_on` - on for the rest of the cycle
-- `tests/test_runtime.py:2188` - `TestHolidaySensorGaps` - the holiday gap, tested
+- `coordinator.py:1320` - `_open_gap` - repair issue, flag down, cycle and ledgers marked
+- `coordinator.py:1355` - `_close_gap` - closes only when every input is readable
+- `coordinator.py:449` - `_open_gap` - the holiday sensor opens a gap
+- `coordinator.py:675` - `cycle_complete` - a new cycle starts incomplete if an input is down
+- `binary_sensor.py:195` - `def is_on` - on for the rest of the cycle
+- `tests/test_runtime.py:3293` - `TestHolidaySensorGaps` - the holiday gap, tested

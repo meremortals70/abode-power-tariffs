@@ -24,10 +24,15 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any
 
-from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
+    STATE_ON,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+)
 from homeassistant.core import (
     CALLBACK_TYPE,
     Event,
@@ -54,20 +59,45 @@ from . import intervals as intervals_module
 from . import plan as plan_module
 from .const import (
     CONF_EXPORT_ENERGY_SENSOR,
+    CONF_EXPORT_ENERGY_UNIT,
     CONF_HOLIDAY_SENSOR,
     CONF_IMPORT_ENERGY_SENSOR,
+    CONF_IMPORT_ENERGY_UNIT,
     CONF_TARIFF_SELECTS,
+    DAY_HOLIDAY,
+    DEFAULT_DEMAND_INTERVAL,
+    DEFAULT_ENERGY_UNIT,
     DOMAIN,
+    ENERGY_UNIT_TO_KWH,
     ISSUE_DATA_GAP,
+    ISSUE_INSTANTANEOUS_DEMAND,
+    ISSUE_METER_UNIT,
     ISSUE_PLAN_EXPIRED,
     SIGNAL_UPDATE,
 )
 from .plan import ExportResolution, Plan, PlanError, Rate, Resolution, format_time
-from .validate import validate_plan
+from .validate import instantaneous_demand_problems, validate_plan
 
 _LOGGER = logging.getLogger(__name__)
 
 UNUSABLE = (STATE_UNAVAILABLE, STATE_UNKNOWN, None, "")
+
+# One microsecond before an instant. A rate boundary belongs to the rate it
+# starts, so the stretch before it is resolved by asking what was in force an
+# instant earlier. Subtracted in UTC, never on a wall clock that shares a
+# tzinfo: the same wall-clock minute names two real instants on the morning
+# the clocks go back.
+_MICROSECOND = timedelta(microseconds=1)
+
+# How many boundaries one meter reading may be split at. A meter this coarse
+# is already reporting hours apart; past this the rest is credited to the rate
+# in force at the reading, which is the best the figure can say.
+_MAX_BOUNDARIES_PER_READING = 256
+
+
+def _just_before(moment: datetime) -> datetime:
+    """Return the last instant before ``moment``, normalised to UTC."""
+    return moment.astimezone(UTC) - _MICROSECOND
 
 
 def _allowance_slot(
@@ -111,7 +141,11 @@ class TariffState:
     allowance_slot: str | None = None
     next_change: datetime | None = None
     next_export_change: datetime | None = None
+    # A plan whose validity has passed is held and still priced. One whose
+    # validity has not begun yet is a different fact: nothing resolves under
+    # it until its first day, and it must not be called expired.
     plan_expired: bool = False
+    plan_not_yet_in_force: bool = False
     # Whether another plan for the same meter is in force today. An expired
     # plan with a successor was archived; one without simply ran out.
     plan_replaced: bool = False
@@ -181,10 +215,27 @@ class TariffCoordinator:
         self._boundary_unsubscribe: CALLBACK_TYPE | None = None
         self._last_energy_total: float | None = None
         self._last_export_energy_total: float | None = None
+        # When each meter's previous successful reading was processed. The
+        # reading before it says how much energy was drawn; this says over
+        # what stretch of real time, which is what a boundary split needs.
+        # None until the first reading after startup: there is nothing to
+        # split against, so that reading's whole delta is credited where it
+        # arrived.
+        self._last_energy_at: datetime | None = None
+        self._last_export_energy_at: datetime | None = None
         self._last_written_tariff: str | None = None
+        # A holiday sensor that no timetable uses cannot change the answer,
+        # so it must not open a data gap when it goes unavailable.
+        self._plan_uses_holiday = any(
+            DAY_HOLIDAY in pattern.days for pattern in plan.day_patterns
+        )
         self._holiday_warned = False
         self._energy_warned = False
         self._export_energy_warned = False
+        # Meters whose reported unit has already been reported as different
+        # from the chosen one, so the repair is raised once rather than on
+        # every state change.
+        self._unit_warned: set[str] = set()
         self._expired_warned = False
         self._gap_reason = ""
         # Every input currently unreadable. The gap closes only when all of
@@ -193,7 +244,7 @@ class TariffCoordinator:
         self._unreadable: set[str] = set()
         self._forward_key: tuple[Any, ...] | None = None
         self._forward_series: list[intervals_module.Interval] = []
-        self._today_key: tuple[date, int] | None = None
+        self._today_key: tuple[date, int, bool] | None = None
         self._today_series: list[intervals_module.Interval] = []
         # A startup race, not a tunable setting: the meter's own integration
         # may not have set up yet the moment this one does. Kept as instance
@@ -201,6 +252,9 @@ class TariffCoordinator:
         # zero rather than genuinely block on real time.
         self._seed_retry_attempts = 3
         self._seed_retry_delay_seconds = 5.0
+        # Meters still being waited for, one task each, so unloading can stop
+        # them. Nothing else holds the entry up while they run.
+        self._meter_tasks: list[Any] = []
 
     # ------------------------------------------------------------------ setup
 
@@ -234,6 +288,7 @@ class TariffCoordinator:
         )
 
         await self._seed_energy_total()
+        self._report_legacy_demand_basis()
         self.async_refresh()
 
     @callback
@@ -245,6 +300,9 @@ class TariffCoordinator:
         if self._boundary_unsubscribe is not None:
             self._boundary_unsubscribe()
             self._boundary_unsubscribe = None
+        for task in self._meter_tasks:
+            task.cancel()
+        self._meter_tasks.clear()
 
     # -------------------------------------------------------------- resolving
 
@@ -285,9 +343,16 @@ class TariffCoordinator:
         importing = self.counting_allowance and any(
             rate.has_allowance or rate.has_demand_charge for rate in self.plan.rates
         )
-        exporting = self.counting_export_allowance and any(
-            rate.has_allowance or rate.has_demand_charge
-            for rate in self.plan.export_rates
+        exporting = self.counting_export_allowance and (
+            any(
+                rate.has_allowance or rate.has_demand_charge
+                for rate in self.plan.export_rates
+            )
+            or any(
+                day_pattern.export_same_all_day
+                and day_pattern.export_allowance_kwh is not None
+                for day_pattern in self.plan.day_patterns
+            )
         )
         return importing or exporting
 
@@ -303,7 +368,16 @@ class TariffCoordinator:
             )
             for day_pattern, rate in self.plan.export_rates_with_pattern()
         }
-        return import_names | export_names
+        # A timetable on one feed-in price all day declares its cap, its
+        # fallback and now its count on the timetable itself, under its own
+        # key. Same set, because it is the same kind of thing: something a
+        # ledger can be held for.
+        all_day_names = {
+            plan_module.all_day_export_key(self.plan.name, day_pattern.name)
+            for day_pattern in self.plan.day_patterns
+            if day_pattern.export_same_all_day
+        }
+        return import_names | export_names | all_day_names
 
     def ledger_for(
         self, qualified_name: str | None
@@ -351,6 +425,11 @@ class TariffCoordinator:
         one day at a time. Other dates are treated as ordinary, which is the
         same answer as having no sensor at all.
         """
+        # With no holiday day set anywhere in the plan, the sensor cannot
+        # change which timetable resolves. Ignore it rather than treat an
+        # unavailable input as a reason to distrust the published figures.
+        if not self._plan_uses_holiday:
+            return False
         entity_id = self.options.get(CONF_HOLIDAY_SENSOR)
         if not entity_id:
             return False
@@ -388,23 +467,36 @@ class TariffCoordinator:
         today = now.date()
         trace: list[str] = []
 
-        self.state.plan_expired = not self.plan.is_active_on(today)
+        self.state.plan_expired = bool(
+            self.plan.valid_to is not None and today > self.plan.valid_to
+        )
+        self.state.plan_not_yet_in_force = bool(
+            self.plan.valid_from is not None and today < self.plan.valid_from
+        )
         self.state.plan_replaced = self.state.plan_expired and self._has_successor(
             today
         )
         if self.state.plan_expired and not self.state.plan_replaced:
             trace.append("plan validity has passed; holding the expired plan")
             self._open_expired_issue()
+        elif self.state.plan_not_yet_in_force:
+            trace.append("plan validity has not begun; nothing is priced yet")
+            self._close_expired_issue()
         else:
             if self.state.plan_replaced:
                 trace.append("plan archived; a successor plan is in force")
             self._close_expired_issue()
 
-        resolution = intervals_module.resolve_at(
-            self.plan, now, self.zone, self.is_holiday
+        # A plan that has not started is not your tariff yet. Nothing may be
+        # priced under it, on either side, until its first day arrives.
+        active = not self.state.plan_not_yet_in_force
+        resolution = (
+            intervals_module.resolve_at(self.plan, now, self.zone, self.is_holiday)
+            if active
+            else None
         )
         self.state.resolution = resolution
-        export_resolution = self.export_resolution_now()
+        export_resolution = self.export_resolution_now() if active else None
         self.state.export_resolution = export_resolution
 
         # The cycle first: every monthly reset below is driven off this key,
@@ -466,71 +558,71 @@ class TariffCoordinator:
                 if resolution.rate.has_allowance:
                     trace.append("capped, but no meter is nominated to count it")
 
-        # The export mirror of the block above (Gap #4). Only a period-priced
-        # timetable naming an export rate has anything to meter or cap — a
-        # flat all-day price has no rate object of its own, only the
-        # timetable's own declared flat price, cap and fallback.
-        if export_resolution is None or export_resolution.rate_name is None:
-            self.state.export_effective_price = (
-                None if export_resolution is None else export_resolution.pricing.price
-            )
+        # The export mirror of the block above (Gap #4). Both shapes resolve
+        # here: a period-priced timetable naming an export rate, and a flat
+        # all-day price that declares a cap on the timetable itself. The
+        # second used to be skipped entirely — no rate object, so no ledger,
+        # so neither the count nor the price past the cap ever moved.
+        if export_resolution is None:
+            self.state.export_effective_price = None
             self.state.export_allowance_used_kwh = 0.0
             self.state.export_allowance_remaining_kwh = None
             self.state.export_allowance_exhausted = False
             self.state.export_allowance_slot = None
         else:
-            export_rate = export_resolution.day_pattern.export_rate_by_name(
-                export_resolution.rate_name
-            )
-            assert export_rate is not None
-            assert export_resolution.period is not None
-            qname = export_resolution.qualified_name
-            assert qname is not None
+            qname = export_resolution.ledger_key
             active_qualified_names.add(qname)
             export_ledger = self.ledger(qname)
             export_slot = _allowance_slot(
                 qname,
-                # An export rate's allowance is always slot-scoped: it has no
-                # allowance_period declaration of its own, unlike an import
-                # rate. See ExportRate — a monthly export cap was not part of
-                # this build's scope.
-                "slot",
-                export_resolution.period.start,
-                export_resolution.period.end,
+                export_resolution.allowance_period,
+                *export_resolution.allowance_bounds,
                 today,
                 self.plan.billing_cycle_day,
             )
             self.state.export_allowance_slot = export_slot
             export_ledger.roll_allowance(export_slot)
+
+            export_rate = None
+            if export_resolution.rate_name is not None:
+                export_rate = export_resolution.day_pattern.export_rate_by_name(
+                    export_resolution.rate_name
+                )
+                assert export_rate is not None
             self._refresh_interval(
                 now,
                 export_ledger,
-                export_rate.has_demand_charge,
-                export_rate.demand_interval,
+                export_rate is not None and export_rate.has_demand_charge,
+                export_rate.demand_interval
+                if export_rate is not None
+                else DEFAULT_DEMAND_INTERVAL,
+                export=True,
             )
 
-            if self.counting_export_allowance and export_rate.has_allowance:
+            if (
+                self.counting_export_allowance
+                and export_resolution.allowance_kwh is not None
+            ):
                 self.state.export_allowance_used_kwh = export_ledger.allowance_used_kwh
-                assert export_rate.allowance_kwh is not None
                 remaining = max(
                     0.0,
-                    export_rate.allowance_kwh - export_ledger.allowance_used_kwh,
+                    export_resolution.allowance_kwh - export_ledger.allowance_used_kwh,
                 )
                 exhausted = remaining <= 0
                 self.state.export_allowance_remaining_kwh = remaining
                 self.state.export_allowance_exhausted = exhausted
                 self.state.export_effective_price = (
-                    export_rate.fallback_price
-                    if exhausted and export_rate.fallback_price is not None
-                    else export_rate.price
+                    export_resolution.fallback_price
+                    if exhausted and export_resolution.fallback_price is not None
+                    else export_resolution.pricing.price
                 )
             else:
                 self.state.export_allowance_used_kwh = 0.0
                 self.state.export_allowance_remaining_kwh = None
                 self.state.export_allowance_exhausted = False
-                self.state.export_effective_price = export_rate.price
+                self.state.export_effective_price = export_resolution.pricing.price
 
-        self._leave_intervals_except(active_qualified_names)
+        self._leave_intervals_except(now, active_qualified_names)
         self._refresh_supply_charge(now, today)
 
         # Two separate facts. The import rate can be flat all day while the
@@ -588,27 +680,36 @@ class TariffCoordinator:
         ledger: accounting_module.RateLedger,
         has_demand_charge: bool,
         demand_interval: int,
+        *,
+        export: bool = False,
     ) -> None:
         """Advance the demand interval for one ledger.
 
         Generic over which side it is called for (Gap #4): the import call
         site and the export call site both pass their own ledger and their
         own rate's demand declaration, and the interval arithmetic itself
-        does not care which side it is measuring.
+        does not care which side it is measuring. The gate does: an export
+        meter is optional, so the export side must be tested against the
+        export meter rather than the mandatory import one.
 
         An interval only becomes a peak candidate once it has completed. A
         half-finished one has had less time to accumulate and always reads
         low, so a partial interval at a slot boundary would drag a peak down
         and report a demand charge lower than the bill.
         """
-        if not has_demand_charge or not self.counting_allowance:
+        counting = self.counting_export_allowance if export else self.counting_allowance
+        if not has_demand_charge or not counting:
             return
 
         key = accounting_module.interval_key(now, demand_interval, self.zone)
         if key is None:
-            # Instantaneous. There is no interval to average over, so the
-            # reading itself is the candidate and nothing is held open.
+            # No declaration produces a zero interval any more, so this is
+            # unreachable through the model. It stays as a guard: a zero would
+            # otherwise divide by zero instead of simply holding nothing open.
             return
+        # Recorded while the rate is in force: a ledger that leaves force has
+        # no rate left to ask how long its open interval was.
+        ledger.interval_minutes = demand_interval
         if ledger.interval_key is None:
             ledger.interval_key = key
             return
@@ -618,18 +719,42 @@ class TariffCoordinator:
             ledger.close_interval(now, demand_interval, self.zone)
             ledger.interval_key = key
 
-    def _leave_intervals_except(self, active: set[str]) -> None:
+    def _close_interval_if_complete(
+        self, now: datetime, ledger: accounting_module.RateLedger
+    ) -> None:
+        """Close an interval that finished as its rate left force.
+
+        An interval ending exactly when the period does has completed, and a
+        completed interval is a peak candidate. Dropping it with the rest of
+        the ledger's in-progress state lost the last interval of every period
+        whose boundary fell on a demand boundary — the interval the bill is
+        most likely to be built on.
+
+        Compared in real time by ``interval_is_complete``, not by whether the
+        interval key moved, so the second pass through a repeated hour is not
+        mistaken for a completion.
+        """
+        if ledger.interval_key is None or ledger.interval_minutes <= 0:
+            return
+        start = datetime.fromisoformat(ledger.interval_key)
+        if accounting_module.interval_is_complete(now, start, ledger.interval_minutes):
+            ledger.close_interval(now, ledger.interval_minutes, self.zone)
+
+    def _leave_intervals_except(self, now: datetime, active: set[str]) -> None:
         """Discard part-finished intervals for every ledger not in force.
 
-        Out of force. Whatever a ledger not named in ``active`` had part-way
-        through is discarded rather than closed: it is not a completed
-        interval and never will be. Import and export are independent flows
-        (rule 5) and each has its own entry in ``active`` when it resolves,
-        so one side stopping to resolve never clears the other side's
-        in-progress interval.
+        Out of force. An interval still in progress is discarded rather than
+        closed: it is not a completed interval and never will be. One that
+        completed exactly at the boundary is closed first, because it did
+        finish and is a peak candidate.
+
+        Import and export are independent flows (rule 5) and each has its own
+        entry in ``active`` when it resolves, so one side stopping to resolve
+        never clears the other side's in-progress interval.
         """
         for name, ledger in self.state.ledgers.items():
             if name not in active:
+                self._close_interval_if_complete(now, ledger)
                 ledger.interval_kwh = 0.0
                 ledger.interval_key = None
 
@@ -688,67 +813,206 @@ class TariffCoordinator:
     # ------------------------------------------------------------- allowances
 
     async def _seed_energy_total(self) -> None:
-        """Read the meters' starting totals, retrying briefly if unavailable.
+        """Read each meter's starting total once.
 
         Home Assistant does not guarantee integrations finish loading in any
-        particular order, so the meter this depends on may genuinely not
-        have published its first state yet the moment this integration
-        starts — a startup race, not a real gap. Three attempts, five
-        seconds apart, before treating it as a genuine problem and opening
-        one.
+        particular order, so the meter this depends on may genuinely not have
+        published its first state yet the moment this integration starts — a
+        startup race, not a real gap. Only the retry for that case is
+        deferred, to a background task: the plan, its boundaries and its
+        forecasts do not depend on the meter at all, so nothing here waits,
+        and on a reload the meter is already publishing.
         """
+        for entity_id in self._counted_meters():
+            reading = self._read_kwh(entity_id)
+            if reading is None:
+                self._retry_meter_later(entity_id)
+            else:
+                self._set_meter_baseline(entity_id, reading)
+
+    def _counted_meters(self) -> list[str]:
+        """The meters this channel actually counts against a cap."""
+        entities: list[str] = []
         if self.counting_allowance:
             entity_id = self.options.get(CONF_IMPORT_ENERGY_SENSOR)
             if entity_id:
-                self._last_energy_total = await self._read_float_retrying(entity_id)
-                if self._last_energy_total is None:
-                    # The meter was not readable at startup, so the hole
-                    # behind the restart cannot be measured and everything
-                    # after it under-counts.
-                    self._open_gap(
-                        entity_id, "the import meter was not readable at startup"
-                    )
+                entities.append(entity_id)
         if self.counting_export_allowance:
             export_entity_id = self.options.get(CONF_EXPORT_ENERGY_SENSOR)
-            if export_entity_id:
-                self._last_export_energy_total = await self._read_float_retrying(
-                    export_entity_id
-                )
-                if self._last_export_energy_total is None:
-                    self._open_gap(
-                        export_entity_id,
-                        "the export meter was not readable at startup",
-                    )
+            if export_entity_id and export_entity_id not in entities:
+                entities.append(export_entity_id)
+        return entities
 
-    async def _read_float_retrying(self, entity_id: str) -> float | None:
-        """Read a meter, waiting between tries rather than giving up at once.
+    @callback
+    def _retry_meter_later(self, entity_id: str) -> None:
+        """Wait for an unreadable meter behind the entry, not in front of it."""
+        self._meter_tasks.append(
+            self.hass.async_create_task(self._retry_meter(entity_id))
+        )
 
-        The delay comes first, every time, including before the first
-        attempt — the sensor's own integration may not have set up at all
-        yet, and reading immediately on startup is exactly the case this
-        exists to avoid.
+    async def _retry_meter(self, entity_id: str) -> None:
+        """Read a meter that was not readable at startup, a few times.
+
+        The delay comes first, every time: the sensor's own integration may
+        not have set up at all yet, and reading immediately is exactly the
+        case this exists to avoid. Giving up opens a gap, because a meter
+        never read leaves a hole behind the restart that cannot be measured
+        and everything after it under-counts.
         """
         for attempt in range(self._seed_retry_attempts):
             await asyncio.sleep(self._seed_retry_delay_seconds)
-            reading = self._read_float(entity_id)
+            reading = self._read_kwh(entity_id)
             if reading is not None:
-                return reading
+                self._set_meter_baseline(entity_id, reading)
+                self.async_refresh()
+                return
             if attempt < self._seed_retry_attempts - 1:
                 _LOGGER.debug(
                     "%s not yet readable at startup, retrying in %.0fs",
                     entity_id,
                     self._seed_retry_delay_seconds,
                 )
-        return None
+        self._open_gap(
+            entity_id,
+            f"the {self._meter_side(entity_id)} meter was not readable at startup",
+        )
+        self.async_refresh()
 
-    def _read_float(self, entity_id: str) -> float | None:
+    def _set_meter_baseline(self, entity_id: str, reading: float) -> None:
+        """Fill an empty baseline; never replace one a state change filled.
+
+        A state change can beat the retry, and ``_accumulate_energy`` records
+        that reading as the baseline. Replacing it would drop the energy drawn
+        between the two readings without crediting it to anything.
+        """
+        if self._meter_side(entity_id) == "export":
+            if self._last_export_energy_total is None:
+                self._last_export_energy_total = reading
+        elif self._last_energy_total is None:
+            self._last_energy_total = reading
+
+    def _read_kwh(self, entity_id: str) -> float | None:
+        """Read a meter and scale it to the kWh the plan is written in.
+
+        The chosen unit is what the reading means, not the meter's own
+        attribute: a disagreement between the two is reported by
+        ``_check_meter_unit`` rather than silently changing the answer.
+        """
         state = self.hass.states.get(entity_id)
         if state is None or state.state in UNUSABLE:
             return None
         try:
-            return float(state.state)
+            reading = float(state.state)
         except ValueError:
             return None
+        self._check_meter_unit(entity_id, state)
+        factor = ENERGY_UNIT_TO_KWH.get(self._unit_for(entity_id), 1.0)
+        return reading * factor
+
+    def _meter_side(self, entity_id: str) -> str:
+        """Which side of the plan a meter belongs to."""
+        if entity_id == self.options.get(CONF_EXPORT_ENERGY_SENSOR):
+            return "export"
+        return "import"
+
+    def _unit_for(self, entity_id: str) -> str:
+        """The unit the user chose for this meter, kWh when none was chosen."""
+        if self._meter_side(entity_id) == "export":
+            chosen = self.options.get(CONF_EXPORT_ENERGY_UNIT)
+        else:
+            chosen = self.options.get(CONF_IMPORT_ENERGY_UNIT)
+        return str(chosen or DEFAULT_ENERGY_UNIT)
+
+    def _check_meter_unit(self, entity_id: str, state: Any) -> None:
+        """Report, once, a meter whose own unit differs from the chosen one.
+
+        Advisory only. Nothing here changes the arithmetic or marks the cycle
+        incomplete; it points at Configure, where the unit is chosen, so the
+        user can correct it.
+        """
+        reported = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+        if not reported:
+            return
+        chosen = self._unit_for(entity_id)
+        if str(reported) == chosen:
+            self._clear_meter_unit_issue(entity_id)
+            return
+        if entity_id in self._unit_warned:
+            return
+        self._unit_warned.add(entity_id)
+        _LOGGER.warning(
+            "Meter %s reports %s but this plan reads it as %s; counting uses "
+            "%s. Open Configure and set the meter unit to match.",
+            entity_id,
+            reported,
+            chosen,
+            chosen,
+        )
+        async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._unit_issue_id(entity_id),
+            is_fixable=False,
+            severity=IssueSeverity.WARNING,
+            translation_key=ISSUE_METER_UNIT,
+            translation_placeholders={
+                "title": self.plan.name,
+                "meter": entity_id,
+                "measured": str(reported),
+                "chosen": chosen,
+            },
+        )
+
+    def _clear_meter_unit_issue(self, entity_id: str) -> None:
+        """Withdraw the repair once the meter and the choice agree again."""
+        if entity_id not in self._unit_warned:
+            return
+        self._unit_warned.discard(entity_id)
+        _LOGGER.info("Meter %s now reports the chosen unit", entity_id)
+        async_delete_issue(self.hass, DOMAIN, self._unit_issue_id(entity_id))
+
+    def _unit_issue_id(self, entity_id: str) -> str:
+        return f"{ISSUE_METER_UNIT}_{self._meter_side(entity_id)}_{self.entry_id}"
+
+    def _report_legacy_demand_basis(self) -> None:
+        """Report a stored rate still declaring the withdrawn instantaneous basis.
+
+        No tariff bills demand from an instantaneous sample, so the option is
+        gone and the model reads a stored zero as 30 minutes. A rate that
+        quietly changes meaning is a truth failure, so the change is said out
+        loud: a warning in Configure's plan text, and a repair here. Saving the
+        rate through Configure replaces the zero with what the form offers,
+        and the repair clears on the next start.
+        """
+        problems = instantaneous_demand_problems(self.options)
+        if not problems:
+            async_delete_issue(self.hass, DOMAIN, self._instantaneous_issue_id)
+            return
+        rates = ", ".join(problem.scope for problem in problems if problem.scope)
+        _LOGGER.warning(
+            "%s declared an instantaneous demand interval, which is no longer "
+            "offered; measuring over %d minutes instead. Open Configure and "
+            "choose 15, 30 or 60.",
+            rates or "A rate",
+            DEFAULT_DEMAND_INTERVAL,
+        )
+        async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._instantaneous_issue_id,
+            is_fixable=False,
+            severity=IssueSeverity.WARNING,
+            translation_key=ISSUE_INSTANTANEOUS_DEMAND,
+            translation_placeholders={
+                "title": self.plan.name,
+                "rates": rates,
+                "interval": str(DEFAULT_DEMAND_INTERVAL),
+            },
+        )
+
+    @property
+    def _instantaneous_issue_id(self) -> str:
+        return f"{ISSUE_INSTANTANEOUS_DEMAND}_{self.entry_id}"
 
     @callback
     def _handle_state_change(self, event: Event[EventStateChangedData]) -> None:
@@ -778,8 +1042,15 @@ class TariffCoordinator:
         was never reported spent early. The ledger below belongs to the rate,
         so the delta stays with the rate that drew it and a different rate
         coming into force touches nothing. That is finding A5.
+
+        A delta is not always drawn under one rate. A reading that arrives
+        either side of a boundary used to be credited wholly to whichever
+        rate was in force when it landed, so a meter reporting every ten
+        minutes mispriced however much was drawn on the other side. The
+        stretch between two readings is now divided at every boundary in it,
+        in proportion to the real time on each side.
         """
-        reading = self._read_float(entity_id)
+        reading = self._read_kwh(entity_id)
         if reading is None:
             if not self._energy_warned:
                 _LOGGER.warning(
@@ -797,24 +1068,22 @@ class TariffCoordinator:
             self._energy_warned = False
         self._close_gap(entity_id)
 
-        resolution = self.state.resolution
-        if resolution is None:
+        now = dt_util.now()
+        previous_total = self._last_energy_total
+        previous_at = self._last_energy_at
+        self._last_energy_total = reading
+        self._last_energy_at = now
+
+        if self.state.resolution is None:
             # Nothing resolves, so there is no rate to credit. The reading is
             # still recorded, or the whole unresolved stretch would be handed
             # to whichever rate happens to come into force next.
-            self._last_energy_total = reading
             return
 
-        rate = resolution.rate
-        delta = allowance_module.accumulate(self._last_energy_total, reading, 0.0)
-        if delta > 0:
-            ledger = self.ledger(resolution.qualified_name)
-            if rate.has_allowance:
-                ledger.allowance_used_kwh += delta
-                self.state.allowance_used_kwh = ledger.allowance_used_kwh
-            if rate.has_demand_charge:
-                ledger.interval_kwh += delta
-        self._last_energy_total = reading
+        delta = allowance_module.accumulate(previous_total, reading, 0.0)
+        if delta <= 0:
+            return
+        self._credit_import_delta(delta, previous_at, now)
 
     def _accumulate_export_energy(self, entity_id: str) -> None:
         """Credit the export meter delta to the export rate drawn under.
@@ -824,9 +1093,10 @@ class TariffCoordinator:
         the export rate in force while the energy was being sent, and
         crediting the delta to the rate it belongs to rather than to
         whichever rate the following refresh finds in force is what finding
-        A5 was about on the import side.
+        A5 was about on the import side. A delta that straddles a feed-in
+        boundary is split the same way, by real elapsed time.
         """
-        reading = self._read_float(entity_id)
+        reading = self._read_kwh(entity_id)
         if reading is None:
             if not self._export_energy_warned:
                 _LOGGER.warning(
@@ -844,27 +1114,206 @@ class TariffCoordinator:
             self._export_energy_warned = False
         self._close_gap(entity_id)
 
+        now = dt_util.now()
+        previous_total = self._last_export_energy_total
+        previous_at = self._last_export_energy_at
+        self._last_export_energy_total = reading
+        self._last_export_energy_at = now
+
         export_resolution = self.state.export_resolution
-        if export_resolution is None or export_resolution.rate_name is None:
-            self._last_export_energy_total = reading
+        if export_resolution is None:
             return
 
-        export_rate = export_resolution.day_pattern.export_rate_by_name(
-            export_resolution.rate_name
+        delta = allowance_module.accumulate(previous_total, reading, 0.0)
+        if delta <= 0:
+            return
+        self._credit_export_delta(delta, previous_at, now)
+
+    # ------------------------------------------------- boundary attribution
+
+    def _boundaries_between(
+        self, start: datetime, end: datetime, *, export: bool = False
+    ) -> list[datetime]:
+        """Every plan boundary strictly between two meter readings.
+
+        Walks forwards from the earlier reading, taking the soonest boundary
+        at each step. Iteration is capped: a reading with an implausible
+        timestamp cannot spin here, and a meter reporting hours apart gains
+        nothing from a walk that long.
+        """
+        start_utc = start.astimezone(UTC)
+        end_utc = end.astimezone(UTC)
+        found: list[datetime] = []
+        cursor = start
+        for _ in range(_MAX_BOUNDARIES_PER_READING):
+            boundary = intervals_module.next_boundary(
+                self.plan, cursor, self.zone, self.is_holiday, export=export
+            )
+            if boundary is None:
+                break
+            boundary_utc = boundary.astimezone(UTC)
+            if boundary_utc <= start_utc or boundary_utc > end_utc:
+                break
+            found.append(boundary)
+            cursor = boundary
+        return found
+
+    def _credit_import_delta(
+        self,
+        delta_kwh: float,
+        previous_at: datetime | None,
+        now: datetime,
+    ) -> None:
+        """Divide one import delta at the boundaries it straddles.
+
+        A reading with no earlier one to measure against is credited to the
+        rate in force when it arrived, unchanged. Every later reading is
+        divided at each plan boundary between the two moments, by real elapsed
+        seconds, and each stretch is resolved at the instant just before its
+        boundary — the rate it was actually drawn under.
+        """
+        boundaries: list[datetime] = []
+        if previous_at is not None:
+            boundaries = self._boundaries_between(previous_at, now)
+        # A reading taken exactly on a boundary reports what was drawn up to
+        # it, so its delta belongs to the rate leaving, not the one arriving.
+        on_boundary = any(
+            boundary.astimezone(UTC) == now.astimezone(UTC) for boundary in boundaries
         )
-        delta = allowance_module.accumulate(
-            self._last_export_energy_total, reading, 0.0
+        for segment_end, share in accounting_module.split_delta(
+            delta_kwh, previous_at or now, now, boundaries
+        ):
+            live = not on_boundary and segment_end.astimezone(UTC) == now.astimezone(
+                UTC
+            )
+            instant = now if live else _just_before(segment_end)
+            resolution = intervals_module.resolve_at(
+                self.plan, instant, self.zone, self.is_holiday
+            )
+            if resolution is None:
+                continue
+            self._credit_import_slice(resolution, instant, share, live=live)
+
+    def _credit_import_slice(
+        self,
+        resolution: Resolution,
+        instant: datetime,
+        kwh: float,
+        *,
+        live: bool,
+    ) -> None:
+        """Credit one stretch of import energy to the rate that was in force."""
+        rate = resolution.rate
+        ledger = self.ledger(resolution.qualified_name)
+        if rate.has_allowance:
+            slot = _allowance_slot(
+                resolution.qualified_name,
+                rate.allowance_period,
+                resolution.period.start,
+                resolution.period.end,
+                instant.astimezone(self.zone).date(),
+                self.plan.billing_cycle_day,
+            )
+            if live:
+                ledger.roll_allowance(slot)
+                ledger.allowance_used_kwh += kwh
+            elif ledger.allowance_key in (None, slot):
+                ledger.allowance_key = slot
+                ledger.allowance_used_kwh += kwh
+            else:
+                # The count has already rolled on to a later occurrence of
+                # this rate. A tail cannot go back into the slot it was drawn
+                # under without reviving a figure that has closed.
+                return
+        if rate.has_demand_charge:
+            key = accounting_module.interval_key(
+                instant, rate.demand_interval, self.zone
+            )
+            if key is not None:
+                ledger.credit_interval(
+                    key, kwh, rate.demand_interval, instant, self.zone, live=live
+                )
+        if live and (
+            self.state.resolution is not None
+            and self.state.resolution.qualified_name == resolution.qualified_name
+        ):
+            self.state.allowance_used_kwh = ledger.allowance_used_kwh
+
+    def _export_resolve_at(self, moment: datetime) -> ExportResolution | None:
+        """Return the feed-in declaration in force at an arbitrary instant."""
+        day, minutes = intervals_module.local_minutes(moment, self.zone)
+        return self.plan.export_resolve(day, minutes, self.is_holiday(day))
+
+    def _credit_export_delta(
+        self,
+        delta_kwh: float,
+        previous_at: datetime | None,
+        now: datetime,
+    ) -> None:
+        """Divide one export delta at the feed-in boundaries it straddles."""
+        boundaries: list[datetime] = []
+        if previous_at is not None:
+            boundaries = self._boundaries_between(previous_at, now, export=True)
+        on_boundary = any(
+            boundary.astimezone(UTC) == now.astimezone(UTC) for boundary in boundaries
         )
-        if delta > 0 and export_rate is not None:
-            qname = export_resolution.qualified_name
-            assert qname is not None
-            ledger = self.ledger(qname)
-            if export_rate.has_allowance:
-                ledger.allowance_used_kwh += delta
-                self.state.export_allowance_used_kwh = ledger.allowance_used_kwh
-            if export_rate.has_demand_charge:
-                ledger.interval_kwh += delta
-        self._last_export_energy_total = reading
+        for segment_end, share in accounting_module.split_delta(
+            delta_kwh, previous_at or now, now, boundaries
+        ):
+            live = not on_boundary and segment_end.astimezone(UTC) == now.astimezone(
+                UTC
+            )
+            instant = now if live else _just_before(segment_end)
+            resolution = self._export_resolve_at(instant)
+            if resolution is None:
+                continue
+            self._credit_export_slice(resolution, instant, share, live=live)
+
+    def _credit_export_slice(
+        self,
+        resolution: ExportResolution,
+        instant: datetime,
+        kwh: float,
+        *,
+        live: bool,
+    ) -> None:
+        """Credit one stretch of export energy to the price that was in force."""
+        qname = resolution.ledger_key
+        ledger = self.ledger(qname)
+        if resolution.allowance_kwh is not None:
+            slot = _allowance_slot(
+                qname,
+                resolution.allowance_period,
+                *resolution.allowance_bounds,
+                instant.astimezone(self.zone).date(),
+                self.plan.billing_cycle_day,
+            )
+            if live:
+                ledger.roll_allowance(slot)
+                ledger.allowance_used_kwh += kwh
+            elif ledger.allowance_key in (None, slot):
+                ledger.allowance_key = slot
+                ledger.allowance_used_kwh += kwh
+            else:
+                return
+        rate = (
+            resolution.day_pattern.export_rate_by_name(resolution.rate_name)
+            if resolution.rate_name is not None
+            else None
+        )
+        if rate is not None and rate.has_demand_charge:
+            key = accounting_module.interval_key(
+                instant, rate.demand_interval, self.zone
+            )
+            if key is not None:
+                ledger.credit_interval(
+                    key, kwh, rate.demand_interval, instant, self.zone, live=live
+                )
+        if live and (
+            self.state.export_resolution is not None
+            and self.state.export_resolution.ledger_key == qname
+        ):
+            self.state.export_allowance_used_kwh = ledger.allowance_used_kwh
 
     # ------------------------------------------------------------------ gaps
 
@@ -1075,6 +1524,10 @@ class TariffCoordinator:
         for it every time their attributes are read — which is every state
         write, which with an energy meter attached is several times a minute.
         """
+        if self.state.plan_not_yet_in_force:
+            self._forward_series = []
+            self._forward_key = None
+            return []
         now = dt_util.now()
         today = now.date()
         aligned = (
@@ -1120,9 +1573,16 @@ class TariffCoordinator:
         The result is cached because several sensors and services read it
         every time attributes are requested.
         """
+        if self.state.plan_not_yet_in_force:
+            self._today_series = []
+            self._today_key = None
+            return []
         now = dt_util.now()
         today = now.astimezone(self.zone).date()
-        key = (today, resolution_minutes)
+        # The holiday sensor can change which timetable owns today without
+        # the date changing. Without it in the key, segments keep naming the
+        # old timetable while periods and the rate sensor name the new one.
+        key = (today, resolution_minutes, self.is_holiday(today))
         if key != self._today_key:
             midnight = intervals_module.instants_at(today, 0, self.zone)[0]
             self._today_series = intervals_module.generate(

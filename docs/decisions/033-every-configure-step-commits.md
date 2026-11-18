@@ -33,7 +33,7 @@ DR-040 relies on.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `config_flow.py:1612` - `def guarded` - wraps every Configure step
-- `config_flow.py:1644` - `async_update_entry` - committed on the way out
+- `config_flow.py:1678` - `def guarded` - wraps every Configure step
+- `config_flow.py:1713` - `async_update_entry` - committed on the way out

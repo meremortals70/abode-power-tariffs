@@ -354,12 +354,37 @@ class TestHolidays(CoordinatorCase):
         self.assertFalse(coordinator.is_holiday(date(2030, 1, 1)))
 
 
+def drive(coro: Any) -> None:
+    """Step a coroutine the stub hass recorded until it finishes.
+
+    ``FakeHass.async_create_task`` takes the first step and keeps the
+    coroutine; there is no event loop in these tests, so a test that wants the
+    rest of a background task has to ask for each step.
+    """
+    while True:
+        try:
+            coro.send(None)
+        except StopIteration:
+            return
+
+
 class TestStartupMeterRetries(CoordinatorCase):
     """The meter's own integration may not have loaded yet at startup.
 
     A gap opened for that reason alone would be a false alarm every single
-    restart on a slower system, not a genuine data problem.
+    restart on a slower system, not a genuine data problem. The wait for it
+    must not hold the entry up, though: the plan, its boundaries and its
+    forecasts do not depend on the meter at all, and on a reload the meter is
+    already publishing.
     """
+
+    def _unready(self) -> Any:
+        """A plan whose import meter is publishing 'unavailable'."""
+        options = sample_options()
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(options)
+        coordinator.hass.states.set("sensor.grid_import", "unavailable")
+        return coordinator
 
     def test_production_defaults_are_three_attempts_five_seconds(self) -> None:
         """The actual values used when nothing overrides them for a test."""
@@ -367,42 +392,113 @@ class TestStartupMeterRetries(CoordinatorCase):
         self.assertEqual(coordinator._seed_retry_attempts, 3)
         self.assertEqual(coordinator._seed_retry_delay_seconds, 5.0)
 
-    def test_a_meter_that_becomes_readable_partway_through_is_used(self) -> None:
-        """Succeeds on a later attempt, not just the first or none at all."""
+    def test_a_ready_meter_is_read_without_waiting(self) -> None:
+        """A reload, or a restart where the meter's integration got there first.
+
+        The five seconds are left at their production value on purpose: this
+        is the case that must not pay them.
+        """
         options = sample_options()
         options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(options)
-        coordinator._seed_retry_delay_seconds = 0
-        attempts_before_available = 2
-
-        real_read_float = coordinator._read_float
-        calls = {"count": 0}
-
-        def flaky_read(entity_id: str) -> float | None:
-            calls["count"] += 1
-            if calls["count"] <= attempts_before_available:
-                return None
-            return real_read_float(entity_id)
-
-        coordinator._read_float = flaky_read
         coordinator.hass.states.set("sensor.grid_import", "100.0")
-        run(coordinator._seed_energy_total())
+        run(asyncio.wait_for(coordinator.async_start(), timeout=1))
+        self.assertAlmostEqual(coordinator._last_energy_total, 100.0)
+        self.assertEqual(coordinator.hass.tasks, [])
 
-        self.assertEqual(calls["count"], attempts_before_available + 1)
+    def test_an_unready_meter_does_not_hold_the_entry(self) -> None:
+        """Five seconds of retrying must not happen in front of the platforms."""
+        coordinator = self._unready()
+        run(asyncio.wait_for(coordinator.async_start(), timeout=1))
+        self.assertIsNone(coordinator._last_energy_total)
+        self.assertEqual(len(coordinator.hass.tasks), 1)
+
+    def test_an_unready_meter_is_retried_behind_the_entry(self) -> None:
+        coordinator = self._unready()
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator.async_start())
+        self.assertEqual(len(coordinator.hass.tasks), 1)
+
+        coordinator.hass.states.set("sensor.grid_import", "100.0")
+        drive(coordinator.hass.tasks[0])
+
         self.assertAlmostEqual(coordinator._last_energy_total, 100.0)
         self.assertIsNone(coordinator.state.gap_since)
 
-    def test_a_meter_that_never_becomes_readable_still_opens_the_gap(self) -> None:
+    def test_the_last_retry_still_opens_the_gap(self) -> None:
         """The retry does not silently swallow a genuine, ongoing problem."""
-        options = sample_options()
-        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
-        coordinator = a_coordinator(options)
+        coordinator = self._unready()
         coordinator._seed_retry_delay_seconds = 0
-        # sensor.grid_import is never given a state at all.
-        run(coordinator._seed_energy_total())
+        run(coordinator.async_start())
+        drive(coordinator.hass.tasks[0])
         self.assertIsNone(coordinator._last_energy_total)
-        coordinator.async_refresh()
         self.assertIsNotNone(coordinator.state.gap_since)
+        self.assertIn("not readable at startup", coordinator._gap_reason)
+
+    def test_a_reading_that_arrived_first_keeps_its_baseline(self) -> None:
+        """A baseline filled by a state change is never replaced.
+
+        Overwriting it would drop the energy drawn between the two readings
+        without crediting it to anything.
+        """
+        coordinator = self._unready()
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator.async_start())
+
+        coordinator.hass.states.set("sensor.grid_import", "100.0")
+        coordinator.async_refresh()
+        coordinator._accumulate_energy("sensor.grid_import")
+        self.assertAlmostEqual(coordinator._last_energy_total, 100.0)
+
+        coordinator.hass.states.set("sensor.grid_import", "104.0")
+        drive(coordinator.hass.tasks[0])
+        self.assertAlmostEqual(coordinator._last_energy_total, 100.0)
+
+    def test_shutdown_cancels_a_pending_meter_retry(self) -> None:
+        coordinator = self._unready()
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator.async_start())
+        task = coordinator._meter_tasks[0]
+        coordinator.async_shutdown()
+        self.assertTrue(task.cancelled())
+
+
+class TestTheWithdrawnInstantaneousOption(CoordinatorCase):
+    """A stored zero is measured over 30 minutes, and the user is told.
+
+    The option is gone from the form, so a rate that still says zero is a plan
+    stored before it went. Reading it as 30 minutes is right; doing it silently
+    would leave the user believing a figure means something it does not.
+    """
+
+    def _options(self) -> dict[str, Any]:
+        options = sample_options()
+        rate_in(options, 1)[CONST.CONF_DEMAND_INTERVAL] = 0
+        return options
+
+    def test_the_rate_is_measured_over_thirty_minutes(self) -> None:
+        coordinator = a_coordinator(self._options())
+        rate = coordinator.plan.rate_by_name("Every day Peak", "Every day")
+        assert rate is not None
+        self.assertEqual(rate.demand_interval, 30)
+
+    def test_setup_raises_a_repair_naming_the_rate(self) -> None:
+        module = sys.modules["homeassistant.helpers.issue_registry"]
+        module.RAISED.clear()
+        coordinator = a_coordinator(self._options())
+        run(coordinator.async_start())
+        self.assertEqual(len(module.RAISED), 1)
+        issue_id, kwargs = module.RAISED[0]
+        self.assertEqual(issue_id, coordinator._instantaneous_issue_id)
+        self.assertEqual(kwargs["translation_key"], CONST.ISSUE_INSTANTANEOUS_DEMAND)
+        self.assertIn("Every day Peak", kwargs["translation_placeholders"]["rates"])
+
+    def test_a_plan_without_the_declaration_clears_the_repair(self) -> None:
+        module = sys.modules["homeassistant.helpers.issue_registry"]
+        module.DELETED.clear()
+        coordinator = a_coordinator()
+        run(coordinator.async_start())
+        self.assertIn(coordinator._instantaneous_issue_id, module.DELETED)
 
 
 class TestAllowanceAccounting(CoordinatorCase):
@@ -493,6 +589,129 @@ class TestAllowanceAccounting(CoordinatorCase):
         PKG.coordinator.dt_util.NOW = None
 
 
+class TestTheFlatFeedInCap(CoordinatorCase):
+    """Register entry 9: a cap beside a one-price-all-day feed-in is counted.
+
+    That shape has no named export rate — only the timetable's own flat
+    price, cap and fallback — so there was nothing for a ledger to be keyed
+    on. Neither the count nor the fallback price ever moved, on the block
+    plan or on any timetable that ticks "One price all day".
+    """
+
+    def _capped(
+        self,
+        meter: bool = True,
+        pattern_extra: dict[str, Any] | None = None,
+        plan_extra: dict[str, Any] | None = None,
+    ) -> Any:
+        options = sample_options()
+        pattern = options[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = True
+        pattern[CONST.CONF_EXPORT_FLAT_CENTS] = 8.0
+        pattern[CONST.CONF_EXPORT_ALLOWANCE_KWH] = 10.0
+        pattern[CONST.CONF_EXPORT_FALLBACK_CENTS] = 2.0
+        pattern.update(pattern_extra or {})
+        options.update(plan_extra or {})
+        coordinator = a_coordinator(options)
+        if meter:
+            options[CONST.CONF_EXPORT_ENERGY_SENSOR] = "sensor.grid_export"
+            coordinator.options[CONST.CONF_EXPORT_ENERGY_SENSOR] = "sensor.grid_export"
+            coordinator.hass.states.set("sensor.grid_export", "100.0")
+            coordinator._seed_retry_delay_seconds = 0
+            run(coordinator._seed_energy_total())
+        return coordinator
+
+    def _export(self, coordinator: Any, total: float) -> None:
+        coordinator.hass.states.set("sensor.grid_export", str(total))
+        coordinator._accumulate_export_energy("sensor.grid_export")
+
+    def test_export_counts_against_the_flat_cap(self) -> None:
+        coordinator = self._capped()
+        coordinator.async_refresh()
+        self._export(coordinator, 112.0)
+        self.assertAlmostEqual(coordinator.state.export_allowance_used_kwh, 12.0)
+
+    def test_past_the_cap_the_fallback_price_applies(self) -> None:
+        coordinator = self._capped()
+        coordinator.async_refresh()
+        self._export(coordinator, 112.0)
+        coordinator.async_refresh()
+        self.assertTrue(coordinator.state.export_allowance_exhausted)
+        self.assertEqual(coordinator.state.export_allowance_remaining_kwh, 0.0)
+        self.assertAlmostEqual(coordinator.state.export_effective_price or 0.0, 0.02)
+
+    def test_under_the_cap_the_declared_price_stands(self) -> None:
+        coordinator = self._capped()
+        coordinator.async_refresh()
+        self._export(coordinator, 104.0)
+        coordinator.async_refresh()
+        self.assertAlmostEqual(coordinator.state.export_allowance_used_kwh, 4.0)
+        self.assertFalse(coordinator.state.export_allowance_exhausted)
+        self.assertAlmostEqual(coordinator.state.export_effective_price or 0.0, 0.08)
+
+    def test_the_flat_declaration_holds_a_ledger_of_its_own(self) -> None:
+        coordinator = self._capped()
+        coordinator.async_refresh()
+        resolution = coordinator.state.export_resolution
+        assert resolution is not None
+        self.assertEqual(resolution.ledger_key, "test.every_day.export")
+        self.assertIn(resolution.ledger_key, coordinator.state.ledgers)
+
+    def test_a_daily_cap_starts_again_tomorrow(self) -> None:
+        """Rule 11: an all-day slot's one occurrence is one day."""
+        coordinator = self._capped()
+        coordinator.async_refresh()
+        self._export(coordinator, 112.0)
+        self.assertAlmostEqual(coordinator.state.export_allowance_used_kwh, 12.0)
+        first = coordinator.state.export_allowance_slot
+
+        PKG.coordinator.dt_util.NOW = at(9, 0, day=15)
+        coordinator.async_refresh()
+        self.assertNotEqual(coordinator.state.export_allowance_slot, first)
+        self.assertEqual(coordinator.state.export_allowance_used_kwh, 0.0)
+        self.assertAlmostEqual(coordinator.state.export_effective_price or 0.0, 0.08)
+
+    def test_a_monthly_cap_carries_across_days(self) -> None:
+        coordinator = self._capped(
+            pattern_extra={
+                CONST.CONF_EXPORT_ALLOWANCE_PERIOD: CONST.ALLOWANCE_PERIOD_MONTH
+            }
+        )
+        coordinator.async_refresh()
+        self._export(coordinator, 112.0)
+
+        PKG.coordinator.dt_util.NOW = at(9, 0, day=15)
+        coordinator.async_refresh()
+        self.assertAlmostEqual(coordinator.state.export_allowance_used_kwh, 12.0)
+        self.assertAlmostEqual(coordinator.state.export_effective_price or 0.0, 0.02)
+
+    def test_a_monthly_cap_starts_again_in_the_next_cycle(self) -> None:
+        coordinator = self._capped(
+            pattern_extra={
+                CONST.CONF_EXPORT_ALLOWANCE_PERIOD: CONST.ALLOWANCE_PERIOD_MONTH
+            },
+            plan_extra={CONST.CONF_BILLING_CYCLE_DAY: 20},
+        )
+        coordinator.async_refresh()
+        self._export(coordinator, 112.0)
+        self.assertAlmostEqual(coordinator.state.export_allowance_used_kwh, 12.0)
+
+        PKG.coordinator.dt_util.NOW = at(9, 0, day=21)
+        coordinator.async_refresh()
+        self.assertEqual(coordinator.state.export_allowance_used_kwh, 0.0)
+
+    def test_without_the_export_meter_the_cap_is_published_but_not_counted(
+        self,
+    ) -> None:
+        """Counting is opt-in (rule 7): no meter, no count, no fallback price."""
+        coordinator = self._capped(meter=False)
+        coordinator.async_refresh()
+        self.assertEqual(coordinator.state.export_allowance_used_kwh, 0.0)
+        self.assertIsNone(coordinator.state.export_allowance_remaining_kwh)
+        self.assertFalse(coordinator.state.export_allowance_exhausted)
+        self.assertAlmostEqual(coordinator.state.export_effective_price or 0.0, 0.08)
+
+
 class TestDemandAccumulation(CoordinatorCase):
     """Section 9 items 3, 5 and 9 — the demand side of P35."""
 
@@ -501,6 +720,43 @@ class TestDemandAccumulation(CoordinatorCase):
         rate_in(opts, 1)[CONST.CONF_DEMAND_PERIOD] = True
         rate_in(opts, 1)[CONST.CONF_DEMAND_RATE] = 20.0
         rate_in(opts, 1).update(rate_extra)
+        opts[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(opts)
+        coordinator.hass.states.set("sensor.grid_import", "0.0")
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
+        return coordinator
+
+    def _evening_window(self, end: str = "21:00") -> Any:
+        """The evening shape: a demand charge on 16:00-21:00 only.
+
+        The window sits inside the day rather than at the end of it, so the
+        rate enters force at 16:00 and leaves it at 21:00. The leaving edge
+        is the one whose last interval used to be thrown away.
+
+        ``end`` moves the leaving edge earlier, which is how a rate can leave
+        part-way through an interval rather than on its boundary.
+        """
+        opts = sample_options()
+        rate_in(opts, 1)[CONST.CONF_DEMAND_PERIOD] = True
+        rate_in(opts, 1)[CONST.CONF_DEMAND_RATE] = 20.0
+        opts[CONST.CONF_DAY_PATTERNS][0][CONST.CONF_PERIODS] = [
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "16:00",
+                CONST.CONF_RATE: "Every day Off Peak",
+            },
+            {
+                CONST.CONF_START: "16:00",
+                CONST.CONF_END: end,
+                CONST.CONF_RATE: "Every day Peak",
+            },
+            {
+                CONST.CONF_START: end,
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Every day Off Peak",
+            },
+        ]
         opts[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(opts)
         coordinator.hass.states.set("sensor.grid_import", "0.0")
@@ -552,6 +808,77 @@ class TestDemandAccumulation(CoordinatorCase):
         coordinator.async_refresh()
         ledger = coordinator.ledger_for(peak_name(coordinator))
         self.assertEqual(ledger.interval_kwh, 0.0)
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_the_last_interval_of_the_demand_window_is_a_candidate(self) -> None:
+        """16:00-21:00, half-hour intervals, 6 kWh drawn in 20:30-21:00.
+
+        The interval and the window end at the same instant, so the interval
+        completed before the rate left force. Discarding it lost the last
+        half hour of every evening window — the half hour the evening bill is
+        most likely to be built on.
+        """
+        coordinator = self._evening_window()
+        PKG.coordinator.dt_util.NOW = at(20, 30, day=14)
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "6.0")
+        coordinator._accumulate_energy("sensor.grid_import")
+
+        PKG.coordinator.dt_util.NOW = at(21, 0, day=14)
+        coordinator.async_refresh()
+        ledger = coordinator.ledger_for(peak_name(coordinator))
+        self.assertAlmostEqual(ledger.peak_kw, 12.0, places=6)
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_an_interval_still_running_when_the_rate_leaves_is_discarded(self) -> None:
+        """Three kWh over a quarter hour is not a half-hour average.
+
+        A rate whose window ends at 20:45 leaves half-way through the
+        20:30-21:00 interval. Averaging what it drew over the full half hour
+        would report half the real draw, so the interval is thrown away
+        entirely — it never completed.
+        """
+        coordinator = self._evening_window("20:45")
+        PKG.coordinator.dt_util.NOW = at(20, 30, day=14)
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "3.0")
+        coordinator._accumulate_energy("sensor.grid_import")
+
+        PKG.coordinator.dt_util.NOW = at(20, 45, day=14)
+        coordinator.async_refresh()
+        ledger = coordinator.ledger_for(peak_name(coordinator))
+        self.assertEqual(ledger.peak_kw, 0.0)
+        self.assertEqual(ledger.interval_kwh, 0.0)
+        PKG.coordinator.dt_util.NOW = None
+
+    def test_energy_drawn_after_the_window_does_not_set_its_peak(self) -> None:
+        """The interval that closes a window is the last one it can count.
+
+        Twelve more kWh drawn after 21:00 is priced off peak and never
+        touches the window's peak, however large it is.
+        """
+        coordinator = self._evening_window()
+        PKG.coordinator.dt_util.NOW = at(20, 30, day=14)
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "6.0")
+        coordinator._accumulate_energy("sensor.grid_import")
+
+        PKG.coordinator.dt_util.NOW = at(21, 0, day=14)
+        coordinator.async_refresh()
+        # The meter also reports on the boundary, so the six kWh the interval
+        # closed with is separated from whatever is drawn after it. Without
+        # this reading the later total's stretch straddles 21:00 and is
+        # divided across it, which is the estimate build 4 introduced.
+        coordinator._accumulate_energy("sensor.grid_import")
+
+        PKG.coordinator.dt_util.NOW = at(21, 5, day=14)
+        coordinator.hass.states.set("sensor.grid_import", "18.0")
+        coordinator._accumulate_energy("sensor.grid_import")
+        PKG.coordinator.dt_util.NOW = at(21, 30, day=14)
+        coordinator.async_refresh()
+
+        ledger = coordinator.ledger_for(peak_name(coordinator))
+        self.assertAlmostEqual(ledger.peak_kw, 12.0, places=6)
         PKG.coordinator.dt_util.NOW = None
 
     def test_two_rates_on_two_timetables_keep_separate_peaks(self) -> None:
@@ -637,6 +964,259 @@ class TestDemandAccumulation(CoordinatorCase):
         coordinator.async_refresh()
         self.assertEqual(ledger.peak_kw, 0.0)
         PKG.coordinator.dt_util.NOW = None
+
+
+class TestBoundaryAttribution(CoordinatorCase):
+    """Build 4: a reading that straddles a boundary is divided by real time.
+
+    The meter reports a running total, so a reading tells us how much was
+    drawn since the last one but not when. Crediting the whole delta to
+    whichever rate was in force when it arrived over-prices an evening peak
+    and under-counts a cap by however much was drawn on the other side.
+    """
+
+    def _evening(self) -> Any:
+        """Off Peak 00:00-16:00, Peak 16:00-21:00, Off Peak 21:00-24:00.
+
+        Both rates declare a cap, so the split is visible in a count rather
+        than only in the peak, and Peak carries a demand charge.
+        """
+        opts = sample_options()
+        rate_in(opts, 1)[CONST.CONF_DEMAND_PERIOD] = True
+        rate_in(opts, 1)[CONST.CONF_DEMAND_RATE] = 20.0
+        rate_in(opts, 1)[CONST.CONF_RATE_ALLOWANCE_KWH] = 100.0
+        rate_in(opts, 1)[CONST.CONF_FALLBACK_RATE] = "Every day Off Peak"
+        rate_in(opts, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 100.0
+        rate_in(opts, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        opts[CONST.CONF_DAY_PATTERNS][0][CONST.CONF_PERIODS] = [
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "16:00",
+                CONST.CONF_RATE: "Every day Off Peak",
+            },
+            {
+                CONST.CONF_START: "16:00",
+                CONST.CONF_END: "21:00",
+                CONST.CONF_RATE: "Every day Peak",
+            },
+            {
+                CONST.CONF_START: "21:00",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Every day Off Peak",
+            },
+        ]
+        opts[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(opts)
+        coordinator.hass.states.set("sensor.grid_import", "100.0")
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
+        return coordinator
+
+    def _off_peak(self, coordinator: Any) -> Any:
+        return coordinator.ledger_for(
+            PKG.plan.qualified_name("Test", "Every day", "Every day Off Peak")
+        )
+
+    def _read(self, coordinator: Any, moment: datetime, total: str) -> None:
+        PKG.coordinator.dt_util.NOW = moment
+        coordinator.hass.states.set("sensor.grid_import", total)
+        coordinator._accumulate_energy("sensor.grid_import")
+
+    def test_a_ten_minute_meter_reaches_the_true_peak(self) -> None:
+        """A reading at 21:10 covers the interval that closed at 21:00.
+
+        Evenly drawn, the half hour held 6 kWh. The tick at 21:00 had only
+        seen 4, so it recorded 8 kW; the tail is real consumption from the
+        interval it closed and belongs in it. True draw 12 kW.
+        """
+        coordinator = self._evening()
+        PKG.coordinator.dt_util.NOW = at(20, 30, day=14)
+        coordinator.async_refresh()
+        self._read(coordinator, at(20, 50, day=14), "104.0")
+        PKG.coordinator.dt_util.NOW = at(21, 0, day=14)
+        coordinator.async_refresh()
+
+        peak = coordinator.ledger_for(peak_name(coordinator))
+        self.assertAlmostEqual(peak.peak_kw, 8.0, places=6)
+
+        self._read(coordinator, at(21, 10, day=14), "108.0")
+        self.assertAlmostEqual(peak.peak_kw, 12.0, places=6)
+        self.assertAlmostEqual(peak.allowance_used_kwh, 6.0, places=6)
+        self.assertAlmostEqual(self._off_peak(coordinator).allowance_used_kwh, 2.0)
+
+    def test_a_silent_meter_across_the_boundary_is_split_evenly(self) -> None:
+        """3 kWh by 20:50 and 3 more by 21:10. Ten of the twenty minutes are Peak."""
+        coordinator = self._evening()
+        PKG.coordinator.dt_util.NOW = at(20, 45, day=14)
+        coordinator.async_refresh()
+        self._read(coordinator, at(20, 50, day=14), "103.0")
+        PKG.coordinator.dt_util.NOW = at(21, 0, day=14)
+        coordinator.async_refresh()
+
+        peak = coordinator.ledger_for(peak_name(coordinator))
+        self.assertAlmostEqual(peak.peak_kw, 6.0, places=6)
+
+        self._read(coordinator, at(21, 10, day=14), "106.0")
+        self.assertAlmostEqual(peak.peak_kw, 9.0, places=6)
+        self.assertAlmostEqual(peak.allowance_used_kwh, 4.5, places=6)
+        self.assertAlmostEqual(self._off_peak(coordinator).allowance_used_kwh, 1.5)
+
+    def test_a_reading_on_the_boundary_before_the_tick_belongs_to_the_rate_before(
+        self,
+    ) -> None:
+        """Event order must not decide which rate a boundary reading is priced at."""
+        coordinator = self._evening()
+        PKG.coordinator.dt_util.NOW = at(20, 45, day=14)
+        coordinator.async_refresh()
+        self._read(coordinator, at(20, 50, day=14), "103.0")
+
+        self._read(coordinator, at(21, 0, day=14), "106.0")
+        peak = coordinator.ledger_for(peak_name(coordinator))
+        self.assertAlmostEqual(peak.allowance_used_kwh, 6.0, places=6)
+        self.assertAlmostEqual(self._off_peak(coordinator).allowance_used_kwh, 0.0)
+
+        coordinator.async_refresh()
+        self.assertAlmostEqual(peak.peak_kw, 12.0, places=6)
+
+    def test_a_reading_on_the_boundary_after_the_tick_belongs_to_the_rate_before(
+        self,
+    ) -> None:
+        """The same reading, processed after the boundary has already refreshed."""
+        coordinator = self._evening()
+        PKG.coordinator.dt_util.NOW = at(20, 45, day=14)
+        coordinator.async_refresh()
+        self._read(coordinator, at(20, 50, day=14), "103.0")
+
+        PKG.coordinator.dt_util.NOW = at(21, 0, day=14)
+        coordinator.async_refresh()
+        self._read(coordinator, at(21, 0, day=14), "106.0")
+
+        peak = coordinator.ledger_for(peak_name(coordinator))
+        self.assertAlmostEqual(peak.allowance_used_kwh, 6.0, places=6)
+        self.assertAlmostEqual(peak.peak_kw, 12.0, places=6)
+        self.assertAlmostEqual(self._off_peak(coordinator).allowance_used_kwh, 0.0)
+
+    def test_two_boundaries_in_one_reading_make_three_stretches(self) -> None:
+        coordinator = self._evening()
+        PKG.coordinator.dt_util.NOW = at(15, 0, day=14)
+        coordinator.async_refresh()
+        self._read(coordinator, at(15, 0, day=14), "101.0")
+
+        # Seven kWh over seven hours, crossing 16:00 and 21:00.
+        self._read(coordinator, at(22, 0, day=14), "108.0")
+
+        peak = coordinator.ledger_for(peak_name(coordinator))
+        off_peak = self._off_peak(coordinator)
+        self.assertAlmostEqual(peak.allowance_used_kwh, 5.0, places=6)
+        # 15:00-16:00 and 21:00-22:00 are two occurrences of the Off Peak
+        # slot, so the earlier one closed with 1 kWh and the live one holds 1.
+        self.assertAlmostEqual(off_peak.allowance_closed_kwh, 2.0, places=6)
+        self.assertAlmostEqual(off_peak.allowance_used_kwh, 1.0, places=6)
+
+    def test_a_reading_inside_one_rate_is_not_divided(self) -> None:
+        coordinator = self._evening()
+        PKG.coordinator.dt_util.NOW = at(17, 0, day=14)
+        coordinator.async_refresh()
+        self._read(coordinator, at(17, 0, day=14), "100.0")
+        self._read(coordinator, at(17, 10, day=14), "104.0")
+
+        peak = coordinator.ledger_for(peak_name(coordinator))
+        self.assertAlmostEqual(peak.allowance_used_kwh, 4.0, places=6)
+        self.assertAlmostEqual(peak.interval_kwh, 4.0, places=6)
+
+    def test_the_export_meter_is_split_the_same_way(self) -> None:
+        options = sample_options()
+        pattern = options[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "21:00",
+                CONST.CONF_RATE: "Day",
+            },
+            {
+                CONST.CONF_START: "21:00",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Night",
+            },
+        ]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {
+                CONST.CONF_NAME: "Day",
+                CONST.CONF_EXPORT_CENTS: 5.0,
+                CONST.CONF_EXPORT_ALLOWANCE_KWH: 100.0,
+            },
+            {
+                CONST.CONF_NAME: "Night",
+                CONST.CONF_EXPORT_CENTS: 1.0,
+                CONST.CONF_EXPORT_ALLOWANCE_KWH: 100.0,
+            },
+        ]
+        options[CONST.CONF_EXPORT_ENERGY_SENSOR] = "sensor.grid_export"
+        coordinator = a_coordinator(options)
+        coordinator.hass.states.set("sensor.grid_export", "10.0")
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
+
+        PKG.coordinator.dt_util.NOW = at(20, 45, day=14)
+        coordinator.async_refresh()
+        PKG.coordinator.dt_util.NOW = at(20, 50, day=14)
+        coordinator.hass.states.set("sensor.grid_export", "13.0")
+        coordinator._accumulate_export_energy("sensor.grid_export")
+        PKG.coordinator.dt_util.NOW = at(21, 0, day=14)
+        coordinator.async_refresh()
+        PKG.coordinator.dt_util.NOW = at(21, 10, day=14)
+        coordinator.hass.states.set("sensor.grid_export", "16.0")
+        coordinator._accumulate_export_energy("sensor.grid_export")
+
+        day = coordinator.ledger(
+            PKG.plan.qualified_name("Test", "Every day", "Day", export=True)
+        )
+        night = coordinator.ledger(
+            PKG.plan.qualified_name("Test", "Every day", "Night", export=True)
+        )
+        self.assertAlmostEqual(day.allowance_used_kwh, 4.5, places=6)
+        self.assertAlmostEqual(night.allowance_used_kwh, 1.5, places=6)
+
+    def test_a_tail_for_a_discarded_interval_never_becomes_a_peak(self) -> None:
+        """A rate that left mid-interval cannot have its fragment averaged.
+
+        The rate leaves at 20:45, part-way through 20:30-21:00. Build 1
+        discards that partial interval; energy drawn in it that arrives with
+        a later reading must not resurrect it as a 30-minute average.
+        """
+        opts = sample_options()
+        rate_in(opts, 1)[CONST.CONF_DEMAND_PERIOD] = True
+        rate_in(opts, 1)[CONST.CONF_DEMAND_RATE] = 20.0
+        opts[CONST.CONF_DAY_PATTERNS][0][CONST.CONF_PERIODS] = [
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "20:45",
+                CONST.CONF_RATE: "Every day Peak",
+            },
+            {
+                CONST.CONF_START: "20:45",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Every day Off Peak",
+            },
+        ]
+        opts[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(opts)
+        coordinator.hass.states.set("sensor.grid_import", "100.0")
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
+
+        PKG.coordinator.dt_util.NOW = at(20, 30, day=14)
+        coordinator.async_refresh()
+        self._read(coordinator, at(20, 40, day=14), "101.0")
+        # 20:45: the rate leaves force. The interval is only quarter done.
+        PKG.coordinator.dt_util.NOW = at(20, 45, day=14)
+        coordinator.async_refresh()
+        self._read(coordinator, at(20, 50, day=14), "103.0")
+
+        peak = coordinator.ledger_for(peak_name(coordinator))
+        self.assertEqual(peak.peak_kw, 0.0)
+        self.assertEqual(peak.interval_kwh, 0.0)
 
 
 class TestBillingCycle(CoordinatorCase):
@@ -1197,7 +1777,11 @@ class TestStripRendering(unittest.TestCase):
         pattern = data[CONST.CONF_DAY_PATTERNS][0]
         pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
         pattern[CONST.CONF_EXPORT_PERIODS] = [
-            {CONST.CONF_START: "00:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Missing"}
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Missing",
+            }
         ]
         plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
         row = PKG.strip.render_export_row(plan, plan.day_patterns[0])
@@ -1277,7 +1861,6 @@ class TestOptionsFlowUtilities(unittest.TestCase):
         self.assertIn("cannot be read", text)
 
     def test_plan_text_shows_warnings(self) -> None:
-        """Line 1723."""
         options = sample_options()
         pattern = options[CONST.CONF_DAY_PATTERNS][0]
         pattern[CONST.CONF_RATES][0][CONST.CONF_RATE_ALLOWANCE_KWH] = 10.0
@@ -1299,6 +1882,16 @@ class TestOptionsFlowUtilities(unittest.TestCase):
         text = driver.flow._plan_text()
         self.assertIn("Worth checking", text)
 
+    def test_plan_text_reports_a_withdrawn_instantaneous_rate(self) -> None:
+        """Configure says so, not just a repair the user may never open."""
+        options = sample_options()
+        rate_in(options, 1)[CONST.CONF_DEMAND_INTERVAL] = 0
+        driver = OptionsDriver(options)
+        driver.start()
+        text = driver.flow._plan_text()
+        self.assertIn("Worth checking", text)
+        self.assertIn("instantaneous", text)
+
     def test_add_rate_to_missing_pattern_does_nothing(self) -> None:
         """Line 1751->exit."""
         driver = OptionsDriver()
@@ -1311,7 +1904,9 @@ class TestOptionsFlowUtilities(unittest.TestCase):
         """Lines 1757->exit, 1759->exit."""
         driver = OptionsDriver()
         driver.start()
-        driver.flow._remove_rate({CONST.CONF_TIMETABLE: "Missing", CONST.CONF_NAME: "X"})
+        driver.flow._remove_rate(
+            {CONST.CONF_TIMETABLE: "Missing", CONST.CONF_NAME: "X"}
+        )
         self.assertEqual(len(driver.flow._day_patterns()[0][CONST.CONF_RATES]), 2)
 
     def test_day_pattern_by_name_missing(self) -> None:
@@ -1400,7 +1995,9 @@ class TestOptionsFlowUtilities(unittest.TestCase):
         driver.choose("rates_menu")
         driver.choose("rate_add")
         result = driver.submit(name="Peak", import_cents=30.0, timetable="")
-        self.assertEqual(result["errors"].get(CONST.CONF_TIMETABLE), "timetable_required")
+        self.assertEqual(
+            result["errors"].get(CONST.CONF_TIMETABLE), "timetable_required"
+        )
 
     def test_rate_add_duplicate(self) -> None:
         """Line 1958."""
@@ -1423,7 +2020,9 @@ class TestOptionsFlowUtilities(unittest.TestCase):
             demand_period=True,
             demand_rate_per_kw_month=0.0,
         )
-        self.assertEqual(result["errors"].get(CONST.CONF_DEMAND_RATE), "demand_rate_required")
+        self.assertEqual(
+            result["errors"].get(CONST.CONF_DEMAND_RATE), "demand_rate_required"
+        )
 
     def test_periods_pick_with_no_patterns_adds_one(self) -> None:
         """Lines 2413-2414."""
@@ -2020,9 +2619,7 @@ class TestValidateExport(unittest.TestCase):
         ]
         plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
         problems = [str(p) for p in PKG.validate.validate_plan(plan)]
-        self.assertTrue(
-            any("two export rates" in p for p in problems)
-        )
+        self.assertTrue(any("two export rates" in p for p in problems))
 
     def test_export_enforceable_not_carried(self) -> None:
         """Line 161."""
@@ -2072,8 +2669,16 @@ class TestValidateExport(unittest.TestCase):
         pattern = data[CONST.CONF_DAY_PATTERNS][0]
         pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
         pattern[CONST.CONF_EXPORT_PERIODS] = [
-            {CONST.CONF_START: "00:00", CONST.CONF_END: "14:00", CONST.CONF_RATE: "Day"},
-            {CONST.CONF_START: "12:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Day"},
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "14:00",
+                CONST.CONF_RATE: "Day",
+            },
+            {
+                CONST.CONF_START: "12:00",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Day",
+            },
         ]
         pattern[CONST.CONF_EXPORT_RATES] = [
             {CONST.CONF_NAME: "Day", CONST.CONF_EXPORT_CENTS: 5.0}
@@ -2104,8 +2709,16 @@ class TestValidateExport(unittest.TestCase):
         pattern = data[CONST.CONF_DAY_PATTERNS][0]
         pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
         pattern[CONST.CONF_EXPORT_PERIODS] = [
-            {CONST.CONF_START: "22:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Night"},
-            {CONST.CONF_START: "00:00", CONST.CONF_END: "06:00", CONST.CONF_RATE: "Night"},
+            {
+                CONST.CONF_START: "22:00",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Night",
+            },
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "06:00",
+                CONST.CONF_RATE: "Night",
+            },
         ]
         pattern[CONST.CONF_EXPORT_RATES] = [
             {
@@ -2117,6 +2730,33 @@ class TestValidateExport(unittest.TestCase):
         plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
         warnings = [str(p) for p in PKG.validate.plan_warnings(plan)]
         self.assertTrue(any("export Night" in w and "midnight" in w for w in warnings))
+
+    def test_a_flat_cap_with_no_fallback_is_flagged(self) -> None:
+        """A cap that changes nothing when it is spent is worth saying.
+
+        The import side refuses to save a cap without a fallback. A flat
+        feed-in cap was accepted silently and did nothing at all; now it is
+        counted, so a cap with no price past it is a plan that does not add
+        up — reported as advice, because the shape is already in storage.
+        """
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = True
+        pattern[CONST.CONF_EXPORT_ALLOWANCE_KWH] = 10.0
+        pattern[CONST.CONF_EXPORT_FALLBACK_CENTS] = None
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        warnings = [str(w) for w in PKG.validate.plan_warnings(plan)]
+        self.assertTrue(any("no fallback price" in w for w in warnings))
+
+    def test_a_flat_cap_with_a_fallback_is_not_flagged(self) -> None:
+        data = sample_options()
+        pattern = data[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = True
+        pattern[CONST.CONF_EXPORT_ALLOWANCE_KWH] = 10.0
+        pattern[CONST.CONF_EXPORT_FALLBACK_CENTS] = 2.0
+        plan = Plan.from_dict({**data, CONST.CONF_NAME: "Test"})
+        warnings = [str(w) for w in PKG.validate.plan_warnings(plan)]
+        self.assertEqual([w for w in warnings if "no fallback price" in w], [])
 
 
 class TestCountingSitsWithTheCap(unittest.TestCase):
@@ -2739,3 +3379,308 @@ class TestArchivedIsNotExpired(CoordinatorCase):
         ]
         coordinator.async_refresh()
         self.assertFalse(coordinator.state.plan_replaced)
+
+
+class TestBuildTwo(CoordinatorCase):
+    """The four fixes in the small correctness set, plus the narrowed gap."""
+
+    def _holiday_plan(self) -> Any:
+        options = sample_options()
+        options[CONST.CONF_DAY_PATTERNS] = [
+            {
+                CONST.CONF_NAME: "Weekday",
+                CONST.CONF_DAYS: ["mon", "tue", "wed", "thu", "fri"],
+                CONST.CONF_RATES: [
+                    {
+                        CONST.CONF_NAME: "Weekday Peak",
+                        CONST.CONF_IMPORT_CENTS: 45.0,
+                    }
+                ],
+                CONST.CONF_PERIODS: [
+                    {
+                        CONST.CONF_START: "00:00",
+                        CONST.CONF_END: "24:00",
+                        CONST.CONF_RATE: "Weekday Peak",
+                    }
+                ],
+                CONST.CONF_EXPORT_SAME_ALL_DAY: True,
+                CONST.CONF_EXPORT_FLAT_CENTS: 5.0,
+            },
+            {
+                CONST.CONF_NAME: "Holiday",
+                CONST.CONF_DAYS: [CONST.DAY_HOLIDAY],
+                CONST.CONF_RATES: [
+                    {
+                        CONST.CONF_NAME: "Holiday Offpeak",
+                        CONST.CONF_IMPORT_CENTS: 20.0,
+                    }
+                ],
+                CONST.CONF_PERIODS: [
+                    {
+                        CONST.CONF_START: "00:00",
+                        CONST.CONF_END: "24:00",
+                        CONST.CONF_RATE: "Holiday Offpeak",
+                    }
+                ],
+                CONST.CONF_EXPORT_SAME_ALL_DAY: True,
+                CONST.CONF_EXPORT_FLAT_CENTS: 5.0,
+            },
+        ]
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        options[CONST.CONF_HOLIDAY_SENSOR] = "binary_sensor.workday"
+        return a_coordinator(options)
+
+    def test_the_day_schedule_follows_a_holiday_flip(self) -> None:
+        """Every view of today must name the same timetable.
+
+        The sensor's ``segments`` attribute is cached on the date and the
+        resolution alone. After the holiday sensor flips, ``periods`` and the
+        rate sensor follow the new timetable while ``segments`` still draws
+        the old one — one entity contradicting itself.
+        """
+        coordinator = self._holiday_plan()
+        coordinator.hass.states.set("binary_sensor.workday", "on")
+        coordinator.async_refresh()
+        self.assertEqual(
+            {segment.day_pattern for segment in coordinator.today_schedule(15)},
+            {"Weekday"},
+        )
+
+        coordinator.hass.states.set("binary_sensor.workday", "off")
+        coordinator.async_refresh()
+        self.assertEqual(
+            {segment.day_pattern for segment in coordinator.today_schedule(15)},
+            {"Holiday"},
+        )
+        self.assertEqual(
+            {period["rate"] for period in coordinator.today_periods()},
+            {"test.holiday.import.holiday_offpeak"},
+        )
+
+    def test_a_holiday_sensor_with_no_holiday_timetable_opens_no_gap(self) -> None:
+        """An input that cannot change today is not a data failure.
+
+        The options flow accepts a holiday sensor independently of whether
+        any timetable names the holiday day set. With none, the sensor is
+        decoration and its going unavailable changes no published figure.
+        """
+        options = sample_options()
+        options[CONST.CONF_DAY_PATTERNS][0][CONST.CONF_DAYS] = list(
+            CONST.WEEKDAY_TOKENS
+        )
+        options[CONST.CONF_HOLIDAY_SENSOR] = "binary_sensor.workday"
+        coordinator = a_coordinator(options)
+        coordinator.hass.states.set("binary_sensor.workday", "unavailable")
+        coordinator.async_refresh()
+        self.assertTrue(coordinator.state.data_complete)
+        self.assertFalse(coordinator._holiday_warned)
+
+    def test_a_plan_that_has_not_started_is_not_expired(self) -> None:
+        """Not yet in force and run out are different facts.
+
+        A plan with a future ``valid_from`` was flagged expired, published
+        prices anyway, and raised a repair with an empty ``valid_to``.
+        """
+        options = sample_options()
+        options[CONST.CONF_VALID_FROM] = "2026-09-01"
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(options)
+        coordinator.async_refresh()
+        self.assertFalse(coordinator.state.plan_expired)
+        self.assertTrue(getattr(coordinator.state, "plan_not_yet_in_force", False))
+        self.assertIsNone(coordinator.state.resolution)
+        self.assertEqual(coordinator.forward_intervals(24, 30), [])
+        self.assertEqual(coordinator.today_schedule(30), [])
+
+    def test_an_expired_plan_still_reports_expired(self) -> None:
+        """The narrowing of ``plan_expired`` must not lose the real case."""
+        options = sample_options()
+        options[CONST.CONF_VALID_TO] = "2026-08-01"
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        coordinator = a_coordinator(options)
+        coordinator.async_refresh()
+        self.assertTrue(coordinator.state.plan_expired)
+        self.assertFalse(getattr(coordinator.state, "plan_not_yet_in_force", False))
+
+    def test_an_export_only_plan_records_its_own_demand_peak(self) -> None:
+        """The export interval must be gated on the export meter."""
+        options = sample_options()
+        options.pop(CONST.CONF_IMPORT_ENERGY_SENSOR, None)
+        options[CONST.CONF_EXPORT_ENERGY_SENSOR] = "sensor.grid_export"
+        # An export rate that declares its own demand charge, so there is an
+        # export ledger whose peak can be measured. ``sample_options`` has a
+        # flat feed-in price and no export rates at all.
+        pattern = options[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
+        pattern[CONST.CONF_EXPORT_PERIODS] = [
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Export Peak",
+            },
+        ]
+        pattern[CONST.CONF_EXPORT_RATES] = [
+            {
+                CONST.CONF_NAME: "Export Peak",
+                CONST.CONF_EXPORT_CENTS: 8.0,
+                CONST.CONF_DEMAND_PERIOD: True,
+                CONST.CONF_DEMAND_RATE: 20.0,
+                CONST.CONF_DEMAND_INTERVAL: 30,
+                CONST.CONF_DEMAND_BASIS: "day",
+            },
+        ]
+        coordinator = a_coordinator(options)
+        coordinator.hass.states.set("sensor.grid_export", "100.0")
+        coordinator._seed_retry_delay_seconds = 0
+        PKG.coordinator.dt_util.NOW = at(20, 0)
+        run(coordinator.async_start())
+
+        # Move into the 20:30 interval before drawing, so both readings land
+        # in the same half hour and make one 6 kWh, 12 kW interval.
+        PKG.coordinator.dt_util.NOW = at(20, 30)
+        coordinator.async_refresh()
+
+        event = types.SimpleNamespace(data={"entity_id": "sensor.grid_export"})
+        for minute, total in ((35, 103.0), (55, 106.0)):
+            PKG.coordinator.dt_util.NOW = at(20, minute)
+            coordinator.hass.states.set("sensor.grid_export", str(total))
+            coordinator._handle_state_change(event)
+        PKG.coordinator.dt_util.NOW = at(21, 0)
+        coordinator.async_refresh()
+
+        ledger = next(
+            value
+            for name, value in coordinator.state.ledgers.items()
+            if ".export." in name
+        )
+        self.assertAlmostEqual(ledger.peak_kw, 12.0, places=6)
+
+
+class TestMeterUnits(CoordinatorCase):
+    """The meter's unit is chosen, and a disagreement is reported.
+
+    The plan's own arithmetic is in kWh. A meter reporting Wh used to be read
+    as kWh, so every figure came out a thousand times too large.
+    """
+
+    def _capped(self, seed: str, **extra: Any) -> Any:
+        options = sample_options()
+        rate_in(options, 0)[CONST.CONF_RATE_ALLOWANCE_KWH] = 24.0
+        rate_in(options, 0)[CONST.CONF_FALLBACK_RATE] = "Every day Peak"
+        options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
+        options.update(extra)
+        coordinator = a_coordinator(options)
+        coordinator.hass.states.set("sensor.grid_import", seed)
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
+        return coordinator
+
+    def test_a_wh_meter_counts_in_kwh(self) -> None:
+        """100,000 Wh is 100 kWh, so a 10,000 Wh rise is 10 kWh."""
+        coordinator = self._capped(
+            "100000.0", **{CONST.CONF_IMPORT_ENERGY_UNIT: CONST.ENERGY_UNIT_WH}
+        )
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_import", "110000.0")
+        coordinator._accumulate_energy("sensor.grid_import")
+        self.assertAlmostEqual(coordinator.state.allowance_used_kwh, 10.0)
+
+    def test_an_mwh_meter_counts_in_kwh(self) -> None:
+        """2 MWh is 2,000 kWh."""
+        coordinator = self._capped(
+            "1.0", **{CONST.CONF_IMPORT_ENERGY_UNIT: CONST.ENERGY_UNIT_MWH}
+        )
+        coordinator.hass.states.set("sensor.grid_import", "3.0")
+        self.assertAlmostEqual(coordinator._read_kwh("sensor.grid_import"), 3000.0)
+
+    def test_a_plan_with_no_chosen_unit_reads_kwh(self) -> None:
+        """Absent is kWh: an entry made before the field existed keeps working."""
+        coordinator = self._capped("100.0")
+        coordinator.hass.states.set("sensor.grid_import", "101.5")
+        self.assertAlmostEqual(coordinator._read_kwh("sensor.grid_import"), 101.5)
+
+    def test_a_mismatch_raises_one_repair_naming_both_units(self) -> None:
+        issues = sys.modules["homeassistant.helpers.issue_registry"]
+        issues.RAISED.clear()
+        coordinator = self._capped("100.0")
+        coordinator.hass.states.set(
+            "sensor.grid_import", "100.0", unit_of_measurement="Wh"
+        )
+        coordinator._read_kwh("sensor.grid_import")
+        coordinator._read_kwh("sensor.grid_import")
+        self.assertEqual(len(issues.RAISED), 1)
+        issue_id, kwargs = issues.RAISED[0]
+        self.assertIn(CONST.ISSUE_METER_UNIT, issue_id)
+        self.assertEqual(kwargs["translation_key"], CONST.ISSUE_METER_UNIT)
+        self.assertEqual(
+            kwargs["translation_placeholders"],
+            {
+                "title": "Test",
+                "meter": "sensor.grid_import",
+                "measured": "Wh",
+                "chosen": "kWh",
+            },
+        )
+
+    def test_matching_units_clear_the_repair(self) -> None:
+        issues = sys.modules["homeassistant.helpers.issue_registry"]
+        issues.RAISED.clear()
+        issues.DELETED.clear()
+        coordinator = self._capped("100.0")
+        coordinator.hass.states.set(
+            "sensor.grid_import", "100.0", unit_of_measurement="Wh"
+        )
+        coordinator._read_kwh("sensor.grid_import")
+        coordinator.hass.states.set(
+            "sensor.grid_import", "100.0", unit_of_measurement="kWh"
+        )
+        coordinator._read_kwh("sensor.grid_import")
+        self.assertEqual(len(issues.DELETED), 1)
+        self.assertIn(CONST.ISSUE_METER_UNIT, issues.DELETED[0])
+
+    def test_a_meter_reporting_no_unit_is_not_warned_about(self) -> None:
+        """Nothing to compare: a template sensor may not publish one."""
+        issues = sys.modules["homeassistant.helpers.issue_registry"]
+        issues.RAISED.clear()
+        coordinator = self._capped("100.0")
+        coordinator._read_kwh("sensor.grid_import")
+        self.assertEqual(issues.RAISED, [])
+
+    def test_the_chosen_unit_is_what_counts_not_the_reported_one(self) -> None:
+        """The warning is advisory. The arithmetic follows the choice."""
+        coordinator = self._capped(
+            "0.0", **{CONST.CONF_IMPORT_ENERGY_UNIT: CONST.ENERGY_UNIT_WH}
+        )
+        coordinator.hass.states.set(
+            "sensor.grid_import", "1000.0", unit_of_measurement="kWh"
+        )
+        self.assertAlmostEqual(coordinator._read_kwh("sensor.grid_import"), 1.0)
+
+    def test_an_export_meter_is_scaled_by_its_own_unit(self) -> None:
+        """Import and export are separate flows, so their units are too."""
+        options = sample_options()
+        options[CONST.CONF_EXPORT_ENERGY_SENSOR] = "sensor.grid_export"
+        options[CONST.CONF_EXPORT_ENERGY_UNIT] = CONST.ENERGY_UNIT_WH
+        coordinator = a_coordinator(options)
+        coordinator.hass.states.set("sensor.grid_export", "2500.0")
+        self.assertAlmostEqual(coordinator._read_kwh("sensor.grid_export"), 2.5)
+
+    def test_the_configure_screen_offers_and_stores_both_units(self) -> None:
+        driver = OptionsDriver()
+        driver.start()
+        driver.choose("general")
+        self.assertEqual(
+            _ha_stubs.options_for(driver.result, CONST.CONF_IMPORT_ENERGY_UNIT),
+            list(CONST.ENERGY_UNITS),
+        )
+        self.assertEqual(
+            _ha_stubs.options_for(driver.result, CONST.CONF_EXPORT_ENERGY_UNIT),
+            list(CONST.ENERGY_UNITS),
+        )
+        driver.submit(
+            import_energy_unit="Wh",
+            export_energy_unit="MWh",
+            export_energy_sensor="sensor.grid_export",
+        )
+        self.assertEqual(driver.flow.working[CONST.CONF_IMPORT_ENERGY_UNIT], "Wh")
+        self.assertEqual(driver.flow.working[CONST.CONF_EXPORT_ENERGY_UNIT], "MWh")

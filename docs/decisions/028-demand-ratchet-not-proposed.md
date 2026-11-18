@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Status | Accepted |
+| Status | Superseded in part by DR-048 |
 | Since | Session seven (P35 research) |
 | Origin | P35 |
-| Related | DR-023 |
+| Related | DR-023, DR-048 |
 
 ## Decision
 
@@ -33,8 +33,19 @@ user turns up with one, this is the record to revisit.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.** No ratchet; the peak
-is per cycle.
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Partly.** The ratchet
+decision itself conforms: there is no ratchet and the peak is per cycle. The
+interval list the Decision names no longer does - the instantaneous basis was
+withdrawn by DR-048, so `DEMAND_INTERVALS` offers 15, 30 and 60 minutes only.
 
-- `const.py:112` - `DEMAND_INTERVALS` - the declared averaging intervals
-- `accounting.py:189` - `def demand_cost` - this cycle's peak only
+- `const.py:140` - `DEMAND_INTERVALS` - the declared averaging intervals
+- `accounting.py:190` - `def demand_cost` - this cycle's peak only
+- `accounting.py:209` - `def average_kw` - energy over a declared interval, which
+  is the only form a demand charge takes
+
+## The interval list, after DR-048
+
+The Decision above is frozen and keeps "or instantaneous" as the record of
+what was decided at the time. DR-048 is the record of the withdrawal: no
+tariff bills demand from a single sample. Read the two together - this record
+for the ratchet, DR-048 for the interval.

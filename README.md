@@ -301,7 +301,7 @@ had:
 |---|---|---|
 | Demand charge period | Demand charging | Marks this rate as carrying a demand charge, and turns on `binary_sensor.<name>_<rate>_demand_period_active` while it is in force |
 | Demand charge (c/kW/month) | Demand charging | Cents, like every other price on the form. Declared alongside the flag. The number the demand cost sensors are built on |
-| Meter averaging interval | Demand charging | 15, 30 or 60 minutes, or instantaneous. Defaults to 30 minutes, what Australian distributors meter on |
+| Meter averaging interval | Demand charging | 15, 30 or 60 minutes. Defaults to 30 minutes, what Australian distributors meter on. There is no instantaneous basis: every tariff bills demand as an average over an interval, never from a single instant |
 | How the peak is charged | Demand charging | Once for the billing cycle, or once for every day of it. The same peak can be a very different bill either way |
 | Energy allowance for this rate | Allowance | Some plans give a period free only up to a cap. Zero for none. Counted against the plan's nominated meter |
 | Rate beyond the allowance | Allowance | Required when there is an allowance |
@@ -523,6 +523,20 @@ Declare an allowance or a demand charge on a rate, nominate the grid import
 meter, and this integration starts counting: what has been used against a
 cap, and the highest completed interval of a demand charge, per rate.
 
+**Each meter declares its unit.** A meter publishes watt-hours,
+kilowatt-hours or megawatt-hours, and the number alone does not say which.
+Setup asks for the import meter's unit and the export meter's unit; both
+default to **kWh**, and every reading is converted to kWh on the way in, so a
+Wh meter is not counted a thousand times too high nor a MWh meter a thousand
+times too low.
+
+When a reading is taken, the unit the meter itself reports is compared with
+the unit the plan says to read it as. If they disagree, a warning is logged
+and a repair notice names the meter, what it reports and what the plan expects.
+**It is advisory only** — the reading is still used and the meter is never
+refused; the notice is a chance to correct the choice, and it clears itself
+once the two agree again.
+
 **It is an estimate this integration measured itself.** It is not what your
 retailer measures, and it will not reconcile with a bill to the cent. Every
 accumulating sensor's attributes say so, alongside the billing cycle the
@@ -540,10 +554,11 @@ today's. A monthly cap accumulates across every slot and day and resets on
 the billing cycle day.
 
 **A demand charge is measured on a clock, not on the price schedule.** Declare
-the averaging interval — 15, 30 or 60 minutes, or instantaneous — and the
+the averaging interval — 15, 30 or 60 minutes — and the
 integration finds the highest *completed* interval while the rate is in
 force. A half-finished interval is never a candidate, so the figure reads low
-until each interval closes. `sensor.<name>_<rate>_demand_cost_to_date` and
+until each interval closes. There is no instantaneous basis: every tariff
+bills demand as an average over an interval. `sensor.<name>_<rate>_demand_cost_to_date` and
 `..._demand_cost_projected` apply the declared basis: once for the billing
 cycle, or once for every day of it.
 

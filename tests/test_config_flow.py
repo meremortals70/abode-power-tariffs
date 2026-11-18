@@ -307,6 +307,34 @@ class TestSingleRatePlan(unittest.TestCase):
         assert additional is not None
         self.assertAlmostEqual(additional.import_price, 0.45)
 
+    def test_the_cap_runs_for_the_billing_period_not_the_day(self) -> None:
+        """The screens promise "the rest of the billing period".
+
+        The block plan is built as an ordinary all-day rate, and the model's
+        default allowance period is ``slot`` — which, for a period that runs
+        00:00-24:00, is one occurrence a day. Left undeclared by these screens
+        the cap refilled at midnight, so a monthly cap was never reached and
+        the fallback price never applied. The declaration is written here so
+        the built plan says what the screen promised.
+        """
+        result = self._finish()
+        plan = Plan.from_dict({**result["options"], "name": result["title"]})
+        included = plan.rate_by_name("Included", "Every day")
+        assert included is not None
+        self.assertEqual(included.allowance_period, "month")
+
+    def test_the_export_cap_runs_for_the_billing_period_too(self) -> None:
+        """The README promises the block plan's two caps alike.
+
+        Its import cap is declared monthly (Build 5). The export cap must
+        say the same, or the same screen would produce two caps with two
+        different periods and no way to see either.
+        """
+        result = self._finish()
+        plan = Plan.from_dict({**result["options"], "name": result["title"]})
+        pattern = plan.day_patterns[0]
+        self.assertEqual(pattern.export_allowance_period, "month")
+
     def test_the_export_side_is_declared_the_same_way(self) -> None:
         """P32: beside the export price, which for this shape is the timetable."""
         result = self._finish()
@@ -542,6 +570,64 @@ class TestEscapingTheLoops(unittest.TestCase):
         )
         self.assertEqual(driver.step, "feed_in")
         self.assertEqual(len(driver.flow._periods), 2)
+
+
+class TestTheFlatFeedInCapPeriod(unittest.TestCase):
+    """The all-day cap says what it covers, the same as an import rate.
+
+    Counting it is no use if the household cannot say whether the retailer
+    counts it per day or per billing cycle. Rule 11 makes the default the
+    slot — for an all-day window, one day — and this is where the other
+    choice is made.
+    """
+
+    def _to_feed_in(self) -> FlowDriver:
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="FeedIn")
+        driver.submit()
+        driver.submit(name="Every day", same_every_day=True)
+        driver.submit(name="Peak", import_cents=50.0, on_submit=CONST.SUBMIT_ADD)
+        driver.submit(on_submit=CONST.SUBMIT_CONTINUE)
+        driver.submit(
+            start="00:00:00",
+            end="24:00:00",
+            rate="Every day Peak",
+            on_submit=CONST.SUBMIT_CONTINUE,
+        )
+        self.assertEqual(driver.step, "feed_in")
+        return driver
+
+    def test_the_screen_offers_the_same_choice_the_import_rate_has(self) -> None:
+        driver = self._to_feed_in()
+        names = {
+            str(getattr(key, "schema", key))
+            for key in driver.result["data_schema"].schema
+        }
+        self.assertIn("export_allowance_period", names)
+
+    def test_the_choice_is_stored_on_the_timetable(self) -> None:
+        driver = self._to_feed_in()
+        driver.submit(
+            export_same_all_day=True,
+            export_flat_cents=8.0,
+            export_allowance_kwh=10.0,
+            export_fallback_cents=2.0,
+            export_allowance_period="month",
+        )
+        pattern = driver.flow._patterns[0]
+        self.assertEqual(pattern[CONST.CONF_EXPORT_ALLOWANCE_PERIOD], "month")
+
+    def test_the_default_is_the_slot_rule_eleven(self) -> None:
+        driver = self._to_feed_in()
+        driver.submit(
+            export_same_all_day=True,
+            export_flat_cents=8.0,
+            export_allowance_kwh=10.0,
+            export_fallback_cents=2.0,
+        )
+        pattern = driver.flow._patterns[0]
+        self.assertEqual(pattern[CONST.CONF_EXPORT_ALLOWANCE_PERIOD], "slot")
 
 
 class TestPeriodValidation(unittest.TestCase):
@@ -917,9 +1003,7 @@ class TestSetupValidationBranches(unittest.TestCase):
         driver.submit(plan_name="Test")
         driver.submit()
         driver.submit(name="Every day", same_every_day=True)
-        driver.submit(
-            name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE
-        )
+        driver.submit(name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE)
         driver.submit(
             start="not-a-time", end="24:00:00", rate="Peak", on_submit=CONST.SUBMIT_ADD
         )
@@ -932,9 +1016,7 @@ class TestSetupValidationBranches(unittest.TestCase):
         driver.submit(plan_name="Test", has_export=True)
         driver.submit()
         driver.submit(name="Every day", same_every_day=True)
-        driver.submit(
-            name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE
-        )
+        driver.submit(name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE)
         driver.submit(
             start="00:00", end="00:00", rate="Peak", on_submit=CONST.SUBMIT_CONTINUE
         )
@@ -951,17 +1033,13 @@ class TestSetupValidationBranches(unittest.TestCase):
         driver.submit(plan_name="Test", has_export=True)
         driver.submit()
         driver.submit(name="Every day", same_every_day=True)
-        driver.submit(
-            name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE
-        )
+        driver.submit(name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE)
         driver.submit(
             start="00:00", end="00:00", rate="Peak", on_submit=CONST.SUBMIT_CONTINUE
         )
         driver.submit(export_same_all_day=False, export_flat_cents=0.0)
         driver.submit(name="Day", export_cents=5.0, on_submit=CONST.SUBMIT_ADD)
-        driver.submit(
-            name="Day", export_cents=6.0, on_submit=CONST.SUBMIT_ADD
-        )
+        driver.submit(name="Day", export_cents=6.0, on_submit=CONST.SUBMIT_ADD)
         self.assertEqual(driver.errors.get(CONST.CONF_NAME), "rate_exists")
 
     def test_export_period_bad_time(self) -> None:
@@ -971,9 +1049,7 @@ class TestSetupValidationBranches(unittest.TestCase):
         driver.submit(plan_name="Test", has_export=True)
         driver.submit()
         driver.submit(name="Every day", same_every_day=True)
-        driver.submit(
-            name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE
-        )
+        driver.submit(name="Peak", import_cents=30.0, on_submit=CONST.SUBMIT_CONTINUE)
         driver.submit(
             start="00:00", end="00:00", rate="Peak", on_submit=CONST.SUBMIT_CONTINUE
         )
@@ -996,6 +1072,46 @@ class TestSetupValidationBranches(unittest.TestCase):
         driver = FlowDriver()
         driver.start()
         driver.flow._restore_pattern()
+
+
+class TestTheMeterUnitIsChosen(unittest.TestCase):
+    """Proposal 3: the unit is part of the meter, not a guess."""
+
+    def test_the_charges_screen_offers_the_import_unit(self) -> None:
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test Plan")
+        self.assertEqual(driver.step, "charges")
+        self.assertEqual(
+            _ha_stubs.options_for(driver.result, CONST.CONF_IMPORT_ENERGY_UNIT),
+            list(CONST.ENERGY_UNITS),
+        )
+
+    def test_a_validation_error_keeps_the_chosen_unit_on_the_form(self) -> None:
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Test Plan")
+        driver.submit(import_energy_unit="Wh", billing_cycle_day=31)
+        self.assertEqual(
+            driver.result["errors"].get("billing_cycle_day"),
+            "billing_day_out_of_range",
+        )
+        marker, _ = _ha_stubs.field_for(driver.result, CONST.CONF_IMPORT_ENERGY_UNIT)
+        default = marker.default
+        self.assertEqual(default() if callable(default) else default, "Wh")
+
+    def test_the_chosen_unit_is_stored_with_the_plan(self) -> None:
+        driver = FlowDriver()
+        driver.start()
+        driver.submit(plan_name="Prepay", single_rate_plan=True)
+        driver.submit(import_energy_unit="Wh")
+        driver.submit(
+            import_cents=30.0,
+            rate_allowance_kwh=20.0,
+            after_allowance_cents=45.0,
+        )
+        self.assertEqual(driver.result["type"], CREATE)
+        self.assertEqual(driver.result["options"][CONST.CONF_IMPORT_ENERGY_UNIT], "Wh")
 
 
 if __name__ == "__main__":

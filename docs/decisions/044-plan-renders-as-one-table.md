@@ -29,7 +29,7 @@ with each other. A rate no period uses is listed under "Not on any timetable".
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `strip.py:230` - `def render_plan` - one table per timetable
+- `strip.py:226` - `def render_plan` - one table per timetable
 - `strip.py:31` - `def column_widths` - measured across the whole plan

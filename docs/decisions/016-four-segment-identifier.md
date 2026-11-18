@@ -38,11 +38,16 @@ always available beside it.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.** The identifier
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** The identifier
 is built in one place and used for ledgers, the select write-back and the
 tariffs of the utility meter Configure creates.
 
+A timetable's flat all-day export declaration is not a rate, so it has no
+four-segment identifier: it is keyed `plan.timetable.export`, three segments,
+and `slug` never leaves a separator inside a segment, so that key cannot
+collide with a rate's (Build 6).
+
 - `plan.py:122` - `qualified_name` - always four segments
-- `coordinator.py:323` - `def ledger` - keyed on the identifier
-- `coordinator.py:1012` - `qualified_name` - the select write-back
-- `config_flow.py:3036` - `rate_id(self.config_entry.title` - the meter's tariffs
+- `coordinator.py:399` - `def ledger` - keyed on the identifier
+- `coordinator.py:1463` - `qualified_name` - the select write-back
+- `config_flow.py:3161` - `rate_id(self.config_entry.title` - the meter's tariffs

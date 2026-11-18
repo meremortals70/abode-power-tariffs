@@ -34,10 +34,10 @@ write-back finds no matching option and only logs a warning.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.** The meter is
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** The meter is
 created with the four-segment identifiers as its tariffs, the same strings
 the select write-back sends, so it is switched as the rate changes.
 
-- `config_flow.py:3009` - `async_step_meter_create` - creates the meter
-- `config_flow.py:3036` - `rate_id(self.config_entry.title` - identifiers as tariffs
-- `coordinator.py:1012` - `qualified_name` - what the write-back sends
+- `config_flow.py:3134` - `async_step_meter_create` - creates the meter
+- `config_flow.py:3161` - `rate_id(self.config_entry.title` - identifiers as tariffs
+- `coordinator.py:1463` - `qualified_name` - what the write-back sends

@@ -197,6 +197,25 @@ class FakeConfigEntries:
         return list(self.entries)
 
 
+class FakeTask:
+    """A handle on a coroutine the stub hass started, enough to cancel it.
+
+    There is no event loop here, so ``async_create_task`` only takes the first
+    step; the coroutine is kept so a test can drive the rest itself.
+    """
+
+    def __init__(self, coro: Any) -> None:
+        self.coro = coro
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        self.coro.close()
+
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+
 class FakeHass:
     """Enough of HomeAssistant for the coordinator and the entities."""
 
@@ -207,11 +226,12 @@ class FakeHass:
         self.config_entries = FakeConfigEntries()
         self.tasks: list[Any] = []
 
-    def async_create_task(self, coro: Any) -> None:
+    def async_create_task(self, coro: Any) -> FakeTask:
         # Run it now; nothing here awaits anything real.
         with contextlib.suppress(StopIteration):
             coro.send(None)
         self.tasks.append(coro)
+        return FakeTask(coro)
 
 
 class Scheduled:
@@ -290,6 +310,7 @@ def install() -> None:
     const.STATE_UNAVAILABLE = "unavailable"
     const.STATE_UNKNOWN = "unknown"
     const.PERCENTAGE = "%"
+    const.ATTR_UNIT_OF_MEASUREMENT = "unit_of_measurement"
 
     class _UnitOfEnergy:
         KILO_WATT_HOUR = "kWh"
@@ -417,7 +438,11 @@ def install() -> None:
     sensor_mod.SensorStateClass = type(
         "SensorStateClass",
         (),
-        {"MEASUREMENT": "measurement", "TOTAL_INCREASING": "total_increasing"},
+        {
+            "MEASUREMENT": "measurement",
+            "TOTAL": "total",
+            "TOTAL_INCREASING": "total_increasing",
+        },
     )
 
     binary_mod = _module("homeassistant.components.binary_sensor")

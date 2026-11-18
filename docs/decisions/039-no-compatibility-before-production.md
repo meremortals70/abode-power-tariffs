@@ -31,7 +31,7 @@ exception, and a shape change has to keep old plans readable.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.** The `timetable=None`
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** The `timetable=None`
 sentinel, the unscoped fallback and the dead-code items are gone.
 
-- `plan.py:181-182` - `gone rather than` - the old shape removed, not migrated
+- `plan.py:198` - `gone rather than` - the old shape removed, not migrated

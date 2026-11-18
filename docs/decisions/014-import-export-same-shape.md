@@ -39,10 +39,10 @@ Every side-specific path has a mirror, and the four-segment identifier
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `plan.py:172` - `class Rate` - the import shape
-- `plan.py:355` - `class ExportRate` - the same shape on the export side
-- `plan.py:374` - `demand_rate_per_kw_month` - export demand
-- `plan.py:369-370` - `enforceable_constraints` - export constraints
-- `plan.py:500-503` - `export_same_all_day` - the all-day shortcut with its cap
+- `plan.py:189` - `class Rate` - the import shape
+- `plan.py:374` - `class ExportRate` - the same shape on the export side
+- `plan.py:393` - `demand_rate_per_kw_month` - export demand
+- `plan.py:391-392` - `enforceable_constraints` - export constraints
+- `plan.py:522-525` - `export_same_all_day` - the all-day shortcut with its cap

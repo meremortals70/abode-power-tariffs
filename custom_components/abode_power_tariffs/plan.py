@@ -28,6 +28,7 @@ from .const import (
     CONF_END,
     CONF_ENFORCEABLE_CONSTRAINTS,
     CONF_EXPORT_ALLOWANCE_KWH,
+    CONF_EXPORT_ALLOWANCE_PERIOD,
     CONF_EXPORT_CENTS,
     CONF_EXPORT_FALLBACK_CENTS,
     CONF_EXPORT_FLAT_CENTS,
@@ -140,6 +141,22 @@ def qualified_name(
     return ".".join((slug(plan_name), slug(timetable), side, slug(rate_name)))
 
 
+def all_day_export_key(plan_name: str, timetable: str) -> str:
+    """Return the identifier of a timetable's own all-day feed-in declaration.
+
+    The flat all-day price, its cap and the price past that cap are declared
+    on the timetable, not on a named rate — there is no rate name to put in
+    the fourth segment. Three segments are used instead, and that is what
+    keeps the two apart: ``slug`` reduces every character that is not
+    alphanumeric to a separator and never leaves one in a segment, so no
+    four-segment rate identifier can contain this one's shape. The absent
+    fourth segment is not an implied rate name; it says this declaration
+    belongs to the timetable itself, and it is the key a ledger is held
+    under.
+    """
+    return ".".join((slug(plan_name), slug(timetable), "export"))
+
+
 def display_name(timetable: str, rate_name: str) -> str:
     """Return a short, human-readable label for a rate — not the identifier.
 
@@ -203,9 +220,11 @@ class Rate:
     # no config entry migration and no version to trigger one (rule 13), so it
     # keeps the name it was given and this comment carries the correction.
     demand_rate_per_kw_month: float = 0.0
-    # How the meter averages the draw: 15, 30 or 60 minutes, or zero for
-    # instantaneous. A property of the measurement, not of when the rate is in
-    # force — the timetable already carries when.
+    # How the meter averages the draw: 15, 30 or 60 minutes. A property of the
+    # measurement, not of when the rate is in force — the timetable already
+    # carries when. There is no instantaneous basis: no tariff bills demand
+    # from a single sample, so a stored zero reads as the default and is
+    # reported (see validate.instantaneous_demand_problems).
     demand_interval: int = DEFAULT_DEMAND_INTERVAL
     # Whether the peak is charged once for the billing period or for every day
     # of it. Decides what the money means and cannot be inferred from a price.
@@ -516,6 +535,14 @@ class DayPattern:
     # now sits, would be affected, and none did.
     rates: tuple[Rate, ...] = ()
     export_rates: tuple[ExportRate, ...] = ()
+    # Whether the all-day cap covers each day the timetable is in force or the
+    # whole billing cycle — the same declaration an import rate carries, said
+    # on the timetable because a flat feed-in price has no rate object of its
+    # own. Appended after every field the positional calls use, so
+    # ``DayPattern(name, days, periods)`` keeps its meaning. Defaults to the
+    # slot, which for a window running 00:00-24:00 is one day: rule 11, not a
+    # special case.
+    export_allowance_period: str = DEFAULT_ALLOWANCE_PERIOD
 
     def rate_by_name(self, name: str) -> Rate | None:
         """Return one of this timetable's own import rates by name."""
@@ -596,6 +623,7 @@ class DayPattern:
             CONF_EXPORT_SAME_ALL_DAY: self.export_same_all_day,
             CONF_EXPORT_FLAT_CENTS: round(self.export_flat_price * 100, 4),
             CONF_EXPORT_ALLOWANCE_KWH: self.export_allowance_kwh,
+            CONF_EXPORT_ALLOWANCE_PERIOD: self.export_allowance_period,
             CONF_EXPORT_FALLBACK_CENTS: (
                 None
                 if self.export_fallback_price is None
@@ -633,6 +661,11 @@ class DayPattern:
             export_same_all_day=bool(raw.get(CONF_EXPORT_SAME_ALL_DAY, True)),
             export_flat_price=_cents_to_dollars(raw.get(CONF_EXPORT_FLAT_CENTS)),
             export_allowance_kwh=_optional_float(raw.get(CONF_EXPORT_ALLOWANCE_KWH)),
+            export_allowance_period=_one_of(
+                raw.get(CONF_EXPORT_ALLOWANCE_PERIOD),
+                ALLOWANCE_PERIODS,
+                DEFAULT_ALLOWANCE_PERIOD,
+            ),
             export_fallback_price=(
                 _cents_to_dollars(raw[CONF_EXPORT_FALLBACK_CENTS])
                 if raw.get(CONF_EXPORT_FALLBACK_CENTS)
@@ -698,6 +731,50 @@ class ExportResolution:
         return qualified_name(
             self.plan_name, self.day_pattern.name, self.rate_name, export=True
         )
+
+    @property
+    def ledger_key(self) -> str:
+        """Return the identifier a ledger for this declaration is held under.
+
+        Always present, unlike ``qualified_name``: a flat all-day feed-in
+        declares a cap and a price past it just as a named export rate does,
+        so it has just as much to count. ``qualified_name`` stays None on
+        that shape because there is no rate whose name could be published;
+        the ledger key is the timetable's own, and cannot collide with a
+        rate identifier (see ``all_day_export_key``).
+        """
+        if self.rate_name is None:
+            return all_day_export_key(self.plan_name, self.day_pattern.name)
+        assert self.qualified_name is not None
+        return self.qualified_name
+
+    @property
+    def allowance_kwh(self) -> float | None:
+        """Return the cap in force, or None when this declaration has none."""
+        return self.pricing.allowance_kwh
+
+    @property
+    def fallback_price(self) -> float | None:
+        """Return the price past the cap, or None when none was declared."""
+        return self.pricing.fallback_price
+
+    @property
+    def allowance_period(self) -> str:
+        """Return what the cap covers: each occurrence of the slot, or the cycle.
+
+        A flat all-day declaration says so on the timetable. A named export
+        rate has no such field yet and is slot-scoped, as it always has been.
+        """
+        if self.rate_name is None:
+            return self.day_pattern.export_allowance_period
+        return DEFAULT_ALLOWANCE_PERIOD
+
+    @property
+    def allowance_bounds(self) -> tuple[int, int]:
+        """Return the minutes the cap's slot covers, for building its key."""
+        if self.period is None:
+            return 0, MINUTES_PER_DAY
+        return self.period.start, self.period.end
 
 
 @dataclass(frozen=True, slots=True)

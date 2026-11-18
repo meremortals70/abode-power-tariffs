@@ -37,9 +37,9 @@ counted in calendar days.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `coordinator.py:634` - `_refresh_supply_charge` - once per local day
-- `coordinator.py:650` - `supply_charge_today` - the whole day, not a fraction
-- `sensor.py:862` - `SupplyChargeTodaySensor` - published
-- `sensor.py:880` - `SupplyChargeCycleSensor` - published for the cycle
+- `coordinator.py:761` - `_refresh_supply_charge` - once per local day
+- `coordinator.py:782` - `supply_charge_today` - the whole day, not a fraction
+- `sensor.py:908` - `SupplyChargeTodaySensor` - published
+- `sensor.py:926` - `SupplyChargeCycleSensor` - published for the cycle

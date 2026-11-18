@@ -30,7 +30,7 @@ step commits as it leaves (DR-033).
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `config_flow.py:762` - `async_step_user` - the first of a linear sequence
-- `config_flow.py:1805` - `async_show_menu` - Configure's menus
+- `config_flow.py:783` - `async_step_user` - the first of a linear sequence
+- `config_flow.py:1875` - `async_show_menu` - Configure's menus

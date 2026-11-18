@@ -39,9 +39,9 @@ own.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `plan.py:830` - `export_resolve` - None when nothing resolves
-- `plan.py:675` - `ExportResolution` - the export side's own context
+- `plan.py:907` - `export_resolve` - None when nothing resolves
+- `plan.py:708` - `ExportResolution` - the export side's own context
 - `sensor.py:249` - `native_value` - None, not $0.00
 - `intervals.py:103` - `as_evcc_entry` - None, filtered out by the caller

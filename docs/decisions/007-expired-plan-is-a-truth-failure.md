@@ -36,14 +36,16 @@ alerts forever.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.** The repair is
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** The repair is
 raised only for a plan past its `valid_to` with no other plan for the same
 import meter in force today; an archived plan with a successor raises
-nothing. The same case turns `Data gap` on.
+nothing. A plan whose `valid_from` is still in the future has not expired - it
+has not begun, so it is neither flagged nor priced (Build 2). The same case
+turns `Data gap` on.
 
-- `coordinator.py:389` - `plan_expired` - set on every refresh
-- `coordinator.py:390` - `plan_replaced` - a successor for the same meter is in force
-- `coordinator.py:960` - `_has_successor` - same import meter, active today
-- `coordinator.py:931` - `_open_expired_issue` - raised only with no successor
-- `coordinator.py:984` - `_close_expired_issue` - cleared otherwise
-- `binary_sensor.py:192` - `def is_on` - expiry drives the flag
+- `coordinator.py:470` - `plan_expired` - set on every refresh
+- `coordinator.py:476` - `plan_replaced` - a successor for the same meter is in force
+- `coordinator.py:1411` - `_has_successor` - same import meter, active today
+- `coordinator.py:1382` - `_open_expired_issue` - raised only with no successor
+- `coordinator.py:1435` - `_close_expired_issue` - cleared otherwise
+- `binary_sensor.py:195` - `def is_on` - expiry drives the flag

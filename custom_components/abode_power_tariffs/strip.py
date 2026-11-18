@@ -94,11 +94,7 @@ def _rate_note(rate: Rate | ExportRate) -> str:
     parts: list[str] = []
     if rate.has_demand_charge:
         basis = "day" if rate.demand_basis == "day" else "month"
-        interval = (
-            f"{rate.demand_interval} min interval"
-            if rate.demand_interval
-            else "instantaneous"
-        )
+        interval = f"{rate.demand_interval} min interval"
         parts.append(
             f"demand: ${rate.demand_rate_per_kw_month:.2f}/kW/{basis}, {interval}"
         )

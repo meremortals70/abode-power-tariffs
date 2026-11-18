@@ -6,6 +6,7 @@ properties, using the same thin stubs as the other platform tests.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import types
@@ -71,6 +72,11 @@ def at(hour: int, minute: int = 0, day: int = 14) -> datetime:
     return datetime(2026, 8, day, hour, minute, tzinfo=BRISBANE)
 
 
+def run(coro: Any) -> Any:
+    """Run one coroutine to completion."""
+    return asyncio.run(coro)
+
+
 def sample_options() -> dict[str, Any]:
     return {
         CONST.CONF_DAY_PATTERNS: [
@@ -106,7 +112,11 @@ def sample_options() -> dict[str, Any]:
                 ],
                 CONST.CONF_EXPORT_SAME_ALL_DAY: False,
                 CONST.CONF_EXPORT_PERIODS: [
-                    {CONST.CONF_START: "00:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Day"},
+                    {
+                        CONST.CONF_START: "00:00",
+                        CONST.CONF_END: "24:00",
+                        CONST.CONF_RATE: "Day",
+                    },
                 ],
                 CONST.CONF_EXPORT_RATES: [
                     {
@@ -171,12 +181,8 @@ class TestAsyncSetupEntry(SensorCase):
         coordinator = a_coordinator(options)
         run_setup(coordinator, self._add)
         keys = {e._attr_unique_id for e in self.added}
-        self.assertIn(
-            "entry1_test.every_day.export.day_allowance_used_kwh", keys
-        )
-        self.assertIn(
-            "entry1_test.every_day.export.day_demand_peak_kw", keys
-        )
+        self.assertIn("entry1_test.every_day.export.day_allowance_used_kwh", keys)
+        self.assertIn("entry1_test.every_day.export.day_demand_peak_kw", keys)
 
 
 def run_setup(coordinator: Any, add: Any) -> None:
@@ -336,6 +342,103 @@ class TestExportPriceSensor(SensorCase):
         coordinator = a_coordinator(options)
         entity = sensor.ExportPriceSensor(coordinator, "AUD")
         self.assertAlmostEqual(entity.native_value, 0.03)
+
+    def test_a_flat_cap_publishes_its_count_and_its_period(self) -> None:
+        """Register entry 9: the count belongs beside the declaration.
+
+        The flat all-day shape has no export rate object, so no per-rate
+        allowance entity is created for it. What it counts has to be visible
+        somewhere, and the price sensor carrying the declaration is that
+        place.
+        """
+        options = sample_options()
+        pattern = options[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = True
+        pattern[CONST.CONF_EXPORT_FLAT_CENTS] = 8.0
+        pattern[CONST.CONF_EXPORT_ALLOWANCE_KWH] = 10.0
+        pattern[CONST.CONF_EXPORT_FALLBACK_CENTS] = 2.0
+        pattern[CONST.CONF_EXPORT_ALLOWANCE_PERIOD] = "month"
+        pattern.pop(CONST.CONF_EXPORT_PERIODS, None)
+        pattern.pop(CONST.CONF_EXPORT_RATES, None)
+        options[CONST.CONF_EXPORT_ENERGY_SENSOR] = "sensor.grid_export"
+        coordinator = a_coordinator(options)
+        coordinator.hass.states.set("sensor.grid_export", "100.0")
+        coordinator._seed_retry_delay_seconds = 0
+        run(coordinator._seed_energy_total())
+        coordinator.async_refresh()
+        coordinator.hass.states.set("sensor.grid_export", "104.0")
+        coordinator._accumulate_export_energy("sensor.grid_export")
+        coordinator.async_refresh()
+
+        entity = sensor.ExportPriceSensor(coordinator, "AUD")
+        attributes = entity.extra_state_attributes
+        self.assertTrue(attributes["allowance_counted"])
+        self.assertEqual(attributes["allowance_period"], "month")
+        self.assertAlmostEqual(attributes["allowance_used_kwh"], 4.0)
+        self.assertAlmostEqual(attributes["allowance_remaining_kwh"], 6.0)
+        self.assertFalse(attributes["allowance_exhausted"])
+        self.assertAlmostEqual(attributes["allowance_kwh"], 10.0)
+        self.assertAlmostEqual(attributes["fallback_per_kwh"], 0.02)
+
+    def test_without_the_meter_the_count_is_declared_but_not_claimed(self) -> None:
+        """Rule 7: declaring a cap is not counting against it."""
+        options = sample_options()
+        pattern = options[CONST.CONF_DAY_PATTERNS][0]
+        pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = True
+        pattern[CONST.CONF_EXPORT_FLAT_CENTS] = 8.0
+        pattern[CONST.CONF_EXPORT_ALLOWANCE_KWH] = 10.0
+        pattern.pop(CONST.CONF_EXPORT_PERIODS, None)
+        pattern.pop(CONST.CONF_EXPORT_RATES, None)
+        coordinator = a_coordinator(options)
+        coordinator.async_refresh()
+
+        attributes = sensor.ExportPriceSensor(coordinator, "AUD").extra_state_attributes
+        self.assertFalse(attributes["allowance_counted"])
+        self.assertIsNone(attributes["allowance_used_kwh"])
+        self.assertIsNone(attributes["allowance_remaining_kwh"])
+        self.assertIsNone(attributes["allowance_exhausted"])
+
+
+class TestSupplyChargeStateClass(SensorCase):
+    def test_accrued_supply_charge_resets_without_contradicting_statistics(
+        self,
+    ) -> None:
+        """A value that drops at midnight is TOTAL, not TOTAL_INCREASING.
+
+        Both accrued supply-charge sensors reset at the start of a day or a
+        billing cycle. Declaring them TOTAL_INCREASING makes Home Assistant
+        treat every reset as a contradiction and discard it, leaving a flat
+        line in long-term statistics.
+        """
+        added: list[Any] = []
+        run_setup(a_coordinator(), added.extend)
+        accrued = {
+            entity._attr_unique_id: entity._attr_state_class
+            for entity in added
+            if entity._attr_unique_id
+            in ("entry1_supply_charge_today", "entry1_supply_charge_energy")
+        }
+        self.assertEqual(
+            accrued,
+            {
+                "entry1_supply_charge_today": "total",
+                "entry1_supply_charge_energy": "total",
+            },
+        )
+
+
+class TestFuturePlanAttribute(SensorCase):
+    def test_the_price_sensor_publishes_why_nothing_is_priced(self) -> None:
+        """A future plan is not expired, and says so on the existing entity."""
+        options = sample_options()
+        options[CONST.CONF_VALID_FROM] = "2026-09-01"
+        coordinator = a_coordinator(options)
+        coordinator.async_refresh()
+        entity = sensor.ImportPriceSensor(coordinator, "AUD")
+        attributes = entity.extra_state_attributes
+        self.assertFalse(attributes["plan_expired"])
+        self.assertTrue(attributes["plan_not_yet_in_force"])
+        self.assertEqual(attributes["forecast"], [])
 
 
 if __name__ == "__main__":

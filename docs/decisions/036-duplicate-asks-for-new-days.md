@@ -34,8 +34,8 @@ timetable (DR-013), they come across with it.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `config_flow.py:2327` - `async_step_day_pattern_duplicate` - routes through a real add
-- `config_flow.py:2038` - `_duplicate_into` - copies rates and periods afterwards
-- `tests/test_declaration.py:445` - `test_the_duplicate_actually_activates` - the dead-since-0.2.0 fault
+- `config_flow.py:2427` - `async_step_day_pattern_duplicate` - routes through a real add
+- `config_flow.py:2111` - `_duplicate_into` - copies rates and periods afterwards
+- `tests/test_declaration.py:453` - `test_the_duplicate_actually_activates` - the dead-since-0.2.0 fault

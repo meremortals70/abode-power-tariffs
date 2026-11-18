@@ -8,10 +8,18 @@ when six periods are on screen.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
+from typing import Any, Final
 
-from .const import ALL_DAY_TOKENS, MAX_BILLING_CYCLE_DAY, MINUTES_PER_DAY
+from .const import (
+    ALL_DAY_TOKENS,
+    CONF_DEMAND_INTERVAL,
+    CONF_NAME,
+    MAX_BILLING_CYCLE_DAY,
+    MINUTES_PER_DAY,
+)
 from .plan import DayPattern, ExportRate, Plan, Rate, format_time, qualified_name
 
 
@@ -384,6 +392,58 @@ def export_rates_capped_across_midnight(plan: Plan) -> list[ExportRate]:
     return found
 
 
+INSTANTANEOUS_DEMAND_ADVICE: Final = (
+    "declares an instantaneous demand interval, which is no longer offered: "
+    "every tariff bills demand as an average over a metering interval, never "
+    "from a single instant. This rate is being measured over the default 30 "
+    "minutes. Open Configure, edit the rate and choose 15, 30 or 60 minutes to "
+    "match your bill."
+)
+
+
+def _is_zero(value: Any) -> bool:
+    """Return whether a stored interval is the withdrawn zero.
+
+    Stored forms differ: the model writes an integer, and the selector hands
+    the form a string. Both are the same declaration.
+    """
+    try:
+        return float(value) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def instantaneous_demand_problems(options: Mapping[str, Any]) -> list[Problem]:
+    """Return every stored rate still declaring the withdrawn instantaneous basis.
+
+    The form no longer offers it and the model no longer accepts it, so a plan
+    that stores zero is read as the 30-minute default. That reinterpretation is
+    not allowed to be silent: the stored value is found here, by key rather
+    than by walking a known shape, so it is reported whatever the plan is
+    nested inside — a day pattern, an export rate, or a block plan.
+    """
+    problems: list[Problem] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            interval = value.get(CONF_DEMAND_INTERVAL)
+            if interval is not None and _is_zero(interval):
+                problems.append(
+                    Problem(
+                        str(value.get(CONF_NAME) or ""),
+                        INSTANTANEOUS_DEMAND_ADVICE,
+                    )
+                )
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    walk(options)
+    return problems
+
+
 def plan_warnings(plan: Plan) -> list[Problem]:
     """Return advice that does not stop the plan being saved.
 
@@ -410,6 +470,25 @@ def plan_warnings(plan: Plan) -> list[Problem]:
                 "midnight. The allowance belongs to the slot, so each of the "
                 "two gets its own — one unbroken stretch will be given its "
                 "full allowance twice. Check how your retailer counts it.",
+            )
+        )
+    for day_pattern in plan.day_patterns:
+        if not day_pattern.export_same_all_day:
+            continue
+        if day_pattern.export_allowance_kwh is None:
+            continue
+        if day_pattern.export_fallback_price is not None:
+            continue
+        # Reported, not refused: a flat cap was accepted silently before it
+        # was counted at all, so plans already in storage have this shape and
+        # must keep loading. A cap that changes nothing when it is spent is
+        # worth saying once.
+        warnings.append(
+            Problem(
+                day_pattern.name,
+                "has a flat feed-in allowance but no fallback price, so the "
+                "published feed-in price does not change when the allowance "
+                "runs out. Check what your retailer pays after it.",
             )
         )
     return warnings

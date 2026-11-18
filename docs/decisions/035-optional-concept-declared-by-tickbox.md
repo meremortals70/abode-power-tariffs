@@ -36,7 +36,7 @@ declare what it falls back to.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `config_flow.py:200-201` - `CONF_HAS_ALLOWANCE` - the tickbox decides
-- `plan.py:218` - `has_demand_charge` - the period declaration, not the price
+- `config_flow.py:205-206` - `CONF_HAS_ALLOWANCE` - the tickbox decides
+- `plan.py:237` - `has_demand_charge` - the period declaration, not the price

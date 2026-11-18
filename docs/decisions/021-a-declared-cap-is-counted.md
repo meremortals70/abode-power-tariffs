@@ -31,8 +31,11 @@ mandatory (DR-030). What is published from counting is an estimate (DR-003).
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** A cap declared
+on a rate is counted against the plan's nominated meter, and the cap on a
+timetable's flat all-day feed-in price is counted the same way under
+`plan.timetable.export` (Build 6).
 
 - `allowance.py:45` - `def apply` - the fallback once the cap is spent
-- `coordinator.py:250` - `counting_allowance` - follows from the declaration, not a tickbox
-- `plan.py:244` - `has_allowance` - the declaration
+- `coordinator.py:310` - `counting_allowance` - follows from the declaration, not a tickbox
+- `plan.py:263` - `has_allowance` - the declaration

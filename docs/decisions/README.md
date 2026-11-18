@@ -42,17 +42,17 @@ Each record has the same six parts, in this order ([template](TEMPLATE.md)):
 
 ## Index
 
-Anchors checked against 0.9.11 RC2, 2026-10-01.
+Anchors checked against 0.9.12 + Builds 1-9, 2026-11-18. `check_anchors.py` reports 142 anchors, none missed.
 
 ### Origin
 
-| DR | Decision | Status | Origin | At 0.9.11 RC2 |
+| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
 |---|---|---|---|---|
 | [000](000-origin-and-purpose.md) | Origin and purpose | Accepted | The project brief | Conforms |
 
 ### Foundations
 
-| DR | Decision | Status | Origin | At 0.9.11 RC2 |
+| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
 |---|---|---|---|---|
 | [001](001-reports-never-commands.md) | It reports, it never commands | Accepted | Standing rule 1 | Conforms |
 | [002](002-decisions-in-pure-modules.md) | Decisions live in pure modules | Accepted | Design | Conforms |
@@ -64,7 +64,7 @@ Anchors checked against 0.9.11 RC2, 2026-10-01.
 
 ### Time
 
-| DR | Decision | Status | Origin | At 0.9.11 RC2 |
+| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
 |---|---|---|---|---|
 | [008](008-published-in-local-time.md) | Everything is published in local time, with the offset | Accepted | Standing rule 2 | Conforms |
 | [009](009-wall-clock-plan.md) | The plan is wall-clock and does not bend to daylight saving | Accepted | Standing rule 3; P9, P25, P26 | Conforms |
@@ -73,7 +73,7 @@ Anchors checked against 0.9.11 RC2, 2026-10-01.
 
 ### Plan shape
 
-| DR | Decision | Status | Origin | At 0.9.11 RC2 |
+| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
 |---|---|---|---|---|
 | [012](012-rate-scoped-by-pointer.md) | A rate is scoped to its timetable by a pointer field | Superseded by DR-013 | P4; P37; A1c | Superseded |
 | [013](013-rates-nested-in-timetable.md) | Rates are nested inside the timetable that owns them | Accepted; supersedes DR-012 | Gap 1 | Conforms |
@@ -86,21 +86,26 @@ Anchors checked against 0.9.11 RC2, 2026-10-01.
 
 ### Accumulation
 
-| DR | Decision | Status | Origin | At 0.9.11 RC2 |
+| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
 |---|---|---|---|---|
 | [020](020-declaring-a-cap-is-not-counting.md) | Declaring a cap is not counting against it | Superseded by DR-021 | Standing rule 7 | Superseded |
 | [021](021-a-declared-cap-is-counted.md) | A declared cap is counted | Accepted; supersedes DR-020 | Rule 7 revoked, session seven | Conforms |
 | [022](022-allowance-belongs-to-its-slot.md) | A timed allowance belongs to its slot; a monthly one to the cycle | Accepted | Standing rule 8; P13 | Conforms |
-| [023](023-ledger-only-for-demand-or-allowance.md) | A ledger exists only for demand or an allowance, one per rate, either side | Accepted | A5; P35; Gap 4 | Conforms |
+| [023](023-ledger-only-for-demand-or-allowance.md) | A ledger exists only for demand or an allowance, one per rate, either side | Superseded in part by DR-051 | A5; P35; Gap 4 | Partly |
 | [024](024-implausible-meter-jump-ignored.md) | An implausible meter jump is ignored | Accepted | Live testing, session twelve | Conforms |
 | [025](025-fixed-charges-declared-only.md) | Fixed charges are declared, never accumulated | Superseded by DR-026 | Standing rule 11; P11 | Superseded |
 | [026](026-supply-charge-lands-at-start-of-day.md) | The supply charge accumulates, landing in full at the start of each day | Accepted; supersedes DR-025 | Rule 11 revoked; Gap 5 | Conforms |
 | [027](027-demand-rate-in-cents.md) | The demand rate is entered in cents, like every other price | Accepted | Live testing, session twelve | Conforms |
-| [028](028-demand-ratchet-not-proposed.md) | The demand ratchet is researched and not proposed | Accepted | P35 | Conforms |
+| [028](028-demand-ratchet-not-proposed.md) | The demand ratchet is researched and not proposed | Superseded in part by DR-048 | P35 | Partly |
+| [048](048-demand-measured-not-instantaneous.md) | Demand is measured over a metering interval, never from an instant | Accepted | Owner challenge on register entry 1 | Conforms |
+| [049](049-meter-units-declared-and-checked.md) | Each meter declares its unit and a mismatch is advisory | Accepted | Owner instruction on meter units | Conforms |
+| [050](050-energy-split-at-rate-boundaries.md) | Energy across a rate boundary is split by real elapsed time | Accepted | Register entry 4 | Conforms |
+| [051](051-flat-feed-in-cap-has-its-own-ledger.md) | A flat all-day feed-in declaration has its own ledger identity | Accepted | Register entry 9 | Conforms |
+| [052](052-startup-does-not-wait-for-a-meter.md) | Startup does not wait for a meter | Accepted | Register entry 5 | Conforms |
 
 ### Configuration
 
-| DR | Decision | Status | Origin | At 0.9.11 RC2 |
+| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
 |---|---|---|---|---|
 | [029](029-setup-asks-the-minimum.md) | Setup asks the minimum | Superseded by DR-030 | Standing rule 6 | Superseded |
 | [030](030-import-energy-sensor-mandatory.md) | The import energy sensor is mandatory | Accepted; supersedes DR-029 | Gap 7 | Conforms |
@@ -120,7 +125,7 @@ Anchors checked against 0.9.11 RC2, 2026-10-01.
 
 ### Presentation
 
-| DR | Decision | Status | Origin | At 0.9.11 RC2 |
+| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
 |---|---|---|---|---|
 | [044](044-plan-renders-as-one-table.md) | The plan renders as one table | Accepted | Standing rule 12; P23 | Conforms |
 | [045](045-today-schedule-no-apostrophe.md) | "Today schedule", with no apostrophe | Accepted | Live testing, session twelve | Conforms |
@@ -129,9 +134,16 @@ Anchors checked against 0.9.11 RC2, 2026-10-01.
 
 ## Fix list
 
-Gaps between a record and the code at 0.9.11 RC2: none.
+Gaps between a record and the code at 0.9.12 + Builds 1-9:
+
+- **DR-023, Partly.** The record says one ledger per rate. A timetable's flat
+  all-day feed-in declaration now has a ledger of its own under
+  `plan.timetable.export`, and it is not a rate. It is marked Partly and
+  superseded in part by DR-051, which names both identities; DR-023's frozen
+  Decision is left as it was.
+
 The six found against 0.9.10RC1 (DR-006, DR-007, DR-011, DR-016 with
-DR-047, DR-019 and DR-034) were fixed in this build.
+DR-047, DR-019 and DR-034) were fixed in an earlier build.
 
 ## Not yet recorded
 
@@ -142,8 +154,9 @@ Decisions visible in the code that do not have a record yet:
 - `assert` guards values that came out of storage (finding A9).
 - The services: `get_intervals`, `get_day_schedule` and `export_rates_csv`.
 - The single-rate plan and the export toggle on the first setup screen (P28).
-- The demand interval and demand basis declarations (P35), and demand
-  charged per completed interval only.
+- The demand basis declaration (P35) - whether the peak is charged once per
+  cycle or once per day - and demand charged per completed interval only. The
+  interval itself now has DR-048.
 - The rate plan card, rendered for transcription into an inverter's own
   tariff screen.
 - The minute tick: the state is recomputed every minute rather than on one

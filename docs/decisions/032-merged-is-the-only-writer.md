@@ -32,8 +32,8 @@ stored. A new screen does not get a tenth hand-built dictionary.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `plan.py:998` - `def merged` - the single writer
-- `config_flow.py:1965` - `merged(Rate` - a rate edit in Configure
-- `config_flow.py:2230` - `merged(DayPattern` - a timetable edit
+- `plan.py:1075` - `def merged` - the single writer
+- `config_flow.py:2035` - `merged(Rate` - a rate edit in Configure
+- `config_flow.py:2315` - `merged(DayPattern` - a timetable edit

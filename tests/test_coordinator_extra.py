@@ -141,9 +141,7 @@ class TestStartupAndShutdown(CoordinatorCase):
         coordinator = a_coordinator()
         coordinator._seed_retry_delay_seconds = 0
         run(coordinator.async_start())
-        self.assertEqual(
-            len(_ha_stubs.SCHEDULED.state_listeners), 0
-        )
+        self.assertEqual(len(_ha_stubs.SCHEDULED.state_listeners), 0)
         self.assertEqual(len(_ha_stubs.SCHEDULED.time_changes), 1)
 
     def test_shutdown_without_boundary_does_not_crash(self) -> None:
@@ -180,7 +178,11 @@ class TestExportAllowance(CoordinatorCase):
         pattern = options[CONST.CONF_DAY_PATTERNS][0]
         pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
         pattern[CONST.CONF_EXPORT_PERIODS] = [
-            {CONST.CONF_START: "00:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Day"},
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Day",
+            },
         ]
         pattern[CONST.CONF_EXPORT_RATES] = [
             {
@@ -211,8 +213,13 @@ class TestExportAllowance(CoordinatorCase):
 
 
 class TestDemandIntervalEdgeCases(CoordinatorCase):
-    def test_instantaneous_demand_does_not_track_intervals(self) -> None:
-        """Line 611: interval_key returns None for instantaneous demand."""
+    def test_a_stored_zero_is_measured_over_thirty_minutes(self) -> None:
+        """Zero used to mean instantaneous, which nothing bills.
+
+        It is no longer offered or accepted, so the rate is measured over the
+        default 30 minutes and the ledger tracks a half-hour interval again —
+        rather than holding no interval at all and reporting no peak.
+        """
         options = sample_options()
         rate_in(options, 1)[CONST.CONF_DEMAND_PERIOD] = True
         rate_in(options, 1)[CONST.CONF_DEMAND_RATE] = 20.0
@@ -224,10 +231,13 @@ class TestDemandIntervalEdgeCases(CoordinatorCase):
         run(coordinator._seed_energy_total())
         PKG.coordinator.dt_util.NOW = at(17)
         coordinator.async_refresh()
-        ledger = coordinator.ledger_for(PKG.plan.qualified_name(
-            coordinator.plan.name, "Every day", "Every day Peak"
-        ))
-        self.assertIsNone(ledger.interval_key)
+        ledger = coordinator.ledger_for(
+            PKG.plan.qualified_name(
+                coordinator.plan.name, "Every day", "Every day Peak"
+            )
+        )
+        self.assertEqual(ledger.interval_minutes, 30)
+        self.assertIsNotNone(ledger.interval_key)
 
 
 class TestSupplyCharge(CoordinatorCase):
@@ -253,33 +263,47 @@ class TestBoundaryScheduling(CoordinatorCase):
 
 
 class TestMeterSeeding(CoordinatorCase):
+    def _drive(self, coordinator: Any) -> None:
+        """Finish the meter retry the seed deferred to a background task."""
+        self.assertEqual(len(coordinator._meter_tasks), 1)
+        while True:
+            try:
+                coordinator._meter_tasks[0].coro.send(None)
+            except StopIteration:
+                return
+
     def test_import_meter_seed_opens_gap_when_unreadable(self) -> None:
-        """Line 702->711: import meter unreadable at startup."""
+        """An import meter unreadable at startup leaves a hole behind."""
         options = sample_options()
         options[CONST.CONF_IMPORT_ENERGY_SENSOR] = "sensor.grid_import"
         coordinator = a_coordinator(options)
         coordinator._seed_retry_delay_seconds = 0
         run(coordinator._seed_energy_total())
+        # Deferred, so the entry was never held: nothing opened yet.
+        self.assertIsNone(coordinator.state.gap_since)
+        self._drive(coordinator)
         self.assertIsNone(coordinator._last_energy_total)
         self.assertIsNotNone(coordinator.state.gap_since)
 
     def test_export_meter_seed_opens_gap_when_unreadable(self) -> None:
-        """Lines 712-718: export meter unreadable at startup."""
+        """An export meter unreadable at startup leaves a hole behind."""
         options = sample_options()
         options[CONST.CONF_EXPORT_ENERGY_SENSOR] = "sensor.grid_export"
         coordinator = a_coordinator(options)
         coordinator._seed_retry_delay_seconds = 0
         run(coordinator._seed_energy_total())
+        self.assertIsNone(coordinator.state.gap_since)
+        self._drive(coordinator)
         self.assertIsNone(coordinator._last_export_energy_total)
         self.assertIsNotNone(coordinator.state.gap_since)
 
 
-class TestReadFloat(CoordinatorCase):
+class TestReadKwh(CoordinatorCase):
     def test_non_numeric_state_returns_none(self) -> None:
         """Lines 750-751: ValueError path."""
         coordinator = a_coordinator()
         coordinator.hass.states.set("sensor.weird", "not-a-number")
-        self.assertIsNone(coordinator._read_float("sensor.weird"))
+        self.assertIsNone(coordinator._read_kwh("sensor.weird"))
 
 
 class TestStateChangeHandler(CoordinatorCase):
@@ -302,7 +326,11 @@ class TestStateChangeHandler(CoordinatorCase):
         pattern = options[CONST.CONF_DAY_PATTERNS][0]
         pattern[CONST.CONF_EXPORT_SAME_ALL_DAY] = False
         pattern[CONST.CONF_EXPORT_PERIODS] = [
-            {CONST.CONF_START: "00:00", CONST.CONF_END: "24:00", CONST.CONF_RATE: "Day"},
+            {
+                CONST.CONF_START: "00:00",
+                CONST.CONF_END: "24:00",
+                CONST.CONF_RATE: "Day",
+            },
         ]
         pattern[CONST.CONF_EXPORT_RATES] = [
             {CONST.CONF_NAME: "Day", CONST.CONF_EXPORT_CENTS: 5.0}
@@ -416,9 +444,7 @@ class TestTariffSelect(CoordinatorCase):
         off_peak = PKG.plan.qualified_name(
             coordinator.plan.name, "Every day", "Every day Off Peak"
         )
-        coordinator.hass.states.set(
-            "select.meter_tariff", off_peak, options=[off_peak]
-        )
+        coordinator.hass.states.set("select.meter_tariff", off_peak, options=[off_peak])
         coordinator.async_refresh()
         self.assertEqual(coordinator.hass.services.calls, [])
 

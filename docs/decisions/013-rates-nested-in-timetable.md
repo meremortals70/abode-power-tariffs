@@ -39,9 +39,9 @@ for free (DR-036).
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
-- `plan.py:488` - `class DayPattern` - the four things inside a timetable
-- `plan.py:515-516` - `export_rates` - rates stored on the timetable
-- `plan.py:728` - `rate_by_name` - scoped lookup only; no fallback
-- `plan.py:744` - `def rates` - a flattened view, not storage
+- `plan.py:507` - `class DayPattern` - the four things inside a timetable
+- `plan.py:537-538` - `export_rates` - rates stored on the timetable
+- `plan.py:805` - `rate_by_name` - scoped lookup only; no fallback
+- `plan.py:821` - `def rates` - a flattened view, not storage

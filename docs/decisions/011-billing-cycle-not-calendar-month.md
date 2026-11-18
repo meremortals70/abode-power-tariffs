@@ -37,11 +37,11 @@ Cycle identity is a key, not a date comparison: asking whether two dates are
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.**
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
 
 - `const.py:27` - `MAX_BILLING_CYCLE_DAY` - 28
-- `validate.py:313-317` - `MAX_BILLING_CYCLE_DAY` - refused by validation
-- `config_flow.py:827` - `billing_day_out_of_range` - refused on the setup form
+- `validate.py:328-334` - `MAX_BILLING_CYCLE_DAY` - refused by validation
+- `config_flow.py:853` - `billing_day_out_of_range` - refused on the setup form
 - `accounting.py:45` - `cycle_start` - the cycle from its declared day
-- `coordinator.py:551` - `_refresh_cycle` - rolls by key
-- `plan.py:716` - `billing cycle starts, 1 to 28` - the field's comment
+- `coordinator.py:645` - `_refresh_cycle` - rolls by key
+- `plan.py:793` - `billing cycle starts, 1 to 28` - the field's comment

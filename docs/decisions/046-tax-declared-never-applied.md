@@ -35,9 +35,9 @@ it out.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Conforms.** `gst_percent` is
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** `gst_percent` is
 stored, round-tripped and shown, and read nowhere else.
 
 - `strings.json:25` - `Prices include tax` - the label
 - `strings.json:33` - `tax included` - the description, country-neutral
-- `strip.py:260` - `gst_percent` - shown on the rate plan card, not applied
+- `strip.py:256` - `gst_percent` - shown on the rate plan card, not applied

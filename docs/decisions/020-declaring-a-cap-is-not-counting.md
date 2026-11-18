@@ -31,5 +31,5 @@ past the cap was then wrong for as long as they had not ticked the box.
 
 ## In the code
 
-Checked against: 0.9.11 RC2 (2026-10-01). **Superseded.** The counting tickbox
+Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Superseded.** The counting tickbox
 and its stored key, `CONF_COUNT_ALLOWANCE`, are gone.
