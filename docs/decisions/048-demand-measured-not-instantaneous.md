@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Accepted |
-| Since | 0.9.12 + Builds 1-9 (2026-11-18) |
+| Since | 0.9.13 (2026-11-18) |
 | Origin | Owner challenge on register entry 1 |
 | Related | DR-023, DR-027, DR-028 |
 
@@ -64,7 +64,7 @@ lives.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `const.py:140` - `DEMAND_INTERVALS` - 15, 30 and 60 minutes; no instantaneous token
 - `const.py:207` - `ISSUE_INSTANTANEOUS_DEMAND` - the repair's key

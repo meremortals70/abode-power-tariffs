@@ -36,5 +36,5 @@ shape, not the picker, and the same flaw was on the import side.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Superseded.** Removed by DR-013;
+Checked against: 0.9.13 (2026-11-18). **Superseded.** Removed by DR-013;
 neither the `timetable` field nor the unscoped fallback remains.

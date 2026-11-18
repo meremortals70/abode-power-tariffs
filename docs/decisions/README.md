@@ -42,17 +42,17 @@ Each record has the same six parts, in this order ([template](TEMPLATE.md)):
 
 ## Index
 
-Anchors checked against 0.9.12 + Builds 1-9, 2026-11-18. `check_anchors.py` reports 142 anchors, none missed.
+Anchors checked against 0.9.13, 2026-11-18. `check_anchors.py` reports 178 anchors, none missed.
 
 ### Origin
 
-| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
+| DR | Decision | Status | Origin | At 0.9.13 |
 |---|---|---|---|---|
 | [000](000-origin-and-purpose.md) | Origin and purpose | Accepted | The project brief | Conforms |
 
 ### Foundations
 
-| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
+| DR | Decision | Status | Origin | At 0.9.13 |
 |---|---|---|---|---|
 | [001](001-reports-never-commands.md) | It reports, it never commands | Accepted | Standing rule 1 | Conforms |
 | [002](002-decisions-in-pure-modules.md) | Decisions live in pure modules | Accepted | Design | Conforms |
@@ -64,7 +64,7 @@ Anchors checked against 0.9.12 + Builds 1-9, 2026-11-18. `check_anchors.py` repo
 
 ### Time
 
-| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
+| DR | Decision | Status | Origin | At 0.9.13 |
 |---|---|---|---|---|
 | [008](008-published-in-local-time.md) | Everything is published in local time, with the offset | Accepted | Standing rule 2 | Conforms |
 | [009](009-wall-clock-plan.md) | The plan is wall-clock and does not bend to daylight saving | Accepted | Standing rule 3; P9, P25, P26 | Conforms |
@@ -73,7 +73,7 @@ Anchors checked against 0.9.12 + Builds 1-9, 2026-11-18. `check_anchors.py` repo
 
 ### Plan shape
 
-| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
+| DR | Decision | Status | Origin | At 0.9.13 |
 |---|---|---|---|---|
 | [012](012-rate-scoped-by-pointer.md) | A rate is scoped to its timetable by a pointer field | Superseded by DR-013 | P4; P37; A1c | Superseded |
 | [013](013-rates-nested-in-timetable.md) | Rates are nested inside the timetable that owns them | Accepted; supersedes DR-012 | Gap 1 | Conforms |
@@ -86,7 +86,7 @@ Anchors checked against 0.9.12 + Builds 1-9, 2026-11-18. `check_anchors.py` repo
 
 ### Accumulation
 
-| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
+| DR | Decision | Status | Origin | At 0.9.13 |
 |---|---|---|---|---|
 | [020](020-declaring-a-cap-is-not-counting.md) | Declaring a cap is not counting against it | Superseded by DR-021 | Standing rule 7 | Superseded |
 | [021](021-a-declared-cap-is-counted.md) | A declared cap is counted | Accepted; supersedes DR-020 | Rule 7 revoked, session seven | Conforms |
@@ -105,7 +105,7 @@ Anchors checked against 0.9.12 + Builds 1-9, 2026-11-18. `check_anchors.py` repo
 
 ### Configuration
 
-| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
+| DR | Decision | Status | Origin | At 0.9.13 |
 |---|---|---|---|---|
 | [029](029-setup-asks-the-minimum.md) | Setup asks the minimum | Superseded by DR-030 | Standing rule 6 | Superseded |
 | [030](030-import-energy-sensor-mandatory.md) | The import energy sensor is mandatory | Accepted; supersedes DR-029 | Gap 7 | Conforms |
@@ -125,7 +125,7 @@ Anchors checked against 0.9.12 + Builds 1-9, 2026-11-18. `check_anchors.py` repo
 
 ### Presentation
 
-| DR | Decision | Status | Origin | At 0.9.12 + Builds 1-9 |
+| DR | Decision | Status | Origin | At 0.9.13 |
 |---|---|---|---|---|
 | [044](044-plan-renders-as-one-table.md) | The plan renders as one table | Accepted | Standing rule 12; P23 | Conforms |
 | [045](045-today-schedule-no-apostrophe.md) | "Today schedule", with no apostrophe | Accepted | Live testing, session twelve | Conforms |
@@ -134,7 +134,7 @@ Anchors checked against 0.9.12 + Builds 1-9, 2026-11-18. `check_anchors.py` repo
 
 ## Fix list
 
-Gaps between a record and the code at 0.9.12 + Builds 1-9:
+Gaps between a record and the code at 0.9.13:
 
 - **DR-023, Partly.** The record says one ledger per rate. A timetable's flat
   all-day feed-in declaration now has a ledger of its own under

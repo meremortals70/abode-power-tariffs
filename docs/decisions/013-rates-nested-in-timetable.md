@@ -39,7 +39,7 @@ for free (DR-036).
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `plan.py:507` - `class DayPattern` - the four things inside a timetable
 - `plan.py:537-538` - `export_rates` - rates stored on the timetable

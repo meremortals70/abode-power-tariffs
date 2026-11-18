@@ -33,7 +33,7 @@ end.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `plan.py:474` - `class Period` - start, end and a rate name
 - `plan.py:976` - `def resolve` - timetable, then period, then rate

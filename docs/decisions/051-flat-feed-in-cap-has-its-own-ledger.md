@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Accepted |
-| Since | 0.9.12 + Builds 1-9 (2026-11-18) |
+| Since | 0.9.13 (2026-11-18) |
 | Origin | Register entry 9 |
 | Related | DR-014, DR-016, DR-021, DR-023 |
 
@@ -56,7 +56,7 @@ the day it arrives: the flat shape has no midnight boundary to split at
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `plan.py:144` - `all_day_export_key` - the three-segment ledger identity
 - `plan.py:522` - `export_same_all_day` - the declaration's tickbox

@@ -32,7 +32,7 @@ retailer in the month a transition falls.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `accounting.py:69` - `days_in_cycle` - calendar days
 - `accounting.py:447` - `midnight_instants` - the real start of a local day

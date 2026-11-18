@@ -30,5 +30,5 @@ The billing cycle day was declared only, with nothing derived from it.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Superseded.** Replaced by the
+Checked against: 0.9.13 (2026-11-18). **Superseded.** Replaced by the
 accrual in DR-026.

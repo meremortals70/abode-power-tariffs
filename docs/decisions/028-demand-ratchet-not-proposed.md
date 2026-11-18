@@ -33,7 +33,7 @@ user turns up with one, this is the record to revisit.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Partly.** The ratchet
+Checked against: 0.9.13 (2026-11-18). **Partly.** The ratchet
 decision itself conforms: there is no ratchet and the peak is per cycle. The
 interval list the Decision names no longer does - the instantaneous basis was
 withdrawn by DR-048, so `DEMAND_INTERVALS` offers 15, 30 and 60 minutes only.

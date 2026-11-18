@@ -37,7 +37,7 @@ matches the occurrence running now.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `const.py:164` - `ALLOWANCE_PERIODS` - slot or month, declared
 - `plan.py:248` - `counts_monthly_allowance` - which one this rate has

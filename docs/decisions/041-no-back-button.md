@@ -30,5 +30,5 @@ Configure's menus are how a user gets back to something to change it.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** None of the three
+Checked against: 0.9.13 (2026-11-18). **Conforms.** None of the three
 constants remain.

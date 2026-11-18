@@ -39,7 +39,7 @@ own.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `plan.py:907` - `export_resolve` - None when nothing resolves
 - `plan.py:708` - `ExportResolution` - the export side's own context

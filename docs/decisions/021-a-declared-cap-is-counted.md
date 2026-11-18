@@ -31,7 +31,7 @@ mandatory (DR-030). What is published from counting is an estimate (DR-003).
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** A cap declared
+Checked against: 0.9.13 (2026-11-18). **Conforms.** A cap declared
 on a rate is counted against the plan's nominated meter, and the cap on a
 timetable's flat all-day feed-in price is counted the same way under
 `plan.timetable.export` (Build 6).

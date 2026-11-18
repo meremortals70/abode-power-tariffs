@@ -34,7 +34,7 @@ timetable (DR-013), they come across with it.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `config_flow.py:2427` - `async_step_day_pattern_duplicate` - routes through a real add
 - `config_flow.py:2111` - `_duplicate_into` - copies rates and periods afterwards

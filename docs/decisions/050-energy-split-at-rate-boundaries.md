@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Accepted |
-| Since | 0.9.12 + Builds 1-9 (2026-11-18) |
+| Since | 0.9.13 (2026-11-18) |
 | Origin | Register entry 4 |
 | Related | DR-003, DR-021, DR-022, DR-023 |
 
@@ -56,7 +56,7 @@ its whole delta goes to the rate in force when it arrives.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `coordinator.py:1134` - `_boundaries_between` - every boundary strictly inside the stretch
 - `coordinator.py:95` - `_MAX_BOUNDARIES_PER_READING` - the 256-step ceiling

@@ -40,7 +40,7 @@ label lookup included; `tests_real_ha/` exists for that.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** Eight pure modules,
+Checked against: 0.9.13 (2026-11-18). **Conforms.** Eight pure modules,
 all listed in the enforcing test.
 
 - `tests/test_attributes.py:362` - `PURE` - the eight modules

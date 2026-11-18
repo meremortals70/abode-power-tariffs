@@ -37,7 +37,7 @@ Cycle identity is a key, not a date comparison: asking whether two dates are
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `const.py:27` - `MAX_BILLING_CYCLE_DAY` - 28
 - `validate.py:328-334` - `MAX_BILLING_CYCLE_DAY` - refused by validation

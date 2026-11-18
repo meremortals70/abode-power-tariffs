@@ -37,7 +37,7 @@ counted in calendar days.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `coordinator.py:761` - `_refresh_supply_charge` - once per local day
 - `coordinator.py:782` - `supply_charge_today` - the whole day, not a fraction

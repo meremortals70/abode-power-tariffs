@@ -39,7 +39,7 @@ archiving, and is treated as a failure (DR-007).
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `manifest.json:8` - `service` - a service-type integration
 - `plan.py:970` - `is_active_on` - `valid_from` and `valid_to` decide whether the plan is in force

@@ -34,7 +34,7 @@ field.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `tests/test_declaration.py:287` - `test_changing_a_timetables_feed_in_price_keeps_its_allowance` - the original fault
 - `tests/test_declaration.py:305` - `test_changing_a_rates_price_keeps_the_rest_of_the_rate` - a rate edit

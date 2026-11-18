@@ -36,6 +36,6 @@ data completeness.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Superseded.** The conditional
+Checked against: 0.9.13 (2026-11-18). **Superseded.** The conditional
 `_meter_required_without_one` is gone; the meter is always required
 (DR-030).

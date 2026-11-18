@@ -34,7 +34,7 @@ picks the first pass.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `plan.py:474` - `Period` - start and end as minutes past local midnight
 - `intervals.py:146` - `instants_at` - every real instant a wall time names

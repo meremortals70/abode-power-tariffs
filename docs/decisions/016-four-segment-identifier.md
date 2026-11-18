@@ -38,7 +38,7 @@ always available beside it.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** The identifier
+Checked against: 0.9.13 (2026-11-18). **Conforms.** The identifier
 is built in one place and used for ledgers, the select write-back and the
 tariffs of the utility meter Configure creates.
 

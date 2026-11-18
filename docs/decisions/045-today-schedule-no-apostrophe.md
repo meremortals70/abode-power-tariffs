@@ -29,7 +29,7 @@ everywhere.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `strings.json:604` - `Today schedule` - the name
 - `sensor.py:380` - `TodayScheduleSensor` - the sensor

@@ -40,7 +40,7 @@ consumer.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `sensor.py:51` - `ESTIMATE_NOTE` - the statement every accumulating entity carries
 - `sensor.py:498` - `_AccumulatingSensor` - the base that attaches it

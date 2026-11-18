@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Accepted |
-| Since | 0.9.12 + Builds 1-9 (2026-11-18) |
+| Since | 0.9.13 (2026-11-18) |
 | Origin | Owner instruction on meter units |
 | Related | DR-003, DR-021, DR-030 |
 
@@ -57,7 +57,7 @@ the one place to extend.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `const.py:44` - `CONF_IMPORT_ENERGY_UNIT` - the stored import declaration
 - `const.py:45` - `CONF_EXPORT_ENERGY_UNIT` - the stored export declaration

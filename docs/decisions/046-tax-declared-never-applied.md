@@ -35,7 +35,7 @@ it out.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** `gst_percent` is
+Checked against: 0.9.13 (2026-11-18). **Conforms.** `gst_percent` is
 stored, round-tripped and shown, and read nowhere else.
 
 - `strings.json:25` - `Prices include tax` - the label

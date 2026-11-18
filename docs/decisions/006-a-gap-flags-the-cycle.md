@@ -38,7 +38,7 @@ whether this cycle is unaffected. Every ledger is marked incomplete with it.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** Every input
+Checked against: 0.9.13 (2026-11-18). **Conforms.** Every input
 that becomes unreadable opens a gap, raises the repair and marks the cycle and
 every ledger incomplete. The holiday sensor counts only where a timetable
 declares holidays: a plan with no holiday timetable cannot be mispriced by it,

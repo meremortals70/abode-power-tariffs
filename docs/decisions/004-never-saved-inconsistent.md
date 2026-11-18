@@ -36,7 +36,7 @@ refusals.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `validate.py:38` - `validate_periods` - each side covers the day
 - `validate.py:83` - `validate_day_coverage` - every day has a timetable

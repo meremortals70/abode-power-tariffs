@@ -36,7 +36,7 @@ alerts forever.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** The repair is
+Checked against: 0.9.13 (2026-11-18). **Conforms.** The repair is
 raised only for a plan past its `valid_to` with no other plan for the same
 import meter in force today; an archived plan with a successor raises
 nothing. A plan whose `valid_from` is still in the future has not expired - it

@@ -34,7 +34,7 @@ write-back finds no matching option and only logs a warning.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** The meter is
+Checked against: 0.9.13 (2026-11-18). **Conforms.** The meter is
 created with the four-segment identifiers as its tariffs, the same strings
 the select write-back sends, so it is switched as the rate changes.
 

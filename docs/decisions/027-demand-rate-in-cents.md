@@ -31,7 +31,7 @@ cannot be renamed (DR-037) and carries a comment instead.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `plan.py:297` - `_cents_to_dollars` - import demand rate, cents in
 - `plan.py:444` - `_cents_to_dollars` - export demand rate, cents in

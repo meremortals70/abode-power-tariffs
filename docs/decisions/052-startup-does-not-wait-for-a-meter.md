@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Accepted |
-| Since | 0.9.12 + Builds 1-9 (2026-11-18) |
+| Since | 0.9.13 (2026-11-18) |
 | Origin | Register entry 5 |
 | Related | DR-003, DR-006, DR-021 |
 
@@ -54,7 +54,7 @@ cancels any pending task, so no retry runs against an unloaded coordinator.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `coordinator.py:815` - `_seed_energy_total` - one read per counted meter, no waiting
 - `coordinator.py:847` - `_retry_meter_later` - creates the background task

@@ -30,7 +30,7 @@ the frontend's label lookup.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `tests/test_declaration.py:768` - `test_every_setup_field_is_named` - setup forms
 - `tests/test_declaration.py:772` - `test_every_configure_field_is_named` - Configure forms

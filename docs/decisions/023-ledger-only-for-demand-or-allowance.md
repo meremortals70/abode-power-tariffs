@@ -40,7 +40,7 @@ than an orphan.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Partly.** One per rate
+Checked against: 0.9.13 (2026-11-18). **Partly.** One per rate
 still holds, keyed on the four-segment identifier, either side, and a rate with
 neither a demand charge nor an allowance still has none. What the Decision does
 not cover is the timetable's flat all-day feed-in declaration: it is not a rate,

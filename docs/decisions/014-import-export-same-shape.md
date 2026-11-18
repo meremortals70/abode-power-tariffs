@@ -39,7 +39,7 @@ Every side-specific path has a mirror, and the four-segment identifier
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.**
+Checked against: 0.9.13 (2026-11-18). **Conforms.**
 
 - `plan.py:189` - `class Rate` - the import shape
 - `plan.py:374` - `class ExportRate` - the same shape on the export side

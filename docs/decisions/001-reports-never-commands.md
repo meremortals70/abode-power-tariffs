@@ -39,7 +39,7 @@ with an option it already has.
 
 ## In the code
 
-Checked against: 0.9.12 + Builds 1-9 (2026-11-18). **Conforms.** The only service call
+Checked against: 0.9.13 (2026-11-18). **Conforms.** The only service call
 the coordinator makes is `select.select_option` on nominated entities.
 
 - `coordinator.py:1449` - `_async_write_tariff_selects` - the one write
